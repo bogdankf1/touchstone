@@ -128,6 +128,9 @@ def _native_usage_field(usage: dict[str, Any] | None, field: str, *, absent: Any
 class AnthropicProvider:
     """Count and generate one pinned Anthropic request without retries or fallback."""
 
+    provider_name = "anthropic"
+    is_fake = False
+
     def __init__(self, api_key: str, *, _http_client: httpx.Client | None = None):
         if not isinstance(api_key, str) or not api_key:
             raise ValueError("Anthropic API key is required")

@@ -117,6 +117,7 @@ def seed_run(pg: PostgresFixture, run_id: str, tenant_id: str, purpose: str = "b
             purpose,
             config,
             json.loads((pg.bundle / "bundle.json").read_text())["bundle_id"],
+            price=json.loads((CONFIG_DIR / "anthropic-prices-v1.json").read_text()),
         )
     with PostgresRepository(pg.runner_dsn) as repo:
         return next(task for task in repo.pending_tasks(run_id) if task["tenant_id"] == tenant_id)

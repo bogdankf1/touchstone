@@ -69,6 +69,11 @@ class BudgetLedger:
             ).fetchone()
             if current is None or current["status"] != "pending":
                 raise ValueError("task is not pending")
+            if (
+                task.get("reservation_cost") is not None
+                and Decimal(task["reservation_cost"]) != maximum
+            ):
+                raise ValueError("reservation does not match validated preflight")
 
             has_overage = cursor.execute(
                 """
@@ -93,10 +98,22 @@ class BudgetLedger:
             cursor.execute(
                 """
                 INSERT INTO reckoner.attempts
-                  (tenant_id, run_id, task_id, call_id, status, maximum_cost)
-                VALUES (%s, %s, %s, %s, 'dispatched', %s)
+                  (tenant_id, run_id, task_id, call_id, status, maximum_cost,
+                   requested_model, request_document, request_sha256, trace_id, span_id)
+                VALUES (%s, %s, %s, %s, 'dispatched', %s, %s, %s, %s, %s, %s)
                 """,
-                (tenant_id, run_id, task_id, call_id, maximum),
+                (
+                    tenant_id,
+                    run_id,
+                    task_id,
+                    call_id,
+                    maximum,
+                    task["request"].get("model") if task.get("request") is not None else None,
+                    Jsonb(task["request"]) if task.get("request") is not None else None,
+                    task.get("request_sha256"),
+                    task.get("trace_id"),
+                    task.get("span_id"),
+                ),
             )
             cursor.execute(
                 """

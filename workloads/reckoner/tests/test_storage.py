@@ -19,6 +19,10 @@ def _config():
     return load_config(CONFIG_DIR / "baseline-v1.json", CONFIG_DIR / "anthropic-prices-v1.json")
 
 
+def _price():
+    return json.loads((CONFIG_DIR / "anthropic-prices-v1.json").read_text())
+
+
 def _register_thresholds(repo):
     for name in ("thresholds-tenant-a-v1.json", "thresholds-tenant-b-v1.json"):
         repo.register_threshold_config(json.loads((CONFIG_DIR / name).read_text()))
@@ -46,8 +50,8 @@ def test_import_and_create_run_are_idempotent_and_create_every_two_tenant_task(p
         repo.import_bundle(pg.bundle)
         repo.import_bundle(pg.bundle)
         _register_thresholds(repo)
-        repo.create_run("run-two-tenant", "pilot", _config(), bundle_id)
-        repo.create_run("run-two-tenant", "pilot", _config(), bundle_id)
+        repo.create_run("run-two-tenant", "pilot", _config(), bundle_id, price=_price())
+        repo.create_run("run-two-tenant", "pilot", _config(), bundle_id, price=_price())
 
     with PostgresRepository(pg.runner_dsn) as repo:
         tasks = repo.pending_tasks("run-two-tenant")
@@ -56,7 +60,23 @@ def test_import_and_create_run_are_idempotent_and_create_every_two_tenant_task(p
     assert len(tasks) == 20
     assert {task["tenant_id"] for task in tasks} == {"tenant-a", "tenant-b"}
     assert all(
-        set(task) == {"tenant_id", "run_id", "task_id", "transaction", "status"} for task in tasks
+        set(task)
+        == {
+            "tenant_id",
+            "run_id",
+            "task_id",
+            "transaction",
+            "status",
+            "request",
+            "request_sha256",
+            "input_token_estimate",
+            "reservation_input_tokens",
+            "reservation_cost",
+            "trace_id",
+            "span_id",
+            "event_id",
+        }
+        for task in tasks
     )
     assert len(snapshot["runs"]) == 2
     assert len(snapshot["tasks"]) == 20
@@ -116,8 +136,11 @@ def test_role_privileges_enforce_oracle_and_sanitized_api_boundaries(pg):
         assert not runner.execute(
             "SELECT has_table_privilege(current_user, 'reckoner.decisions', 'UPDATE')"
         ).fetchone()[0]
-        assert runner.execute(
+        assert not runner.execute(
             "SELECT has_table_privilege(current_user, 'reckoner.telemetry_outbox', 'SELECT')"
+        ).fetchone()[0]
+        assert runner.execute(
+            "SELECT has_table_privilege(current_user, 'reckoner.runner_telemetry_outbox', 'SELECT')"
         ).fetchone()[0]
         with pytest.raises(psycopg.errors.InsufficientPrivilege):
             runner.execute("SELECT * FROM oracle.oracle_labels")
@@ -142,7 +165,7 @@ def test_cross_tenant_task_reference_is_rejected_by_database(pg):
     with PostgresRepository(pg.owner_dsn) as repo:
         repo.import_bundle(pg.bundle)
         _register_thresholds(repo)
-        repo.create_run("tenant-fk", "pilot", _config(), bundle_id)
+        repo.create_run("tenant-fk", "pilot", _config(), bundle_id, price=_price())
     with psycopg.connect(pg.runner_dsn) as connection:
         task = connection.execute(
             "SELECT tenant_id, task_id FROM reckoner.tasks "
@@ -160,9 +183,9 @@ def test_cross_tenant_task_reference_is_rejected_by_database(pg):
         with pytest.raises(psycopg.errors.ForeignKeyViolation):
             connection.execute(
                 """
-                INSERT INTO reckoner.telemetry_outbox
-                  (tenant_id, event_id, run_id, task_id, payload)
-                VALUES (%s, 'wrong-tenant-event', 'tenant-fk', %s, %s)
+                INSERT INTO reckoner.runner_telemetry_outbox
+                  (tenant_id, event_id, run_id, task_id, payload, producer)
+                VALUES (%s, 'wrong-tenant-event', 'tenant-fk', %s, %s, 'runner')
                 """,
                 (other_tenant, task[1], b"payload"),
             )
