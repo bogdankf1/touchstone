@@ -59,6 +59,23 @@ class UncallableAnthropicProvider:
         raise AssertionError("pilot gate must run before generation")
 
 
+class CountingAnthropicBoundary:
+    """Non-fake boundary double for proving paid gates precede generation."""
+
+    provider_name = "anthropic"
+    is_fake = False
+
+    def __init__(self):
+        self.generation_calls = 0
+
+    def count_input(self, _request: dict) -> int:
+        return 31
+
+    def generate(self, _request: dict) -> dict:
+        self.generation_calls += 1
+        return FakeProvider().result
+
+
 def _runner():
     return importlib.import_module("reckoner.baseline.runner")
 
@@ -173,6 +190,43 @@ def test_restart_after_provider_return_does_not_regenerate(pg, monkeypatch):
     assert result["uncertain"] == 1
 
 
+def test_unresolved_dispatch_in_another_run_blocks_all_new_generation(pg):
+    runner = _runner()
+    _create_four_task_run(pg, "unresolved-a", task_limit=1)
+    _create_four_task_run(pg, "blocked-b", task_limit=1)
+    with PostgresRepository(pg.runner_dsn) as repo:
+        first_provider = FakeProvider()
+        second_provider = FakeProvider()
+        runner.preflight(repo, first_provider, "unresolved-a")
+        runner.preflight(repo, second_provider, "blocked-b")
+        task = repo.pending_tasks("unresolved-a")[0]
+        BudgetLedger(repo).reserve(task, Decimal(task["reservation_cost"]))
+
+        result = runner.execute_run(repo, second_provider, "blocked-b")
+        unresolved = repo.snapshot("unresolved-a", None)
+
+    assert second_provider.generation_calls == 0
+    assert result["pending"] == 1
+    assert unresolved["uncertain"] == 1
+
+
+def test_model_or_cache_uncertainty_blocks_later_runs_globally(pg):
+    runner = _runner()
+    _create_four_task_run(pg, "mismatch-a", task_limit=1)
+    _create_four_task_run(pg, "mismatch-b", task_limit=1)
+    mismatched = FakeProvider().result | {"reported_model": "wrong-model"}
+    with PostgresRepository(pg.runner_dsn) as repo:
+        first_provider = FakeProvider(result=mismatched)
+        second_provider = FakeProvider()
+        runner.preflight(repo, first_provider, "mismatch-a")
+        runner.preflight(repo, second_provider, "mismatch-b")
+        assert runner.execute_run(repo, first_provider, "mismatch-a")["uncertain"] == 1
+        result = runner.execute_run(repo, second_provider, "mismatch-b")
+
+    assert second_provider.generation_calls == 0
+    assert result["pending"] == 1
+
+
 def test_failure_before_reservation_creates_no_dispatched_attempt(pg, monkeypatch):
     runner = _runner()
     _create_four_task_run(pg, "before-reservation")
@@ -280,11 +334,102 @@ def test_completed_fake_pilot_never_satisfies_paid_baseline_gate(pg):
     with PostgresRepository(pg.runner_dsn) as repo:
         assert runner.preflight(repo, fake, "fake-pilot")["pending"] == 20
         assert runner.execute_run(repo, fake, "fake-pilot")["completed"] == 20
+    with psycopg.connect(pg.owner_dsn) as owner:
+        owner.execute(
+            "UPDATE reckoner.runs SET execution_mode = 'paid' WHERE run_id = 'fake-pilot'"
+        )
 
     _create_four_task_run(pg, "paid-after-fake-pilot", execution_mode="paid")
     with PostgresRepository(pg.runner_dsn) as repo:
         with pytest.raises(ValueError, match="successful 20-case pilot"):
             runner.preflight(repo, UncallableAnthropicProvider(), "paid-after-fake-pilot")
+
+
+def test_paid_pilot_gate_requires_durable_export_bounds_and_dispatch_revalidation(pg, tmp_path):
+    runner = _runner()
+    otlp = importlib.import_module("reckoner.telemetry.otlp")
+    _create_four_task_run(
+        pg, "exported-pilot", purpose="pilot", execution_mode="paid", task_limit=None
+    )
+    pilot_provider = CountingAnthropicBoundary()
+    with PostgresRepository(pg.runner_dsn) as repo:
+        runner.preflight(repo, pilot_provider, "exported-pilot")
+        runner.execute_run(repo, pilot_provider, "exported-pilot")
+    _create_four_task_run(pg, "paid-after-export", execution_mode="paid", task_limit=1)
+
+    with PostgresRepository(pg.runner_dsn) as repo:
+        assert not repo.pilot_gate_satisfied("paid-after-export")
+        otlp.export_run(repo, "exported-pilot", tmp_path / "pilot-export")
+        assert repo.pilot_gate_satisfied("paid-after-export")
+
+    provider = CountingAnthropicBoundary()
+    with PostgresRepository(pg.runner_dsn) as repo:
+        runner.preflight(repo, provider, "paid-after-export")
+    with psycopg.connect(pg.owner_dsn) as owner:
+        owner.execute(
+            "UPDATE reckoner.telemetry_outbox SET status = 'failed' WHERE run_id = 'exported-pilot'"
+        )
+    with PostgresRepository(pg.runner_dsn) as repo:
+        result = runner.execute_run(repo, provider, "paid-after-export")
+    assert provider.generation_calls == 0
+    assert result["pending"] == 1
+
+
+def test_pilot_gate_rejects_missing_frozen_reservation_bounds(pg, tmp_path):
+    runner = _runner()
+    otlp = importlib.import_module("reckoner.telemetry.otlp")
+    _create_four_task_run(
+        pg,
+        "missing-bounds-pilot",
+        purpose="pilot",
+        execution_mode="paid",
+        task_limit=None,
+    )
+    pilot_provider = CountingAnthropicBoundary()
+    with PostgresRepository(pg.runner_dsn) as repo:
+        runner.preflight(repo, pilot_provider, "missing-bounds-pilot")
+        runner.execute_run(repo, pilot_provider, "missing-bounds-pilot")
+        otlp.export_run(repo, "missing-bounds-pilot", tmp_path / "pilot-export")
+    _create_four_task_run(pg, "baseline-missing-bounds", execution_mode="paid", task_limit=1)
+    with psycopg.connect(pg.owner_dsn) as owner:
+        owner.execute(
+            "UPDATE reckoner.tasks SET request_document = NULL, request_sha256 = NULL, "
+            "input_token_estimate = NULL, reservation_input_tokens = NULL, "
+            "reservation_cost = NULL, trace_id = NULL, span_id = NULL, "
+            "provider_span_id = NULL, event_id = NULL "
+            "WHERE run_id = 'missing-bounds-pilot' AND task_id = "
+            "(SELECT min(task_id) FROM reckoner.tasks WHERE run_id = 'missing-bounds-pilot')"
+        )
+    with PostgresRepository(pg.runner_dsn) as repo:
+        assert not repo.pilot_gate_satisfied("baseline-missing-bounds")
+
+
+def test_code_provenance_is_anchored_to_source_tree_and_detects_executable_change(
+    pg, tmp_path, monkeypatch
+):
+    runner = _runner()
+    source = tmp_path / "runner-source.py"
+    source.write_text("version = 1\n")
+    monkeypatch.setattr(runner, "_relevant_source_files", lambda: [source])
+    _create_four_task_run(pg, "source-digest", task_limit=1)
+    provider = FakeProvider()
+    with PostgresRepository(pg.runner_dsn) as repo:
+        runner.preflight(repo, provider, "source-digest")
+        monkeypatch.chdir(tmp_path)
+        source.write_text("version = 2\n")
+        with pytest.raises(ValueError, match="code revision"):
+            runner.execute_run(repo, provider, "source-digest")
+    assert provider.generation_calls == 0
+
+
+def test_code_provenance_ignores_caller_working_directory(pg, tmp_path, monkeypatch):
+    runner = _runner()
+    _create_four_task_run(pg, "other-cwd", task_limit=1)
+    provider = FakeProvider()
+    with PostgresRepository(pg.runner_dsn) as repo:
+        runner.preflight(repo, provider, "other-cwd")
+        monkeypatch.chdir(tmp_path)
+        assert runner.execute_run(repo, provider, "other-cwd")["completed"] == 1
 
 
 def test_runtime_bundle_validation_never_requires_oracle_or_archive_files(
@@ -303,3 +448,52 @@ def test_runtime_bundle_validation_never_requires_oracle_or_archive_files(
 
     assert cli._runtime_bundle_identity(runtime, "pilot") == index["bundle_id"]
     assert not any("oracle" in path.name for path in runtime.iterdir())
+
+
+def test_completion_uses_cohort_from_frozen_bundle_when_transactions_overlap(pg):
+    runner = _runner()
+    _create_four_task_run(pg, "seed-original", task_limit=1)
+    overlap_bundle = "b" * 64
+    prices = json.loads((CONFIG_DIR / "anthropic-prices-v1.json").read_text())
+    config = load_config(CONFIG_DIR / "baseline-v1.json", CONFIG_DIR / "anthropic-prices-v1.json")
+    with psycopg.connect(pg.owner_dsn) as owner:
+        for tenant_id in ("tenant-a", "tenant-b"):
+            cohort_id = f"zzzz-overlap-{tenant_id}"
+            owner.execute(
+                "INSERT INTO reckoner.cohorts "
+                "(tenant_id, cohort_id, purpose, bundle_id, document) "
+                "VALUES (%s,%s,'baseline',%s,'{}'::jsonb)",
+                (tenant_id, cohort_id, overlap_bundle),
+            )
+            owner.execute(
+                "INSERT INTO reckoner.cohort_members (tenant_id, cohort_id, transaction_id) "
+                "SELECT tenant_id, %s, transaction_id FROM reckoner.cohort_members "
+                "WHERE tenant_id = %s AND cohort_id = "
+                "(SELECT cohort_id FROM reckoner.cohorts WHERE tenant_id = %s "
+                "AND purpose = 'baseline' AND bundle_id <> %s LIMIT 1)",
+                (cohort_id, tenant_id, tenant_id, overlap_bundle),
+            )
+    with PostgresRepository(pg.owner_dsn) as repo:
+        repo.create_run(
+            "overlap-run",
+            "baseline",
+            config,
+            overlap_bundle,
+            price=prices,
+            execution_mode="test",
+        )
+    with psycopg.connect(pg.owner_dsn) as owner:
+        task = owner.execute(
+            "SELECT tenant_id, task_id FROM reckoner.tasks WHERE run_id = 'overlap-run' "
+            "ORDER BY tenant_id, task_id LIMIT 1"
+        ).fetchone()
+        owner.execute(
+            "DELETE FROM reckoner.tasks WHERE run_id = 'overlap-run' AND task_id <> %s",
+            (task[1],),
+        )
+    provider = FakeProvider()
+    with PostgresRepository(pg.runner_dsn) as repo:
+        runner.preflight(repo, provider, "overlap-run")
+        runner.execute_run(repo, provider, "overlap-run")
+        decision = repo.snapshot("overlap-run", None)["decisions"][0]
+    assert decision["cohort_id"] == f"zzzz-overlap-{task[0]}"

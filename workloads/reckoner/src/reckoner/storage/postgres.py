@@ -16,7 +16,7 @@ from psycopg.types.json import Jsonb
 
 from reckoner.contracts import content_id, validate_document, validate_threshold_config
 from reckoner.data.artifacts import verify_bundle
-from reckoner.storage.budget import RunBusy
+from reckoner.storage.budget import ACCOUNTING_LOCK, RunBusy
 
 ROOT = Path(__file__).resolve().parents[5]
 SCHEMAS = ROOT / "contracts" / "schemas"
@@ -341,7 +341,7 @@ class PostgresRepository:
         rows = self._connection.execute(
             """
             SELECT r.tenant_id, r.run_id, r.purpose, r.config_id, r.bundle_id,
-                   r.execution_mode, r.preflight_code_revision,
+                   r.execution_mode, r.provider_call_mode, r.preflight_code_revision,
                    c.document AS config, p.document AS price,
                    tc.document AS thresholds
             FROM reckoner.runs r
@@ -367,6 +367,7 @@ class PostgresRepository:
             "config_id",
             "bundle_id",
             "execution_mode",
+            "provider_call_mode",
             "preflight_code_revision",
             "config",
         )
@@ -408,6 +409,7 @@ class PostgresRepository:
                 "config_id",
                 "bundle_id",
                 "execution_mode",
+                "provider_call_mode",
                 "preflight_code_revision",
                 "config",
                 "price",
@@ -426,6 +428,7 @@ class PostgresRepository:
               FROM reckoner.runs candidate
               WHERE candidate.purpose = 'pilot'
                 AND candidate.execution_mode = 'paid'
+                AND candidate.provider_call_mode = 'measured'
                 AND candidate.config_id = %s
                 AND candidate.bundle_id = %s
                 AND (SELECT count(*) FROM reckoner.tasks t
@@ -437,6 +440,18 @@ class PostgresRepository:
                 AND (SELECT count(*) FROM reckoner.budget_entries b
                      WHERE b.run_id = candidate.run_id
                        AND b.status = 'settled' AND b.usage IS NOT NULL) = 20
+                AND (SELECT count(*) FROM reckoner.runner_telemetry_outbox o
+                     WHERE o.run_id = candidate.run_id AND o.status = 'exported') = 20
+                AND NOT EXISTS (
+                  SELECT 1 FROM reckoner.tasks t
+                  WHERE t.run_id = candidate.run_id
+                    AND (t.request_document IS NULL OR length(t.request_sha256) <> 64
+                      OR t.input_token_estimate IS NULL
+                      OR t.reservation_input_tokens IS NULL
+                      OR t.reservation_cost IS NULL OR length(t.trace_id) <> 32
+                      OR length(t.span_id) <> 16 OR length(t.provider_span_id) <> 16
+                      OR t.event_id IS NULL)
+                )
             ) AS satisfied
             """,
             (context["config_id"], context["bundle_id"]),
@@ -444,15 +459,22 @@ class PostgresRepository:
         return bool(row["satisfied"])
 
     def persist_preflight(
-        self, run_id: str, code_revision: str, plans: list[dict[str, Any]]
+        self,
+        run_id: str,
+        code_revision: str,
+        provider_call_mode: str,
+        plans: list[dict[str, Any]],
     ) -> None:
         """Insert or compare all request estimates as one immutable preflight."""
         if not code_revision:
             raise ValueError("code revision is required")
+        if provider_call_mode not in {"fake", "measured"}:
+            raise ValueError("invalid provider call mode")
         with self._connection.transaction():
             cursor = self._connection.cursor()
             runs = cursor.execute(
-                "SELECT preflight_code_revision FROM reckoner.runs WHERE run_id = %s FOR UPDATE",
+                "SELECT preflight_code_revision, provider_call_mode FROM reckoner.runs "
+                "WHERE run_id = %s FOR UPDATE",
                 (run_id,),
             ).fetchall()
             if not runs:
@@ -460,19 +482,24 @@ class PostgresRepository:
             revisions = {row["preflight_code_revision"] for row in runs}
             if revisions - {None, code_revision}:
                 raise ValueError("preflight code revision changed")
+            modes = {row["provider_call_mode"] for row in runs}
+            if modes - {None, provider_call_mode}:
+                raise ValueError("preflight provider call mode changed")
             cursor.execute(
                 """
                 UPDATE reckoner.runs
-                SET preflight_code_revision = %s, preflight_at = COALESCE(preflight_at, now())
+                SET preflight_code_revision = %s, provider_call_mode = %s,
+                    preflight_at = COALESCE(preflight_at, now())
                 WHERE run_id = %s
                 """,
-                (code_revision, run_id),
+                (code_revision, provider_call_mode, run_id),
             )
             for plan in plans:
                 row = cursor.execute(
                     """
                     SELECT status, request_document, request_sha256, input_token_estimate,
-                           reservation_input_tokens, reservation_cost, trace_id, span_id, event_id
+                           reservation_input_tokens, reservation_cost, trace_id, span_id,
+                           provider_span_id, event_id
                     FROM reckoner.tasks
                     WHERE tenant_id = %s AND run_id = %s AND task_id = %s
                     FOR UPDATE
@@ -489,6 +516,7 @@ class PostgresRepository:
                     "reservation_cost": plan["reservation_cost"],
                     "trace_id": plan["trace_id"],
                     "span_id": plan["span_id"],
+                    "provider_span_id": plan["provider_span_id"],
                     "event_id": plan["event_id"],
                 }
                 if row["request_document"] is None:
@@ -497,7 +525,8 @@ class PostgresRepository:
                         UPDATE reckoner.tasks
                         SET request_document = %s, request_sha256 = %s,
                             input_token_estimate = %s, reservation_input_tokens = %s,
-                            reservation_cost = %s, trace_id = %s, span_id = %s, event_id = %s
+                            reservation_cost = %s, trace_id = %s, span_id = %s,
+                            provider_span_id = %s, event_id = %s
                         WHERE tenant_id = %s AND run_id = %s AND task_id = %s
                         """,
                         (
@@ -508,6 +537,7 @@ class PostgresRepository:
                             plan["reservation_cost"],
                             plan["trace_id"],
                             plan["span_id"],
+                            plan["provider_span_id"],
                             plan["event_id"],
                             plan["tenant_id"],
                             run_id,
@@ -517,24 +547,40 @@ class PostgresRepository:
                 elif any(row[key] != value for key, value in expected.items()):
                     raise ValueError("immutable preflight request identity mismatch")
 
-    def reconcile_dispatched(self, run_id: str) -> int:
-        """Turn crash-left dispatched attempts into durable uncertain evidence."""
+    def reconcile_dispatched(self) -> int:
+        """Turn every crash-left dispatched attempt into durable uncertain evidence."""
         with self._connection.transaction():
             cursor = self._connection.cursor()
+            cursor.execute("SELECT pg_advisory_xact_lock(%s)", (ACCOUNTING_LOCK,))
             rows = cursor.execute(
                 """
-                SELECT call_id FROM reckoner.attempts
-                WHERE run_id = %s AND status = 'dispatched'
-                FOR UPDATE
+                SELECT b.call_id FROM reckoner.budget_entries b
+                JOIN reckoner.attempts a ON a.call_id = b.call_id
+                WHERE a.status = 'dispatched'
+                ORDER BY b.call_id
+                FOR UPDATE OF b
                 """,
-                (run_id,),
             ).fetchall()
             for row in rows:
                 self._mark_attempt_uncertain(cursor, row["call_id"], "process_interrupted")
         return len(rows)
 
+    def has_uncertain_attempts(self) -> bool:
+        row = self._connection.execute(
+            "SELECT EXISTS (SELECT 1 FROM reckoner.attempts WHERE status = 'uncertain') "
+            "AS uncertain"
+        ).fetchone()
+        return bool(row["uncertain"])
+
     @staticmethod
     def _mark_attempt_uncertain(cursor: psycopg.Cursor, call_id: str, category: str) -> None:
+        budget = cursor.execute(
+            "SELECT tenant_id, run_id, task_id FROM reckoner.budget_entries "
+            "WHERE call_id = %s FOR UPDATE",
+            (call_id,),
+        ).fetchone()
+        if budget is None:
+            raise ValueError("unknown call identity")
         entry = cursor.execute(
             "SELECT tenant_id, run_id, task_id FROM reckoner.attempts "
             "WHERE call_id = %s FOR UPDATE",
@@ -573,7 +619,9 @@ class PostgresRepository:
 
     def mark_attempt_uncertain(self, call_id: str, category: str) -> None:
         with self._connection.transaction():
-            self._mark_attempt_uncertain(self._connection.cursor(), call_id, category)
+            cursor = self._connection.cursor()
+            cursor.execute("SELECT pg_advisory_xact_lock(%s)", (ACCOUNTING_LOCK,))
+            self._mark_attempt_uncertain(cursor, call_id, category)
 
     def set_run_status(self, run_id: str, status: str) -> None:
         if status not in {"pending", "running", "complete", "incomplete", "blocked"}:
@@ -654,9 +702,18 @@ class PostgresRepository:
 
         with self._connection.transaction():
             cursor = self._connection.cursor()
+            cursor.execute("SELECT pg_advisory_xact_lock(%s)", (ACCOUNTING_LOCK,))
+            budget = cursor.execute(
+                "SELECT call_id FROM reckoner.budget_entries WHERE call_id = %s FOR UPDATE",
+                (reservation["call_id"],),
+            ).fetchone()
+            if budget is None:
+                raise ValueError("unknown call identity")
             attempt = cursor.execute(
                 """
-                SELECT a.*, t.request_document, t.event_id, r.config_id, r.execution_mode,
+                SELECT a.*, t.request_document, t.event_id, t.span_id AS task_span_id,
+                       r.config_id, r.execution_mode,
+                       r.bundle_id, r.preflight_code_revision, r.provider_call_mode,
                        c.threshold_config_id, c.document AS config,
                        ch.cohort_id
                 FROM reckoner.attempts a
@@ -671,7 +728,7 @@ class PostgresRepository:
                   ON cm.tenant_id = t.tenant_id AND cm.transaction_id = t.transaction_id
                 JOIN reckoner.cohorts ch
                   ON ch.tenant_id = cm.tenant_id AND ch.cohort_id = cm.cohort_id
-                 AND ch.purpose = r.purpose
+                 AND ch.purpose = r.purpose AND ch.bundle_id = r.bundle_id
                 WHERE a.call_id = %s
                 FOR UPDATE OF a, t
                 """,
@@ -784,13 +841,31 @@ class PostgresRepository:
         ).fetchall()
         return [dict(row) for row in rows]
 
+    def set_outbox_status(self, run_id: str, event_ids: list[str], status: str) -> None:
+        """Durably record the local export outcome for runner-produced evidence."""
+        if status not in {"exported", "failed"}:
+            raise ValueError("invalid outbox status")
+        if not event_ids:
+            return
+        with self._connection.transaction():
+            rows = self._connection.execute(
+                """
+                UPDATE reckoner.runner_telemetry_outbox SET status = %s
+                WHERE run_id = %s AND event_id = ANY(%s)
+                RETURNING event_id
+                """,
+                (status, run_id, event_ids),
+            ).fetchall()
+            if {row["event_id"] for row in rows} != set(event_ids):
+                raise ValueError("outbox identity mismatch")
+
     def pending_tasks(self, run_id: str) -> list[dict]:
         rows = self._connection.execute(
             """
             SELECT t.tenant_id, t.run_id, t.task_id, x.document AS transaction, t.status,
                    t.request_document AS request, t.request_sha256,
                    t.input_token_estimate, t.reservation_input_tokens,
-                   t.reservation_cost, t.trace_id, t.span_id, t.event_id
+                   t.reservation_cost, t.trace_id, t.span_id, t.provider_span_id, t.event_id
             FROM reckoner.tasks t
             JOIN reckoner.transactions x
               ON x.tenant_id = t.tenant_id AND x.transaction_id = t.transaction_id

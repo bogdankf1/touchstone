@@ -112,7 +112,7 @@ class BudgetLedger:
                     Jsonb(task["request"]) if task.get("request") is not None else None,
                     task.get("request_sha256"),
                     task.get("trace_id"),
-                    task.get("span_id"),
+                    task.get("provider_span_id"),
                 ),
             )
             cursor.execute(

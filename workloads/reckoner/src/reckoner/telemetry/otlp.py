@@ -15,6 +15,11 @@ from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
     ExportTraceServiceResponse,
 )
 
+from reckoner.contracts import validate_document
+
+ROOT = Path(__file__).resolve().parents[5]
+MANIFEST_SCHEMA = ROOT / "contracts" / "schemas" / "otlp-export-manifest-v1.schema.json"
+
 
 def _atomic_write(path: Path, payload: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -37,31 +42,38 @@ def export_run(repo, run_id: str, output: Path) -> dict[str, Any]:
     """Write deterministic OTLP request files plus a checksum manifest."""
     output = Path(output)
     rows = repo.outbox_rows(run_id)
+    event_ids = [row["event_id"] for row in rows]
     requests = []
-    for index, row in enumerate(rows, start=1):
-        payload = bytes(row["payload"])
-        filename = f"{index:04d}-{row['event_id']}.pb"
-        _atomic_write(output / filename, payload)
-        requests.append(
-            {
-                "filename": filename,
-                "sha256": hashlib.sha256(payload).hexdigest(),
-                "event_id": row["event_id"],
-                "run_id": row["run_id"],
-                "tenant_id": row["tenant_id"],
-                "task_id": row["task_id"],
-            }
+    try:
+        for index, row in enumerate(rows, start=1):
+            payload = bytes(row["payload"])
+            filename = f"{index:04d}-{row['event_id']}.pb"
+            _atomic_write(output / filename, payload)
+            requests.append(
+                {
+                    "filename": filename,
+                    "sha256": hashlib.sha256(payload).hexdigest(),
+                    "event_id": row["event_id"],
+                    "run_id": row["run_id"],
+                    "tenant_id": row["tenant_id"],
+                    "task_id": row["task_id"],
+                }
+            )
+        manifest = {
+            "schema_version": "otlp-export-manifest-v1",
+            "otlp_protocol": "http/protobuf",
+            "request_count": len(requests),
+            "requests": requests,
+        }
+        validate_document(manifest, MANIFEST_SCHEMA)
+        _atomic_write(
+            output / "manifest.json",
+            (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode("utf-8"),
         )
-    manifest = {
-        "schema_version": "otlp-export-manifest-v1",
-        "otlp_protocol": "http/protobuf",
-        "request_count": len(requests),
-        "requests": requests,
-    }
-    _atomic_write(
-        output / "manifest.json",
-        (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode("utf-8"),
-    )
+    except BaseException:
+        repo.set_outbox_status(run_id, event_ids, "failed")
+        raise
+    repo.set_outbox_status(run_id, event_ids, "exported")
     return manifest
 
 
@@ -70,33 +82,44 @@ def _load_manifest(artifact_dir: Path) -> dict[str, Any]:
         manifest = json.loads((artifact_dir / "manifest.json").read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise ValueError("invalid OTLP export manifest") from error
-    if (
-        not isinstance(manifest, dict)
-        or manifest.get("schema_version") != "otlp-export-manifest-v1"
-    ):
+    try:
+        validate_document(manifest, MANIFEST_SCHEMA)
+    except Exception as error:
+        raise ValueError("invalid OTLP export manifest") from error
+    if manifest["request_count"] != len(manifest["requests"]):
         raise ValueError("invalid OTLP export manifest")
     return manifest
+
+
+def _validated_payloads(artifact_dir: Path, manifest: dict[str, Any]) -> list[bytes]:
+    root = artifact_dir.resolve()
+    payloads = []
+    for item in manifest["requests"]:
+        path = (root / item["filename"]).resolve()
+        if path.parent != root:
+            raise ValueError("OTLP manifest path escapes artifact directory")
+        try:
+            payload = path.read_bytes()
+        except OSError as error:
+            raise ValueError("invalid OTLP export manifest path") from error
+        if hashlib.sha256(payload).hexdigest() != item["sha256"]:
+            raise ValueError("OTLP export checksum mismatch")
+        payloads.append(payload)
+    return payloads
 
 
 def replay(artifact_dir: Path, endpoint: str) -> dict[str, int]:
     """POST exact stored request bytes and account for OTLP partial success."""
     artifact_dir = Path(artifact_dir)
     manifest = _load_manifest(artifact_dir)
-    requests = manifest.get("requests")
-    if not isinstance(requests, list):
-        raise ValueError("invalid OTLP export manifest")
+    requests = manifest["requests"]
+    payloads = _validated_payloads(artifact_dir, manifest)
     url = endpoint.rstrip("/")
     if not url.endswith("/v1/traces"):
         url += "/v1/traces"
     sent = 0
     rejected = 0
-    for item in requests:
-        try:
-            payload = (artifact_dir / item["filename"]).read_bytes()
-        except (KeyError, OSError, TypeError) as error:
-            raise ValueError("invalid OTLP export request") from error
-        if hashlib.sha256(payload).hexdigest() != item.get("sha256"):
-            raise ValueError("OTLP export checksum mismatch")
+    for payload in payloads:
         request = urllib.request.Request(
             url,
             data=payload,

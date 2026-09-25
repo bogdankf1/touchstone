@@ -1,10 +1,14 @@
+import time
+from datetime import UTC, datetime
 from decimal import Decimal
-from threading import Barrier, Thread
+from threading import Barrier, Event, Thread
 
+import psycopg
 import pytest
 from conftest import seed_run
-from reckoner.storage.budget import BudgetExceeded, BudgetLedger
+from reckoner.storage.budget import ACCOUNTING_LOCK, BudgetExceeded, BudgetLedger
 from reckoner.storage.postgres import PostgresRepository
+from test_runner import FakeProvider, _create_four_task_run, _runner
 
 pytestmark = pytest.mark.integration
 
@@ -129,3 +133,102 @@ def test_below_cap_overage_blocks_dispatch_after_repository_restart(pg):
         assert ledger.remaining() == Decimal("8.99")
         with pytest.raises(BudgetExceeded, match="overage"):
             ledger.reserve(second, Decimal("0.01"))
+
+
+def test_atomic_finish_waits_for_the_same_accounting_lock_as_ledger_settlement(pg):
+    runner = _runner()
+    _create_four_task_run(pg, "finish-accounting-lock", task_limit=1)
+    provider = FakeProvider()
+    with PostgresRepository(pg.runner_dsn) as repo:
+        runner.preflight(repo, provider, "finish-accounting-lock")
+        task = repo.pending_tasks("finish-accounting-lock")[0]
+        reservation = BudgetLedger(repo).reserve(task, Decimal(task["reservation_cost"]))
+    started = Event()
+    finished = Event()
+    errors = []
+    with psycopg.connect(pg.runner_dsn, autocommit=True) as blocker:
+        blocker.execute("SELECT pg_advisory_lock(%s)", (ACCOUNTING_LOCK,))
+
+        def finish():
+            try:
+                with PostgresRepository(pg.runner_dsn) as repo:
+                    started.set()
+                    now = datetime.now(UTC).isoformat()
+                    repo.finish_attempt(
+                        reservation,
+                        provider.result,
+                        None,
+                        {"started_at": now, "ended_at": now, "duration_ms": 0},
+                    )
+            except Exception as error:  # pragma: no cover - asserted below
+                errors.append(error)
+            finally:
+                finished.set()
+
+        thread = Thread(target=finish)
+        thread.start()
+        assert started.wait(2)
+        time.sleep(0.2)
+        assert not finished.is_set()
+        blocker.execute("SELECT pg_advisory_unlock(%s)", (ACCOUNTING_LOCK,))
+        thread.join(5)
+    assert not thread.is_alive()
+    assert errors == []
+
+
+def test_overage_completion_serializes_before_competing_reservation(pg):
+    runner = _runner()
+    _create_four_task_run(pg, "overage-finish", task_limit=1)
+    _create_four_task_run(pg, "overage-next", task_limit=1)
+    provider = FakeProvider()
+    with PostgresRepository(pg.runner_dsn) as repo:
+        runner.preflight(repo, provider, "overage-finish")
+        runner.preflight(repo, provider, "overage-next")
+    with psycopg.connect(pg.owner_dsn) as owner:
+        owner.execute(
+            "UPDATE reckoner.tasks SET reservation_cost = 0 WHERE run_id = 'overage-finish'"
+        )
+    with PostgresRepository(pg.runner_dsn) as repo:
+        first = repo.pending_tasks("overage-finish")[0]
+        second = repo.pending_tasks("overage-next")[0]
+        reservation = BudgetLedger(repo).reserve(first, Decimal("0"))
+
+    outcomes = []
+    with psycopg.connect(pg.owner_dsn) as row_blocker:
+        row_blocker.execute(
+            "SELECT 1 FROM reckoner.attempts WHERE call_id = %s FOR UPDATE",
+            (reservation["call_id"],),
+        )
+
+        def finish():
+            with PostgresRepository(pg.runner_dsn) as repo:
+                now = datetime.now(UTC).isoformat()
+                repo.finish_attempt(
+                    reservation,
+                    provider.result,
+                    None,
+                    {"started_at": now, "ended_at": now, "duration_ms": 0},
+                )
+                outcomes.append("finished")
+
+        def reserve():
+            with PostgresRepository(pg.runner_dsn) as repo:
+                try:
+                    BudgetLedger(repo).reserve(second, Decimal(second["reservation_cost"]))
+                except BudgetExceeded:
+                    outcomes.append("blocked")
+                else:
+                    outcomes.append("reserved")
+
+        finish_thread = Thread(target=finish)
+        reserve_thread = Thread(target=reserve)
+        finish_thread.start()
+        time.sleep(0.2)
+        reserve_thread.start()
+        time.sleep(0.2)
+        row_blocker.rollback()
+        finish_thread.join(5)
+        reserve_thread.join(5)
+    assert not finish_thread.is_alive()
+    assert not reserve_thread.is_alive()
+    assert outcomes == ["finished", "blocked"]

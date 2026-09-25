@@ -13,7 +13,7 @@ from opentelemetry.exporter.otlp.proto.common.trace_encoder import encode_spans
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import IdGenerator, ReadableSpan, TracerProvider
 from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult, SpanProcessor
-from opentelemetry.trace import Status, StatusCode
+from opentelemetry.trace import Status, StatusCode, set_span_in_context
 
 from reckoner.contracts import validate_document
 
@@ -22,12 +22,12 @@ MEASUREMENT_SCHEMA = ROOT / "contracts" / "schemas" / "measurement-v1.schema.jso
 
 
 class _FixedIdGenerator(IdGenerator):
-    def __init__(self, trace_id: str, span_id: str):
+    def __init__(self, trace_id: str, span_ids: Sequence[str]):
         self._trace_id = int(trace_id, 16)
-        self._span_id = int(span_id, 16)
+        self._span_ids = iter(int(span_id, 16) for span_id in span_ids)
 
     def generate_span_id(self) -> int:
-        return self._span_id
+        return next(self._span_ids)
 
     def generate_trace_id(self) -> int:
         return self._trace_id
@@ -114,7 +114,7 @@ def _attributes(
         "touchstone.event_id": attempt["event_id"],
         "touchstone.call_id": attempt["call_id"],
         "touchstone.simulated": True,
-        "touchstone.provider.mode": ("fake" if attempt["execution_mode"] == "test" else "measured"),
+        "touchstone.provider_call_mode": attempt["provider_call_mode"],
         "touchstone.status": status,
         "touchstone.price_table_version": price_table_version,
     }
@@ -136,6 +136,53 @@ def _attributes(
     return attributes
 
 
+def _reproducibility(attempt: dict) -> dict[str, str | None]:
+    return {
+        "experiment_version": "baseline-v0",
+        "cohort_version": attempt["cohort_id"],
+        "config_version": attempt["config_id"],
+        "code_revision": attempt["preflight_code_revision"],
+        "prompt_version": attempt["config"]["prompt_version"],
+        "model_version": attempt["request_document"]["model"],
+        "scorer_version": None,
+        "dataset_version": attempt["bundle_id"],
+        "graph_version": None,
+    }
+
+
+def _measurement(
+    *, attempt: dict, event_kind: str, span_id: str, occurred_at: str, payload: dict
+) -> dict:
+    return {
+        "schema_version": "measurement-v1",
+        "event_id": f"{attempt['event_id']}:{event_kind}",
+        "tenant_id": attempt["tenant_id"],
+        "workflow_id": "reckoner",
+        "workflow_version": "baseline-v0",
+        "run_id": attempt["run_id"],
+        "task_id": attempt["task_id"],
+        "trace_id": attempt["trace_id"],
+        "span_id": span_id,
+        "node_name": "task" if event_kind == "execution" else "provider.chat",
+        "event_kind": event_kind,
+        "occurred_at": occurred_at,
+        "simulated": attempt["provider_call_mode"] == "fake",
+        "reproducibility": _reproducibility(attempt),
+        "payload": payload,
+    }
+
+
+def _cached_tokens(usage: dict | None) -> int | None:
+    if usage is None:
+        return None
+    values = [usage.get("cache_read_tokens"), usage.get("cache_creation_tokens")]
+    if not all(
+        isinstance(value, int) and not isinstance(value, bool) and value >= 0 for value in values
+    ):
+        return None
+    return sum(values)
+
+
 def store_provider_span(
     cursor,
     *,
@@ -148,16 +195,35 @@ def store_provider_span(
     usage: dict | None,
     price_table_version: str,
 ) -> None:
-    """End, encode, and insert one provider span using the caller's transaction."""
+    """End, encode, and insert linked task/provider spans in the caller transaction."""
     capture = _CaptureProcessor()
     provider = TracerProvider(
         resource=Resource.create({"service.name": "reckoner", "service.version": "baseline-v0"}),
-        id_generator=_FixedIdGenerator(attempt["trace_id"], attempt["span_id"]),
+        id_generator=_FixedIdGenerator(
+            attempt["trace_id"], [attempt["task_span_id"], attempt["span_id"]]
+        ),
     )
     provider.add_span_processor(capture)
     tracer = provider.get_tracer("reckoner.baseline", "1.0")
+    task_span = tracer.start_span(
+        "reckoner.task",
+        start_time=_nanoseconds(timing["started_at"]),
+        attributes={
+            "touchstone.workflow_id": "reckoner",
+            "touchstone.workflow_version": "baseline-v0",
+            "touchstone.tenant_id": attempt["tenant_id"],
+            "touchstone.run_id": attempt["run_id"],
+            "touchstone.task_id": attempt["task_id"],
+            "touchstone.config_id": attempt["config_id"],
+            "touchstone.cohort_id": attempt["cohort_id"],
+            "touchstone.event_id": attempt["event_id"],
+            "touchstone.simulated": attempt["provider_call_mode"] == "fake",
+            "touchstone.status": status,
+        },
+    )
     span = tracer.start_span(
         "reckoner.provider.chat",
+        context=set_span_in_context(task_span),
         start_time=_nanoseconds(timing["started_at"]),
         attributes=_attributes(
             attempt=attempt,
@@ -169,10 +235,59 @@ def store_provider_span(
             price_table_version=price_table_version,
         ),
     )
+    add_measurement_event(
+        task_span,
+        _measurement(
+            attempt=attempt,
+            event_kind="execution",
+            span_id=attempt["task_span_id"],
+            occurred_at=timing["ended_at"],
+            payload={
+                "started_at": timing["started_at"],
+                "ended_at": timing["ended_at"],
+                "duration_ms": timing["duration_ms"],
+                "status": "completed" if status == "completed" else "failed",
+                "attempt_number": 1,
+                "parent_task_id": None,
+                "parent_span_id": None,
+                "provider": None,
+                "model": None,
+            },
+        ),
+    )
+    input_tokens = usage.get("input_tokens") if usage is not None else None
+    output_tokens = usage.get("output_tokens") if usage is not None else None
+    add_measurement_event(
+        span,
+        _measurement(
+            attempt=attempt,
+            event_kind="provider_usage",
+            span_id=attempt["span_id"],
+            occurred_at=timing["ended_at"],
+            payload={
+                "provider": "anthropic",
+                "model": (
+                    result.get("reported_model")
+                    if result is not None and isinstance(result.get("reported_model"), str)
+                    else attempt["request_document"]["model"]
+                ),
+                "call_id": attempt["call_id"],
+                "input_tokens": input_tokens if isinstance(input_tokens, int) else None,
+                "output_tokens": output_tokens if isinstance(output_tokens, int) else None,
+                "cached_tokens": _cached_tokens(usage),
+                "cost_status": "actual" if actual_cost is not None else "unavailable",
+                "cost_amount": format(actual_cost, "f") if actual_cost is not None else None,
+                "currency": "USD" if actual_cost is not None else None,
+                "price_table_version": (price_table_version if actual_cost is not None else None),
+            },
+        ),
+    )
     span.set_status(Status(StatusCode.OK if status == "completed" else StatusCode.ERROR))
     span.end(end_time=_nanoseconds(timing["ended_at"]))
-    if len(capture.spans) != 1:
-        raise RuntimeError("provider span did not end synchronously")
+    task_span.set_status(Status(StatusCode.OK if status == "completed" else StatusCode.ERROR))
+    task_span.end(end_time=_nanoseconds(timing["ended_at"]))
+    if len(capture.spans) != 2:
+        raise RuntimeError("task/provider spans did not end synchronously")
 
     def insert(payload: bytes) -> None:
         cursor.execute(

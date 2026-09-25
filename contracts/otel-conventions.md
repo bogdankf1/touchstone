@@ -4,6 +4,8 @@ Reckoner v0 records provider evidence as one serialized OTLP
 `ExportTraceServiceRequest` per completed or failed provider attempt. The project pins the
 OpenTelemetry GenAI semantic convention document version to **v1.37.0**. This is the project's
 chosen version and is not a claim that v1.37.0 is the latest convention.
+The vocabulary comes from the upstream
+[v1.37.0 GenAI span conventions](https://github.com/open-telemetry/semantic-conventions/blob/v1.37.0/docs/gen-ai/gen-ai-spans.md).
 
 The runtime pins `opentelemetry-sdk` and `opentelemetry-proto` to 1.37.0 and
 `opentelemetry-semantic-conventions` to 0.58b0. Provider spans use
@@ -14,7 +16,8 @@ Project attributes use the `touchstone.*` namespace for workflow, tenant, run, t
 cohort, event, and call identities. Traces never contain prompts, model response bodies,
 credentials, source records, or oracle labels. A measured task uses a genuine 16-byte trace ID
 and 8-byte span ID persisted before dispatch. Explicit fake-mode test runs remain distinguishable
-through their durable run mode and never satisfy a paid-pilot gate.
+through durable run mode and the `touchstone.provider_call_mode=fake` attribute, and never satisfy
+a paid-pilot gate.
 
 Generic `measurement-v1` JSON documents are validated against
 `contracts/schemas/measurement-v1.schema.json`, encoded as named

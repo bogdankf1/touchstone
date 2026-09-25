@@ -74,6 +74,7 @@ def test_import_and_create_run_are_idempotent_and_create_every_two_tenant_task(p
             "reservation_cost",
             "trace_id",
             "span_id",
+            "provider_span_id",
             "event_id",
         }
         for task in tasks

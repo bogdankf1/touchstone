@@ -8,6 +8,7 @@ import subprocess
 import time
 from datetime import UTC, datetime
 from decimal import Decimal
+from pathlib import Path
 
 from reckoner.baseline.pricing import (
     native_request_bytes,
@@ -17,12 +18,27 @@ from reckoner.baseline.pricing import (
 from reckoner.baseline.prompt import build_request
 from reckoner.storage.budget import BudgetExceeded, BudgetLedger
 
+ROOT = Path(__file__).resolve().parents[5]
+
+
+def _relevant_source_files() -> list[Path]:
+    """Return files whose bytes determine measured runner behavior."""
+    patterns = (
+        (ROOT / "workloads" / "reckoner" / "src", "*.py"),
+        (ROOT / "workloads" / "reckoner" / "src", "*.sql"),
+        (ROOT / "workloads" / "reckoner" / "config", "*.json"),
+        (ROOT / "contracts" / "schemas", "*.json"),
+    )
+    files = [path for root, pattern in patterns for path in root.rglob(pattern) if path.is_file()]
+    files.extend((ROOT / "workloads" / "reckoner" / "pyproject.toml", ROOT / "uv.lock"))
+    return sorted((path for path in files if path.is_file()), key=lambda path: str(path))
+
 
 def _code_revision() -> str:
     """Return the immutable source revision recorded for a measured run."""
     try:
         result = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
+            ["git", "-C", str(ROOT), "rev-parse", "HEAD"],
             check=True,
             capture_output=True,
             text=True,
@@ -33,7 +49,17 @@ def _code_revision() -> str:
     revision = result.stdout.strip()
     if not revision:
         raise ValueError("code revision is unavailable")
-    return revision
+    digest = hashlib.sha256()
+    for path in _relevant_source_files():
+        try:
+            name = path.relative_to(ROOT).as_posix()
+        except ValueError:
+            name = path.as_posix()
+        digest.update(name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return f"{revision}:{digest.hexdigest()}"
 
 
 def _validate_provider(context: dict, provider: object) -> None:
@@ -90,6 +116,7 @@ def preflight(repo, provider, run_id: str) -> dict:
                     "reservation_cost": Decimal(task["reservation_cost"]),
                     "trace_id": task["trace_id"],
                     "span_id": task["span_id"],
+                    "provider_span_id": task["provider_span_id"],
                     "event_id": task["event_id"],
                 }
             )
@@ -108,6 +135,7 @@ def preflight(repo, provider, run_id: str) -> dict:
                 "reservation_cost": maximum,
                 "trace_id": secrets.token_hex(16),
                 "span_id": secrets.token_hex(8),
+                "provider_span_id": secrets.token_hex(8),
                 "event_id": secrets.token_hex(16),
             }
         )
@@ -120,7 +148,8 @@ def preflight(repo, provider, run_id: str) -> dict:
     if context["purpose"] == "pilot" and total > ledger.pilot_remaining():
         repo.set_run_status(run_id, "blocked")
         raise BudgetExceeded("remaining pilot funds do not cover preflight")
-    repo.persist_preflight(run_id, revision, plans)
+    call_mode = "fake" if provider.is_fake is True else "measured"
+    repo.persist_preflight(run_id, revision, call_mode, plans)
     return {
         "pending": len(plans),
         "reservation_total": format(total, "f"),
@@ -148,11 +177,17 @@ def execute_run(repo, provider, run_id: str) -> dict:
         if context["preflight_code_revision"] != revision:
             raise ValueError("preflight code revision changed")
 
-        if repo.reconcile_dispatched(run_id):
+        repo.reconcile_dispatched()
+        if repo.has_uncertain_attempts():
             return _counts(repo, run_id)
-        state = _counts(repo, run_id)
-        if state["uncertain"]:
-            return state
+
+        if (
+            context["execution_mode"] == "paid"
+            and context["purpose"] == "baseline"
+            and not repo.pilot_gate_satisfied(run_id)
+        ):
+            repo.set_run_status(run_id, "blocked")
+            return _counts(repo, run_id)
 
         tasks = repo.pending_tasks(run_id)
         for task in tasks:
