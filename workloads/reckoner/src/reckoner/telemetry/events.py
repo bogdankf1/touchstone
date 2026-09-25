@@ -13,7 +13,14 @@ from opentelemetry.exporter.otlp.proto.common.trace_encoder import encode_spans
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import IdGenerator, ReadableSpan, TracerProvider
 from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult, SpanProcessor
-from opentelemetry.trace import Status, StatusCode, set_span_in_context
+from opentelemetry.trace import (
+    NonRecordingSpan,
+    SpanContext,
+    Status,
+    StatusCode,
+    TraceFlags,
+    set_span_in_context,
+)
 
 from reckoner.contracts import validate_document
 
@@ -78,10 +85,10 @@ def encode_measurement_event(document: dict[str, Any]) -> tuple[str, str]:
     return f"touchstone.measurement.{document['event_kind']}", body
 
 
-def add_measurement_event(span, document: dict[str, Any]) -> None:
+def add_measurement_event(span, document: dict[str, Any], *, timestamp: int | None = None) -> None:
     """Attach one validated generic envelope as a named SDK span event."""
     name, body = encode_measurement_event(document)
-    span.add_event(name, {"touchstone.measurement.json": body})
+    span.add_event(name, {"touchstone.measurement.json": body}, timestamp=timestamp)
 
 
 def _nanoseconds(timestamp: str) -> int:
@@ -308,3 +315,175 @@ def store_provider_span(
     exported = DurableOTLPExporter(insert).export(capture.spans)
     if exported is not SpanExportResult.SUCCESS:
         raise RuntimeError("OTLP serialization failed")
+
+
+def store_evaluation_span(
+    cursor, *, row: dict[str, Any], result: dict[str, Any], evaluation_id: str
+) -> None:
+    """Store one label-free evaluator span through the evaluator-only checked view."""
+    if not row.get("trace_id") or not row.get("task_span_id"):
+        raise ValueError("evaluation requires persisted task trace identity")
+    span_id = evaluation_id[:16]
+    capture = _CaptureProcessor()
+    provider = TracerProvider(
+        resource=Resource.create({"service.name": "reckoner", "service.version": "baseline-v0"}),
+        id_generator=_FixedIdGenerator(row["trace_id"], [span_id]),
+    )
+    provider.add_span_processor(capture)
+    parent = NonRecordingSpan(
+        SpanContext(
+            trace_id=int(row["trace_id"], 16),
+            span_id=int(row["task_span_id"], 16),
+            is_remote=False,
+            trace_flags=TraceFlags(TraceFlags.SAMPLED),
+        )
+    )
+    tracer = provider.get_tracer("reckoner.evaluator", "1.0")
+    timestamp = _nanoseconds(row["occurred_at"])
+    span = tracer.start_span(
+        "reckoner.evaluate",
+        context=set_span_in_context(parent),
+        start_time=timestamp,
+        attributes={
+            "touchstone.workflow_id": "reckoner",
+            "touchstone.workflow_version": "baseline-v0",
+            "touchstone.tenant_id": row["tenant_id"],
+            "touchstone.run_id": row["run_id"],
+            "touchstone.task_id": row["task_id"],
+            "touchstone.config_id": row["config_id"],
+            "touchstone.evaluation_id": evaluation_id,
+            "touchstone.simulated": True,
+            "touchstone.status": result["required_suite_status"],
+        },
+    )
+    reproduction = {
+        "experiment_version": "baseline-v0",
+        "cohort_version": row["cohort_id"],
+        "config_version": row["config_id"],
+        "code_revision": row["preflight_code_revision"],
+        "prompt_version": row["config"]["prompt_version"],
+        "model_version": row["config"]["model"],
+        "scorer_version": result["evaluator_version"],
+        "dataset_version": row["bundle_id"],
+        "graph_version": None,
+    }
+
+    def measurement(event_kind: str, suffix: str, payload: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "schema_version": "measurement-v1",
+            "event_id": f"{evaluation_id}:{suffix}",
+            "tenant_id": row["tenant_id"],
+            "workflow_id": "reckoner",
+            "workflow_version": "baseline-v0",
+            "run_id": row["run_id"],
+            "task_id": row["task_id"],
+            "trace_id": row["trace_id"],
+            "span_id": span_id,
+            "node_name": "evaluate",
+            "event_kind": event_kind,
+            "occurred_at": row["occurred_at"],
+            "simulated": True,
+            "reproducibility": reproduction,
+            "payload": payload,
+        }
+
+    add_measurement_event(
+        span,
+        measurement(
+            "outcome",
+            "outcome",
+            {
+                key: result[key]
+                for key in (
+                    "status",
+                    "correct",
+                    "review_cost",
+                    "error_cost",
+                    "currency",
+                    "outcome_version",
+                    "evaluator_version",
+                )
+            },
+        ),
+        timestamp=timestamp,
+    )
+    for suite_id, metric_id, status, score in (
+        (
+            "response-schema-v1",
+            "response_schema_validity",
+            "pass" if result["schema_valid"] else "error",
+            1 if result["schema_valid"] else None,
+        ),
+        (
+            "required-quality-v1",
+            "decision_correctness",
+            result["required_suite_status"],
+            1 if result["correct"] is True else (0 if result["correct"] is False else None),
+        ),
+    ):
+        add_measurement_event(
+            span,
+            measurement(
+                "evaluation",
+                f"evaluation:{metric_id}",
+                {
+                    "suite_id": suite_id,
+                    "case_id": row["task_id"],
+                    "metric_id": metric_id,
+                    "score": score,
+                    "threshold": 1,
+                    "status": status,
+                    "judge_model_version": None,
+                    "judge_prompt_version": None,
+                    "supporting_references": [],
+                },
+            ),
+            timestamp=timestamp,
+        )
+    for metric_id, contribution in result["rate_contributions"].items():
+        add_measurement_event(
+            span,
+            measurement(
+                "metric_contribution",
+                f"metric:{metric_id}",
+                {
+                    "metric_id": metric_id,
+                    "numerator": contribution["numerator"],
+                    "denominator": contribution["denominator"],
+                    "unit": "decision",
+                    "definition_version": "reckoner-metrics-v1",
+                    "cost_component_id": None,
+                },
+            ),
+            timestamp=timestamp,
+        )
+    span.set_status(
+        Status(StatusCode.ERROR if result["required_suite_status"] == "error" else StatusCode.OK)
+    )
+    span.end(end_time=timestamp)
+    if len(capture.spans) != 1:
+        raise RuntimeError("evaluation span did not end synchronously")
+
+    def insert(payload: bytes) -> None:
+        cursor.execute(
+            """
+            INSERT INTO reckoner.evaluator_telemetry_outbox
+              (tenant_id, event_id, run_id, task_id, payload, producer)
+            VALUES (%s, %s, %s, %s, %s, 'evaluator')
+            ON CONFLICT (tenant_id, event_id) DO NOTHING
+            """,
+            (row["tenant_id"], evaluation_id, row["run_id"], row["task_id"], payload),
+        )
+        existing = cursor.execute(
+            """
+            SELECT payload FROM reckoner.evaluator_telemetry_outbox
+            WHERE tenant_id = %s AND event_id = %s
+            """,
+            (row["tenant_id"], evaluation_id),
+        ).fetchone()
+        if existing is None or bytes(existing["payload"]) != payload:
+            raise ValueError("immutable evaluation telemetry identity mismatch")
+
+    exported = DurableOTLPExporter(insert).export(capture.spans)
+    if exported is not SpanExportResult.SUCCESS:
+        raise RuntimeError("evaluation OTLP serialization failed")

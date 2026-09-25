@@ -38,10 +38,9 @@ def _atomic_write(path: Path, payload: bytes) -> None:
         raise
 
 
-def export_run(repo, run_id: str, output: Path) -> dict[str, Any]:
-    """Write deterministic OTLP request files plus a checksum manifest."""
+def _export(repo, run_id: str, output: Path, *, evaluator: bool) -> dict[str, Any]:
     output = Path(output)
-    rows = repo.outbox_rows(run_id)
+    rows = repo.evaluation_outbox_rows(run_id) if evaluator else repo.outbox_rows(run_id)
     event_ids = [row["event_id"] for row in rows]
     requests = []
     try:
@@ -71,10 +70,26 @@ def export_run(repo, run_id: str, output: Path) -> dict[str, Any]:
             (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode("utf-8"),
         )
     except BaseException:
-        repo.set_outbox_status(run_id, event_ids, "failed")
+        if evaluator:
+            repo.set_evaluation_outbox_status(run_id, event_ids, "failed")
+        else:
+            repo.set_outbox_status(run_id, event_ids, "failed")
         raise
-    repo.set_outbox_status(run_id, event_ids, "exported")
+    if evaluator:
+        repo.set_evaluation_outbox_status(run_id, event_ids, "exported")
+    else:
+        repo.set_outbox_status(run_id, event_ids, "exported")
     return manifest
+
+
+def export_run(repo, run_id: str, output: Path) -> dict[str, Any]:
+    """Export runner evidence using only the runner-filtered outbox view."""
+    return _export(repo, run_id, output, evaluator=False)
+
+
+def export_evaluations(repo, run_id: str, output: Path) -> dict[str, Any]:
+    """Export evaluator evidence using only the evaluator-filtered outbox view."""
+    return _export(repo, run_id, output, evaluator=True)
 
 
 def _load_manifest(artifact_dir: Path) -> dict[str, Any]:

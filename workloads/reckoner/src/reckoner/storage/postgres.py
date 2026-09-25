@@ -31,6 +31,18 @@ def _plain(value: Any) -> Any:
     return value
 
 
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, tuple | list):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, Decimal):
+        return format(value, "f")
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return value
+
+
 def _read_json(path: Path) -> dict[str, Any]:
     document = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(document, dict):
@@ -882,6 +894,34 @@ class PostgresRepository:
             if {row["event_id"] for row in rows} != set(event_ids):
                 raise ValueError("outbox identity mismatch")
 
+    def evaluation_outbox_rows(self, run_id: str) -> list[dict[str, Any]]:
+        rows = self._connection.execute(
+            """
+            SELECT tenant_id, event_id, run_id, task_id, status, payload, created_at
+            FROM reckoner.evaluator_telemetry_outbox
+            WHERE run_id = %s ORDER BY tenant_id, event_id
+            """,
+            (run_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def set_evaluation_outbox_status(self, run_id: str, event_ids: list[str], status: str) -> None:
+        if status not in {"exported", "failed"}:
+            raise ValueError("invalid outbox status")
+        if not event_ids:
+            return
+        with self._connection.transaction():
+            rows = self._connection.execute(
+                """
+                UPDATE reckoner.evaluator_telemetry_outbox SET status = %s
+                WHERE run_id = %s AND event_id = ANY(%s)
+                RETURNING event_id
+                """,
+                (status, run_id, event_ids),
+            ).fetchall()
+            if {row["event_id"] for row in rows} != set(event_ids):
+                raise ValueError("evaluation outbox identity mismatch")
+
     def pending_tasks(self, run_id: str) -> list[dict]:
         rows = self._connection.execute(
             """
@@ -926,6 +966,267 @@ class PostgresRepository:
         for status in ("pending", "dispatched", "completed", "failed", "uncertain"):
             result[status] = next((row["count"] for row in counts if row["status"] == status), 0)
         return result
+
+    def evaluation_inputs(self, run_id: str) -> list[dict[str, Any]]:
+        """Load fixed-denominator inputs through the evaluator role's oracle join."""
+        rows = self._connection.execute(
+            """
+            SELECT t.tenant_id, t.run_id, t.task_id, t.status AS task_status,
+                   x.document->>'amount_minor' AS amount_minor,
+                   o.label, d.outcome, tc.document AS thresholds,
+                   t.trace_id, t.span_id AS task_span_id,
+                   COALESCE(a.ended_at, r.preflight_at, r.created_at) AS occurred_at,
+                   r.config_id, r.bundle_id, r.preflight_code_revision,
+                   c.document AS config, ch.cohort_id
+            FROM reckoner.tasks t
+            JOIN reckoner.runs r
+              ON r.tenant_id = t.tenant_id AND r.run_id = t.run_id
+            JOIN reckoner.transactions x
+              ON x.tenant_id = t.tenant_id AND x.transaction_id = t.transaction_id
+            JOIN oracle.oracle_labels o
+              ON o.tenant_id = t.tenant_id AND o.transaction_id = t.transaction_id
+            JOIN reckoner.run_configs c
+              ON c.tenant_id = r.tenant_id AND c.config_id = r.config_id
+            JOIN reckoner.threshold_configs tc
+              ON tc.tenant_id = c.tenant_id AND tc.config_id = c.threshold_config_id
+            JOIN reckoner.cohort_members cm
+              ON cm.tenant_id = t.tenant_id AND cm.transaction_id = t.transaction_id
+            JOIN reckoner.cohorts ch
+              ON ch.tenant_id = cm.tenant_id AND ch.cohort_id = cm.cohort_id
+             AND ch.purpose = r.purpose AND ch.bundle_id = r.bundle_id
+            LEFT JOIN reckoner.decisions d
+              ON d.tenant_id = t.tenant_id AND d.run_id = t.run_id AND d.task_id = t.task_id
+            LEFT JOIN reckoner.attempts a
+              ON a.tenant_id = t.tenant_id AND a.run_id = t.run_id AND a.task_id = t.task_id
+            WHERE t.run_id = %s
+            ORDER BY t.tenant_id, t.task_id
+            """,
+            (run_id,),
+        ).fetchall()
+        if not rows:
+            raise ValueError("unknown run identity")
+        result = []
+        for row in rows:
+            document = dict(row)
+            parameters = document.pop("thresholds")["parameters"]
+            document["amount_minor"] = int(document["amount_minor"])
+            document["review_cost"] = Decimal(parameters["review_cost"])
+            document["margin_rate"] = Decimal(parameters["margin_rate"])
+            document["occurred_at"] = document["occurred_at"].isoformat()
+            result.append(document)
+        return result
+
+    def persist_evaluation(self, row: dict[str, Any], document: dict[str, Any]) -> None:
+        """Insert-or-compare one evaluation and its exact evaluator-only OTLP bytes."""
+        from reckoner.contracts import content_id
+        from reckoner.telemetry.events import store_evaluation_span
+
+        evaluation_id = content_id(
+            {
+                "tenant_id": row["tenant_id"],
+                "run_id": row["run_id"],
+                "task_id": row["task_id"],
+                "evaluator_version": document["evaluator_version"],
+            }
+        )
+        stored = _plain(document) | {
+            "label_class": row["label"],
+            "rate_contributions": {
+                "completion": {
+                    "numerator": int(row["task_status"] == "completed"),
+                    "denominator": 1,
+                },
+                "correctness": {"numerator": int(document["correct"] is True), "denominator": 1},
+                "false_positive": {
+                    "numerator": int(
+                        row["outcome"] == "auto-decline" and row["label"] == "legitimate"
+                    ),
+                    "denominator": int(row["label"] == "legitimate"),
+                },
+                "missed_fraud": {
+                    "numerator": int(row["outcome"] == "auto-approve" and row["label"] == "fraud"),
+                    "denominator": int(row["label"] == "fraud"),
+                },
+                "escalation": {"numerator": int(row["outcome"] == "escalate"), "denominator": 1},
+            },
+        }
+        with self._connection.transaction():
+            cursor = self._connection.cursor()
+            cursor.execute(
+                """
+                INSERT INTO reckoner.evaluations
+                  (tenant_id, run_id, task_id, evaluation_id, correct, document)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (tenant_id, run_id, task_id, evaluation_id) DO NOTHING
+                """,
+                (
+                    row["tenant_id"],
+                    row["run_id"],
+                    row["task_id"],
+                    evaluation_id,
+                    document["correct"],
+                    Jsonb(stored),
+                ),
+            )
+            existing = cursor.execute(
+                """
+                SELECT correct, document FROM reckoner.evaluations
+                WHERE tenant_id = %s AND run_id = %s AND task_id = %s AND evaluation_id = %s
+                """,
+                (row["tenant_id"], row["run_id"], row["task_id"], evaluation_id),
+            ).fetchone()
+            if existing != {"correct": document["correct"], "document": stored}:
+                raise ValueError("immutable evaluation identity mismatch")
+            store_evaluation_span(cursor, row=row, result=stored, evaluation_id=evaluation_id)
+
+    def report_snapshot(self, run_id: str) -> dict[str, Any]:
+        """Load evaluator-only report inputs without returning raw oracle records."""
+        context = self.run_context(run_id)
+        runs = self._connection.execute(
+            """
+            SELECT r.*, c.cohort_id
+            FROM reckoner.runs r
+            JOIN reckoner.cohorts c
+              ON c.tenant_id = r.tenant_id AND c.bundle_id = r.bundle_id
+             AND c.purpose = r.purpose
+            WHERE r.run_id = %s ORDER BY r.tenant_id
+            """,
+            (run_id,),
+        ).fetchall()
+        tasks = self._connection.execute(
+            """
+            SELECT t.tenant_id, t.task_id, t.status, label.label AS label_class
+            FROM reckoner.tasks t
+            JOIN LATERAL (
+              SELECT o.label FROM oracle.oracle_labels o
+              WHERE o.tenant_id = t.tenant_id AND o.transaction_id = t.transaction_id
+              ORDER BY o.oracle_version DESC LIMIT 1
+            ) label ON true
+            WHERE t.run_id = %s ORDER BY t.tenant_id, t.task_id
+            """,
+            (run_id,),
+        ).fetchall()
+        attempts = self._connection.execute(
+            "SELECT tenant_id, task_id, call_id, status, actual_cost, maximum_cost, duration_ms "
+            "FROM reckoner.attempts WHERE run_id = %s ORDER BY tenant_id, task_id, call_id",
+            (run_id,),
+        ).fetchall()
+        evaluations = self._connection.execute(
+            """
+            SELECT e.tenant_id, e.task_id, d.outcome, e.document
+            FROM reckoner.evaluations e
+            LEFT JOIN reckoner.decisions d
+              ON d.tenant_id = e.tenant_id AND d.run_id = e.run_id AND d.task_id = e.task_id
+            WHERE e.run_id = %s ORDER BY e.tenant_id, e.task_id
+            """,
+            (run_id,),
+        ).fetchall()
+        exports = self._connection.execute(
+            """
+            SELECT producer, status, event_id, task_id
+            FROM (
+              SELECT producer, status, event_id, task_id
+              FROM reckoner.runner_telemetry_outbox WHERE run_id = %s
+              UNION ALL
+              SELECT producer, status, event_id, task_id
+              FROM reckoner.evaluator_telemetry_outbox WHERE run_id = %s
+            ) evidence
+            ORDER BY producer, event_id
+            """,
+            (run_id, run_id),
+        ).fetchall()
+        statuses = {run["status"] for run in runs}
+        status = "complete" if statuses == {"complete"} else "incomplete"
+        config = context["config"]
+        return {
+            "run": {
+                "run_id": run_id,
+                "purpose": context["purpose"],
+                "status": status,
+                "config_id": context["config_id"],
+                "bundle_id": context["bundle_id"],
+                "prompt_version": config["prompt_version"],
+                "model": config["model"],
+                "price_table_version": config["price_table_version"],
+                "threshold_config_ids": config["threshold_config_ids"],
+                "cohort_ids": {run["tenant_id"]: run["cohort_id"] for run in runs},
+                "code_revision": context["preflight_code_revision"],
+                "created_at": min(run["created_at"] for run in runs).isoformat(),
+                "preflight_at": (
+                    min(run["preflight_at"] for run in runs).isoformat()
+                    if all(run["preflight_at"] is not None for run in runs)
+                    else None
+                ),
+            },
+            "tenants": [run["tenant_id"] for run in runs],
+            "tasks": [dict(item) for item in tasks],
+            "attempts": [dict(item) for item in attempts],
+            "evaluations": [
+                {
+                    "tenant_id": item["tenant_id"],
+                    "task_id": item["task_id"],
+                    "outcome": item["outcome"],
+                    "label_class": item["document"]["label_class"],
+                    "document": item["document"],
+                }
+                for item in evaluations
+            ],
+            "exports": [dict(item) for item in exports],
+        }
+
+    def readiness(self) -> str:
+        row = self._connection.execute(
+            "SELECT version FROM public.reckoner_schema_migrations ORDER BY version DESC LIMIT 1"
+        ).fetchone()
+        if row is None:
+            raise ValueError("schema is not migrated")
+        return row["version"]
+
+    def api_run_summary(self, tenant_id: str, run_id: str) -> dict[str, Any] | None:
+        row = self._connection.execute(
+            "SELECT * FROM reckoner.api_run_summaries WHERE tenant_id = %s AND run_id = %s",
+            (tenant_id, run_id),
+        ).fetchone()
+        if row is None:
+            return None
+        result = _json_safe(dict(row))
+        correct_count = result.pop("correct_count")
+        result["metrics"] = {
+            "correctness": (
+                {
+                    "numerator": correct_count,
+                    "denominator": result["expected_count"],
+                }
+                if result["evaluated_count"] == result["expected_count"]
+                else None
+            ),
+            "completion": {
+                "numerator": result["completed_count"],
+                "denominator": result["expected_count"],
+            },
+        }
+        return result
+
+    def api_results(
+        self, tenant_id: str, run_id: str, *, limit: int, offset: int
+    ) -> list[dict[str, Any]] | None:
+        exists = self._connection.execute(
+            "SELECT 1 FROM reckoner.api_runs WHERE tenant_id = %s AND run_id = %s",
+            (tenant_id, run_id),
+        ).fetchone()
+        if exists is None:
+            return None
+        rows = self._connection.execute(
+            """
+            SELECT task_id, transaction_id, status, decision_id, outcome,
+                   requested_model, reported_model, created_at
+            FROM reckoner.api_results
+            WHERE tenant_id = %s AND run_id = %s
+            ORDER BY task_id LIMIT %s OFFSET %s
+            """,
+            (tenant_id, run_id, limit, offset),
+        ).fetchall()
+        return [_json_safe(dict(row)) for row in rows]
 
     @contextmanager
     def exclusive_runner(self) -> Iterator[None]:

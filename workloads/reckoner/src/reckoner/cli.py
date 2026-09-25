@@ -11,7 +11,9 @@ import psycopg
 from jsonschema import ValidationError
 
 from reckoner.baseline.config import load_config
+from reckoner.baseline.evaluate import evaluate_run
 from reckoner.baseline.provider import AnthropicProvider, ProviderError
+from reckoner.baseline.report import build_report, write_report
 from reckoner.baseline.runner import execute_run, preflight
 from reckoner.contracts import content_id, validate_document
 from reckoner.data.artifacts import sha256_file, verify_bundle
@@ -19,7 +21,7 @@ from reckoner.data.cohort import prepare
 from reckoner.storage.budget import BudgetExceeded
 from reckoner.storage.migrate import migrate
 from reckoner.storage.postgres import PostgresRepository
-from reckoner.telemetry.otlp import export_run, replay
+from reckoner.telemetry.otlp import export_evaluations, export_run, replay
 
 ROOT = Path(__file__).resolve().parents[4]
 SCHEMAS = ROOT / "contracts" / "schemas"
@@ -76,6 +78,17 @@ def _parser() -> argparse.ArgumentParser:
     export_command.add_argument("--env-file", type=Path, required=True)
     export_command.add_argument("--run-id", required=True)
     export_command.add_argument("--output", type=Path, required=True)
+    evaluation_export_command = commands.add_parser("export-evaluations")
+    evaluation_export_command.add_argument("--env-file", type=Path, required=True)
+    evaluation_export_command.add_argument("--run-id", required=True)
+    evaluation_export_command.add_argument("--output", type=Path, required=True)
+    evaluate_command = commands.add_parser("evaluate")
+    evaluate_command.add_argument("--env-file", type=Path, required=True)
+    evaluate_command.add_argument("--run-id", required=True)
+    report_command = commands.add_parser("report")
+    report_command.add_argument("--env-file", type=Path, required=True)
+    report_command.add_argument("--run-id", required=True)
+    report_command.add_argument("--output", type=Path, required=True)
     replay_command = commands.add_parser("replay")
     replay_command.add_argument("--artifact-dir", type=Path, required=True)
     replay_command.add_argument("--endpoint", required=True)
@@ -203,6 +216,34 @@ def main(argv: list[str] | None = None) -> int:
                 raise ValueError("invalid environment")
             with PostgresRepository(runner_dsn) as repository:
                 result = export_run(repository, args.run_id, args.output)
+        elif args.command == "export-evaluations":
+            evaluator_dsn = _environment(args.env_file).get("RECKONER_EVALUATOR_DSN")
+            if not evaluator_dsn:
+                raise ValueError("invalid environment")
+            with PostgresRepository(evaluator_dsn) as repository:
+                result = export_evaluations(repository, args.run_id, args.output)
+        elif args.command == "evaluate":
+            evaluator_dsn = _environment(args.env_file).get("RECKONER_EVALUATOR_DSN")
+            if not evaluator_dsn:
+                raise ValueError("invalid environment")
+            with PostgresRepository(evaluator_dsn) as repository:
+                result = evaluate_run(repository, args.run_id)
+            if result["errors"]:
+                print(json.dumps(result, sort_keys=True))
+                return 3
+        elif args.command == "report":
+            evaluator_dsn = _environment(args.env_file).get("RECKONER_EVALUATOR_DSN")
+            if not evaluator_dsn:
+                raise ValueError("invalid environment")
+            with PostgresRepository(evaluator_dsn) as repository:
+                result = build_report(repository.report_snapshot(args.run_id))
+            write_report(result, args.output)
+            if result["aggregate"]["metrics"]["cpst"]["availability"] != "available":
+                print(
+                    json.dumps({"status": "incomplete", "output": str(args.output)}, sort_keys=True)
+                )
+                return 3
+            result = {"status": "reported", "output": str(args.output)}
         else:
             result = replay(args.artifact_dir, args.endpoint)
             if result["pending"]:
