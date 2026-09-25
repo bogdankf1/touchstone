@@ -11,7 +11,7 @@ package = false
 members = ["workloads/reckoner"]
 
 [dependency-groups]
-dev = ["pytest>=8,<10", "ruff>=0.11,<1", "jsonschema[format]>=4,<5", "httpx>=0.28,<1"]
+dev = ["pytest>=8,<10", "ruff>=0.11,<1", "jsonschema[format]>=4,<5", "httpx2>=2,<3"]
 
 [tool.pytest.ini_options]
 testpaths = ["workloads/reckoner/tests", "contracts/tests"]
@@ -19,6 +19,7 @@ testpaths = ["workloads/reckoner/tests", "contracts/tests"]
 [tool.ruff]
 target-version = "py312"
 line-length = 100
+extend-exclude = ["docs/superpowers"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
