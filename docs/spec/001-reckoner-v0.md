@@ -1,6 +1,6 @@
 # 001 — Reckoner v0 baseline
 
-**Status:** Proposed for review; implementation has not started.
+**Status:** Approved by the human in this conversation. Implementation requires review of its written plan.
 
 **Date:** 2026-09-25
 
@@ -61,7 +61,7 @@ Keep negative/zero amounts and invalid records in source/history coverage and re
 but exclude them from purchase evaluation. Every record must have a counted disposition.
 Raw CCTD field names are confined to the adapter, source diagnostics, and source documentation.
 
-Proposed temporal split:
+Approved temporal split:
 
 | Population | Inclusive UTC interval | Use |
 |---|---|---|
@@ -243,8 +243,8 @@ funds, dataset feasibility, or resource failures must remain explicit blockers.
 
 ## 9. Approval and next step
 
-This document extends the approved foundation with Phase 1 decisions and proposed implementation
-behavior. Review and approve it before a detailed implementation plan is written. The plan has
+This approved document extends the foundation with Phase 1 decisions and implementation
+behavior. The human authorized preparation of the detailed implementation plan. The plan has
 its own review gate before code, dependency installation, deployment, or paid execution. Existing
 authorization is retained; the fifteen foundation questions are not reopened.
 
