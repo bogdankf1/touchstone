@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://touchstone.example/contracts/cohort-manifest-v1.schema.json",
+  "title": "Tenant-scoped evaluation cohort manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "manifest_id",
+    "tenant_id",
+    "cohort_id",
+    "purpose",
+    "simulated",
+    "source_hashes",
+    "seed",
+    "history_end",
+    "evaluation_start",
+    "evaluation_end",
+    "inclusion_method",
+    "counts",
+    "history_coverage",
+    "graph_coverage",
+    "dataset_normalization_version",
+    "selected_transaction_ids"
+  ],
+  "properties": {
+    "schema_version": { "const": "cohort-manifest-v1" },
+    "manifest_id": { "$ref": "#/$defs/sha256" },
+    "tenant_id": { "$ref": "#/$defs/nonempty" },
+    "cohort_id": { "$ref": "#/$defs/nonempty" },
+    "purpose": { "$ref": "#/$defs/nonempty" },
+    "simulated": { "const": true },
+    "source_hashes": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": { "$ref": "#/$defs/nonempty" },
+      "additionalProperties": { "$ref": "#/$defs/sha256" }
+    },
+    "seed": { "type": "integer", "minimum": 0 },
+    "history_end": { "type": "string", "format": "date-time" },
+    "evaluation_start": { "type": "string", "format": "date-time" },
+    "evaluation_end": { "type": "string", "format": "date-time" },
+    "inclusion_method": { "$ref": "#/$defs/nonempty" },
+    "counts": { "$ref": "#/$defs/counts" },
+    "history_coverage": { "$ref": "#/$defs/history_coverage" },
+    "graph_coverage": { "$ref": "#/$defs/graph_coverage" },
+    "dataset_normalization_version": { "$ref": "#/$defs/nonempty" },
+    "selected_transaction_ids": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/nonempty" }
+    }
+  },
+  "$defs": {
+    "nonempty": { "type": "string", "minLength": 1 },
+    "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "nonnegative_integer": { "type": "integer", "minimum": 0 },
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "retained",
+        "eligible",
+        "unsupported",
+        "total",
+        "fraud",
+        "legitimate"
+      ],
+      "properties": {
+        "source": { "$ref": "#/$defs/nonnegative_integer" },
+        "retained": { "$ref": "#/$defs/nonnegative_integer" },
+        "eligible": { "$ref": "#/$defs/nonnegative_integer" },
+        "unsupported": { "$ref": "#/$defs/nonnegative_integer" },
+        "total": { "$ref": "#/$defs/nonnegative_integer" },
+        "fraud": { "$ref": "#/$defs/nonnegative_integer" },
+        "legitimate": { "$ref": "#/$defs/nonnegative_integer" }
+      }
+    },
+    "history_coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "complete_selected_histories",
+        "users",
+        "cards",
+        "merchants",
+        "limitations"
+      ],
+      "properties": {
+        "complete_selected_histories": { "type": "boolean" },
+        "users": { "$ref": "#/$defs/nonnegative_integer" },
+        "cards": { "$ref": "#/$defs/nonnegative_integer" },
+        "merchants": { "$ref": "#/$defs/nonnegative_integer" },
+        "limitations": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/nonempty" }
+        }
+      }
+    },
+    "graph_coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scope", "included_transactions", "limitations"],
+      "properties": {
+        "scope": { "$ref": "#/$defs/nonempty" },
+        "included_transactions": { "$ref": "#/$defs/nonnegative_integer" },
+        "limitations": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/nonempty" }
+        }
+      }
+    }
+  }
+}

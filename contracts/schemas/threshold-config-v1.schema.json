@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://touchstone.example/contracts/threshold-config-v1.schema.json",
+  "title": "Reckoner threshold configuration v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "config_id", "tenant_id", "currency", "parameters"],
+  "properties": {
+    "schema_version": { "const": "threshold-config-v1" },
+    "config_id": { "$ref": "#/$defs/sha256" },
+    "tenant_id": { "$ref": "#/$defs/nonempty" },
+    "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
+    "parameters": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "review_cost",
+        "margin_rate",
+        "t_low_floor",
+        "t_low_ceiling",
+        "t_high",
+        "amount_aware"
+      ],
+      "properties": {
+        "review_cost": { "$ref": "#/$defs/nonnegative_decimal" },
+        "margin_rate": { "$ref": "#/$defs/nonnegative_decimal" },
+        "t_low_floor": { "$ref": "#/$defs/nonnegative_decimal" },
+        "t_low_ceiling": { "$ref": "#/$defs/nonnegative_decimal" },
+        "t_high": { "$ref": "#/$defs/nonnegative_decimal" },
+        "amount_aware": { "type": "boolean" }
+      }
+    }
+  },
+  "$defs": {
+    "nonempty": { "type": "string", "minLength": 1 },
+    "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "nonnegative_decimal": {
+      "type": "string",
+      "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$"
+    }
+  }
+}

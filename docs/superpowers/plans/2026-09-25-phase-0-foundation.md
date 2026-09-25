@@ -1,6 +1,6 @@
 # Phase 0 Foundation Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. The user has already selected fresh-subagent execution through the project methodology. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. The user has already selected fresh-subagent execution through the project methodology. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Establish a tested, resource-measured foundation: source-data validation, versioned contracts and experiment manifests, and a minimal FastAPI service that runs independently in Docker Compose and local kind.
 
@@ -10,7 +10,7 @@
 
 **Spec:** `docs/spec/000-foundation.md` — approved in conversation on 2026-09-25. Also read `PROJECT_BRIEF.md` completely.
 
-**Plan status:** Approved by the human in conversation on 2026-09-25; execution authorized.
+**Plan status:** Implemented and reviewed on 2026-09-25; awaiting the human’s branch integration decision.
 
 ## Global Constraints
 
@@ -99,10 +99,10 @@ In the table, `src/` and `tests/` after the Reckoner package refer to paths bene
 
 This is a repository prerequisite, not a product implementation task. An unborn branch cannot provide the base commit for the required worktree. Perform these steps only after this plan is approved.
 
-- [ ] Read `superpowers:using-git-worktrees` and `superpowers:subagent-driven-development`; preserve the user's selected execution method.
-- [ ] Recheck `git status --short --branch`, `git log -1`, and `git ls-files`. A missing first commit is expected; changed evidence supersedes this bootstrap recipe. Never reset or discard existing work.
-- [ ] Check configured commit identity using `git var GIT_AUTHOR_IDENT`; do not invent a name/email or modify global git settings.
-- [ ] Create `.gitignore` with these entries before staging any files:
+- [x] Read `superpowers:using-git-worktrees` and `superpowers:subagent-driven-development`; preserve the user's selected execution method.
+- [x] Recheck `git status --short --branch`, `git log -1`, and `git ls-files`. A missing first commit is expected; changed evidence supersedes this bootstrap recipe. Never reset or discard existing work.
+- [x] Check configured commit identity using `git var GIT_AUTHOR_IDENT`; do not invent a name/email or modify global git settings.
+- [x] Create `.gitignore` with these entries before staging any files:
 
 ```gitignore
 .DS_Store
@@ -123,11 +123,11 @@ node_modules/
 .next/
 ```
 
-- [ ] Verify `git check-ignore archive/credit_card_transactions-ibm_v2.csv .DS_Store .worktrees/probe`. Expected: all three paths are ignored. Inspect `git status --short` before staging.
-- [ ] Stage only `.gitignore`, the two existing instruction files, `PROJECT_BRIEF.md`, the approved foundation spec, and this approved plan. Review `git diff --cached --stat` and `git diff --cached --name-only`. No dataset, credential, product code, or unrelated files may be staged.
-- [ ] Commit locally as `docs: record approved foundation specification and plan`. Do not push.
-- [ ] Create the implementation branch/worktree using the skill, suggested branch `feat/phase-0-foundation` and location `.worktrees/phase-0-foundation`. All tasks below execute there.
-- [ ] Point dataset commands explicitly at the original checkout's `archive/` with `--archive`; do not copy 2.2 GB into the worktree or depend on untracked data being present there.
+- [x] Verify `git check-ignore archive/credit_card_transactions-ibm_v2.csv .DS_Store .worktrees/probe`. Expected: all three paths are ignored. Inspect `git status --short` before staging.
+- [x] Stage only `.gitignore`, the two existing instruction files, `PROJECT_BRIEF.md`, the approved foundation spec, and this approved plan. Review `git diff --cached --stat` and `git diff --cached --name-only`. No dataset, credential, product code, or unrelated files may be staged.
+- [x] Commit locally as `docs: record approved foundation specification and plan`. Do not push.
+- [x] Create the implementation branch/worktree using the skill, suggested branch `feat/phase-0-foundation` and location `.worktrees/phase-0-foundation`. All tasks below execute there.
+- [x] Point dataset commands explicitly at the original checkout's `archive/` with `--archive`; do not copy 2.2 GB into the worktree or depend on untracked data being present there.
 
 ## Task 1 — streaming source readiness report
 
@@ -148,7 +148,7 @@ node_modules/
 - Produces: `inventory(archive: Path) -> dict[str, object]` with file hashes/counts, joins, transaction summary, and readiness blockers.
 - CLI: `python -m reckoner.data.profile --archive PATH --output PATH`; explicit output path under ignored `artifacts/`; exit 0 when inventory was generated, 2 for unreadable/missing files. Readiness blockers are data in the report, not an excuse to omit the report.
 
-- [ ] **Step 1: Add only the package/test tooling needed by this task.** Use Python 3.12. Root `pyproject.toml` begins with the following configuration; generated lockfile pins resolved transitive versions:
+- [x] **Step 1: Add only the package/test tooling needed by this task.** Use Python 3.12. Root `pyproject.toml` begins with the following configuration; generated lockfile pins resolved transitive versions:
 
 ```toml
 [project]
@@ -196,7 +196,7 @@ packages = ["src/reckoner"]
 
 Write `3.12` to `.python-version`. Add FastAPI/Uvicorn only in Task 4. Resolve/install through `uv sync --all-packages`, not global pip. Package/bootstrap configuration is necessary test infrastructure; no profiler code precedes the red test.
 
-- [ ] **Step 2: Write red tests with fabricated CSVs.** The fixture needs no downloaded dataset:
+- [x] **Step 2: Write red tests with fabricated CSVs.** The fixture needs no downloaded dataset:
 
 ```python
 import csv
@@ -246,7 +246,7 @@ def test_reports_invalid_inputs_without_losing_rows(tmp_path):
 
 Add fixture tests for a quoted amount containing a comma, missing required headers, an empty input, and a users CSV containing names but no explicit ID. Assert the inventory marks the user join `unverified` instead of joining by row position. Missing headers raise `ValueError` naming the missing columns without printing source row values.
 
-- [ ] **Step 3: Run the new tests and observe failure.**
+- [x] **Step 3: Run the new tests and observe failure.**
 
 ```bash
 uv run --all-packages pytest workloads/reckoner/tests/test_profile.py -q
@@ -254,7 +254,7 @@ uv run --all-packages pytest workloads/reckoner/tests/test_profile.py -q
 
 Expected: import failure for the unimplemented profiler. Fix tool-installation errors separately; they are not the intended red.
 
-- [ ] **Step 4: Implement the streaming profiler.** Use `csv.DictReader`, `decimal.Decimal`, `datetime`, `hashlib`, and `pathlib`; no pandas or full-table materialization. The money parser follows:
+- [x] **Step 4: Implement the streaming profiler.** Use `csv.DictReader`, `decimal.Decimal`, `datetime`, `hashlib`, and `pathlib`; no pandas or full-table materialization. The money parser follows:
 
 ```python
 from decimal import Decimal, InvalidOperation
@@ -273,7 +273,7 @@ Do not assign a timezone or currency from the sample. Report `timezone=unverifie
 
 The inventory includes `User0_credit_card_transactions.csv` as a separate file with its checksum and `included_in_main_counts=false`. It is never concatenated with the main file. The CLI creates only the requested output's parent directory with `Path.mkdir(parents=True, exist_ok=True)` and writes aggregate JSON there; it never writes within the source directory.
 
-- [ ] **Step 5: Run tests and lint, then profile the real corpus without modifying it.**
+- [x] **Step 5: Run tests and lint, then profile the real corpus without modifying it.**
 
 ```bash
 uv run --all-packages pytest workloads/reckoner/tests/test_profile.py -q
@@ -286,7 +286,7 @@ Record elapsed time and peak RSS using the host's available measurement tool. Fu
 
 No undocumented normalization assumption may silently advance to a ready cohort. Report remaining empirical ambiguities to the human at the task gate; independent contract work can proceed.
 
-- [ ] **Step 6: Commit and request task review.** Stage the explicit Task 1 files, excluding generated inventory and dataset. Suggested commit: `feat: add streaming simulated dataset inventory`. Review input handling and memory behavior before Task 2.
+- [x] **Step 6: Commit and request task review.** Stage the explicit Task 1 files, excluding generated inventory and dataset. Suggested commit: `feat: add streaming simulated dataset inventory`. Review input handling and memory behavior before Task 2.
 
 ## Task 2 — canonical runtime and measurement contracts
 
@@ -305,7 +305,7 @@ No undocumented normalization assumption may silently advance to a ready cohort.
 - Produces: `content_id(document: dict) -> str`, a SHA-256 hex digest of canonical UTF-8 JSON (sorted keys, compact separators, non-finite numbers rejected).
 - Produces: versioned schema artifacts usable independently by any JSON Schema implementation; Touchstone never imports the Python helper in Reckoner.
 
-- [ ] **Step 1: Write red contract tests using examples defined by the spec.**
+- [x] **Step 1: Write red contract tests using examples defined by the spec.**
 
 ```python
 import json
@@ -348,13 +348,13 @@ def test_source_positions_distinguish_identical_looking_transactions():
 
 Add tests rejecting floating-point `amount_minor`, an absent schema version, and `provenance.simulated=false` for the CCTD fixture. Generic measurement tests accept two unrelated workflow IDs, nullable correctness for a pending result, unavailable cost without a numeric amount, and a metric contribution with both numerator and denominator. Reject unknown event kinds, missing tenant, negative token counts, and negative duration. Do not require fraud-specific fields in a generic measurement.
 
-- [ ] **Step 2: Run the tests and observe the missing implementation/schema failures.**
+- [x] **Step 2: Run the tests and observe the missing implementation/schema failures.**
 
 ```bash
 uv run --all-packages pytest contracts/tests/test_events.py -q
 ```
 
-- [ ] **Step 3: Implement the two small helpers and the schemas.**
+- [x] **Step 3: Implement the two small helpers and the schemas.**
 
 ```python
 import hashlib
@@ -382,7 +382,7 @@ The measurement schema uses an envelope with identities, schema version, occurre
 
 This defines the logical payload, not an ad hoc ingestion endpoint. Actual serialization to spans/events and pinned OTel attribute names are Phase 2 integration work. Do not implement an alternative to OTLP.
 
-- [ ] **Step 4: Verify schema and profiler compatibility.**
+- [x] **Step 4: Verify schema and profiler compatibility.**
 
 ```bash
 uv run --all-packages pytest contracts/tests/test_events.py workloads/reckoner/tests/test_profile.py -q
@@ -392,7 +392,7 @@ uv run ruff format --check contracts/tests workloads/reckoner
 
 Expected: all tests pass; canonical fixtures have no source column names or oracle fields. Check schemas using the validator's `check_schema`, already exercised by every positive fixture.
 
-- [ ] **Step 5: Commit and request task review.** Suggested commit: `feat: define canonical transaction and measurement contracts`. Review strictness versus legitimate optional fields, provenance, and independent workflow support.
+- [x] **Step 5: Commit and request task review.** Suggested commit: `feat: define canonical transaction and measurement contracts`. Review strictness versus legitimate optional fields, provenance, and independent workflow support.
 
 ## Task 3 — configuration and cohort manifest versioning
 
@@ -410,7 +410,7 @@ Expected: all tests pass; canonical fixtures have no source column names or orac
 - Produces: `validate_threshold_config(document: dict, schema_path: Path) -> None` and `validate_cohort_manifest(document: dict, schema_path: Path) -> None`; schema failures raise `ValidationError`, cross-field failures raise `ValueError`.
 - `config_id` and `manifest_id` are computed over each document excluding its own identity field. Configurations contain `tenant_id` and immutable parameters. Manifests contain `tenant_id`, shared `cohort_id`, experiment purpose, source hashes, seed, temporal boundaries, inclusion method, selection counts, graph/history coverage, and dataset-normalization version.
 
-- [ ] **Step 1: Write red tests for defaults, identity, and temporal leakage.**
+- [x] **Step 1: Write red tests for defaults, identity, and temporal leakage.**
 
 ```python
 import json
@@ -439,13 +439,13 @@ def test_rejects_inverted_thresholds_even_with_fresh_identity():
 
 Add explicit tests that stale IDs fail after parameter edits; the unchanged default document passes; `amount_aware=false` with `t_high<=0.05` fails; a cohort with `history_end >= evaluation_start` fails; a tenant manifest missing source checksums fails; and combined fixture manifests with duplicate selected transaction IDs fail in the test's union check.
 
-- [ ] **Step 2: Run the new tests and confirm failure.**
+- [x] **Step 2: Run the new tests and confirm failure.**
 
 ```bash
 uv run --all-packages pytest contracts/tests/test_manifests.py -q
 ```
 
-- [ ] **Step 3: Add schemas and cross-field checks.** Use decimal strings for configuration values and `Decimal` for comparisons; preserve the six approved settings exactly. The default example is:
+- [x] **Step 3: Add schemas and cross-field checks.** Use decimal strings for configuration values and `Decimal` for comparisons; preserve the six approved settings exactly. The default example is:
 
 ```json
 {
@@ -524,7 +524,7 @@ def test_manifest_rejects_history_overlapping_holdout():
         validate_cohort_manifest(document, ROOT / "contracts/schemas/cohort-manifest-v1.schema.json")
 ```
 
-- [ ] **Step 4: Write the executable sampling recipe as documentation, with no source extraction yet.** `docs/data/cohort-recipe.md` specifies these ordered operations:
+- [x] **Step 4: Write the executable sampling recipe as documentation, with no source extraction yet.** `docs/data/cohort-recipe.md` specifies these ordered operations:
 
 1. Resolve currency/timezone and card/user reference evidence from Task 1; do not attach unverified user attributes.
 2. Freeze a pre-holdout calibration interval and later holdout interval; determine actual dates from inventory coverage, and record the selection rationale before scoring.
@@ -537,7 +537,7 @@ def test_manifest_rejects_history_overlapping_holdout():
 
 Do not invent dates, tenant proportions, or resource fit before observing the corpus. The recipe is the Phase 0 deliverable; Phase 1 implements it and freezes the real manifest before any model run.
 
-- [ ] **Step 5: Run the contract suite and commit.**
+- [x] **Step 5: Run the contract suite and commit.**
 
 ```bash
 uv run --all-packages pytest contracts/tests -q
@@ -566,7 +566,7 @@ Suggested commit: `feat: version experiment and threshold manifests`. Review tem
 - Compose endpoint: `http://127.0.0.1:8000/health/live`.
 - kind endpoint: port-forward the namespaced service to `127.0.0.1:8000`; never expose a public interface.
 
-- [ ] **Step 1: Write the failing application test.**
+- [x] **Step 1: Write the failing application test.**
 
 ```python
 from fastapi.testclient import TestClient
@@ -583,7 +583,7 @@ def test_liveness_is_available_without_data_or_credentials():
 
 Add `fastapi>=0.115,<1` and `uvicorn>=0.30,<1` as Reckoner dependencies; `httpx` is already a test dependency. Run `uv sync --all-packages`, then `uv run --all-packages pytest workloads/reckoner/tests/test_app.py -q`. Expected red: missing `reckoner.app`, not a network request.
 
-- [ ] **Step 2: Implement the minimal service.**
+- [x] **Step 2: Implement the minimal service.**
 
 ```python
 from fastapi import FastAPI
@@ -598,7 +598,7 @@ def live() -> dict[str, str]:
 
 Run the test to green. Do not add transaction endpoints, dependency probes, databases, auth scaffolding, or a frontend to make the foundation appear larger.
 
-- [ ] **Step 3: Build a locked, non-root container.** `.dockerignore` excludes `archive`, `artifacts`, `.git`, `.worktrees`, `.venv`, `.env*`, caches, and frontend dependency directories. Use a multi-stage build based on `python:3.12-slim` and the installed uv release `0.11.32`, recording resolved image digests in the runtime report. The essential build/runtime instructions are:
+- [x] **Step 3: Build a locked, non-root container.** `.dockerignore` excludes `archive`, `artifacts`, `.git`, `.worktrees`, `.venv`, `.env*`, caches, and frontend dependency directories. Use a multi-stage build based on `python:3.12-slim` and the installed uv release `0.11.32`, recording resolved image digests in the runtime report. The essential build/runtime instructions are:
 
 ```dockerfile
 FROM python:3.12-slim AS build
@@ -619,7 +619,7 @@ CMD ["uvicorn", "reckoner.app:app", "--host", "0.0.0.0", "--port", "8000"]
 
 Use the same resolved Python base image for both stages. Confirm published tags and native host-architecture support before pulling. A missing image tag is an execution prerequisite to resolve, not permission to switch to `latest`. No dataset or secrets enter the build context.
 
-- [ ] **Step 4: Add the minimal Compose service and verify it.**
+- [x] **Step 4: Add the minimal Compose service and verify it.**
 
 ```yaml
 services:
@@ -651,7 +651,7 @@ docker compose -p touchstone-foundation -f infra/compose.yaml down
 
 Record only this project's service metrics from `docker stats`. Expected: health response exactly matches the test; the built package runs without source mounted. `down` applies only to this named, task-created Compose project and omits volume deletion.
 
-- [ ] **Step 5: Add kind configuration and the API Deployment/Service.** Install kind from its official distribution only after checking the available host architecture and compatible release. Do not change any existing Kubernetes context or cluster configuration. `infra/kind.yaml` contains:
+- [x] **Step 5: Add kind configuration and the API Deployment/Service.** Install kind from its official distribution only after checking the available host architecture and compatible release. Do not change any existing Kubernetes context or cluster configuration. `infra/kind.yaml` contains:
 
 ```yaml
 kind: Cluster
@@ -675,7 +675,7 @@ kubectl --kubeconfig artifacts/kind-kubeconfig -n touchstone-foundation port-for
 
 Keep port-forward in a controlled terminal session; from a second session run the same `curl --fail` health check. Record pod readiness, image ID, node resource allocation, and actual container memory. Terminate only the task's port-forward process. Delete only this disposable cluster after verifying its exact name and that it was created by this task; preserve its measured results in the report. Never run `docker system prune` or delete unrelated clusters/volumes.
 
-- [ ] **Step 6: Add CI using the local checks, without paid calls or the dataset.** Pin third-party action revisions when creating the workflow. On push/pull request, check out code, set up the chosen uv/Python versions, and run:
+- [x] **Step 6: Add CI using the local checks, without paid calls or the dataset.** Pin third-party action revisions when creating the workflow. On push/pull request, check out code, set up the chosen uv/Python versions, and run:
 
 ```bash
 uv sync --all-packages --frozen
@@ -688,13 +688,13 @@ docker build -f infra/Dockerfile.reckoner -t touchstone-reckoner:phase0 .
 
 Unit/contract tests require only fabricated fixtures. Full source profiling and local kind tests are explicit local checks, not mandatory hosted-CI jobs that download the dataset. No Anthropic/Jev/Snowflake secret is requested by this phase.
 
-- [ ] **Step 7: Document and check the actual architecture and resource envelope.** `README.md` links the approved spec, this plan, source-readiness report, and local runbook, states the simulated-data limitation, and gives tested commands. `docs/operations/local-runtime.md` records host architecture, reported versus measured disk, Docker memory/CPU limits, versions/image IDs, profiler RSS/runtime, Compose API memory, kind node memory, and that these numbers do not prove the full stack fits.
+- [x] **Step 7: Document and check the actual architecture and resource envelope.** `README.md` links the approved spec, this plan, source-readiness report, and local runbook, states the simulated-data limitation, and gives tested commands. `docs/operations/local-runtime.md` records host architecture, reported versus measured disk, Docker memory/CPU limits, versions/image IDs, profiler RSS/runtime, Compose API memory, kind node memory, and that these numbers do not prove the full stack fits.
 
 Create a Structurizr context/container model with Touchstone, Reckoner, browser, providers, and stores. Tag future containers `Planned`; mark only the health API and profiler as implemented. A separate foundation view shows only components actually shipped in this phase. `docs/architecture/foundation.md` explains the OTLP boundary and links the DSL. Add a short Mermaid sequence for the data inventory flow; do not hand-draw a LangGraph graph before it exists.
 
 Read/apply `archify` for the required phase-end drift check, comparing diagrams to code. It is an inspection of delivered scope, not permission to build the planned containers. Record discrepancies and resolve diagram drift before completion.
 
-- [ ] **Step 8: Run final checks once and review the branch.**
+- [x] **Step 8: Run final checks once and review the branch.**
 
 ```bash
 uv run --all-packages pytest -q
@@ -711,17 +711,18 @@ Suggested commit: `feat: validate foundation API in compose and kind`. Obtain wh
 
 ## Phase 0 completion checklist
 
-- [ ] First commit and isolated implementation worktree exist; original untracked data remains intact.
-- [ ] Unit and contract tests passed from a locked environment after observed red phases.
-- [ ] Main corpus profile reports actual counts, invalid values, join evidence, and memory/runtime without loading all transactions into memory.
-- [ ] Currency/timezone/user-join assumptions are either supported by evidence or explicitly unresolved gates before cohort construction.
-- [ ] Contracts reject missing tenants and oracle leakage; generic measurement supports independent workflows.
-- [ ] Config/cohort identities and temporal validation are tested; the actual evaluation cohort has not been falsely claimed as built.
-- [ ] The same API image passed Compose and kind health checks in separate runs.
-- [ ] Disk and Docker resource allocation are measured; full-stack feasibility remains unproven.
-- [ ] Current versus planned architecture is clearly distinguished and checked for drift.
-- [ ] No Jev stub, paid model call, database stack, frontend scaffolding, or production claim was introduced.
-- [ ] Task reviews and whole-branch review are complete; the chosen branch disposition is explicit.
+- [x] First commit and isolated implementation worktree exist; original untracked data remains intact.
+- [x] Unit and contract tests passed from a locked environment after observed red phases.
+- [x] Main corpus profile reports actual counts, invalid values, join evidence, and memory/runtime without loading all transactions into memory.
+- [x] Currency/timezone/user-join assumptions are either supported by evidence or explicitly unresolved gates before cohort construction.
+- [x] Contracts reject missing tenants and oracle leakage; generic measurement supports independent workflows.
+- [x] Config/cohort identities and temporal validation are tested; the actual evaluation cohort has not been falsely claimed as built.
+- [x] The same API image passed Compose and kind health checks in separate runs.
+- [x] Disk and Docker resource allocation are measured; full-stack feasibility remains unproven.
+- [x] Current versus planned architecture is clearly distinguished and checked for drift.
+- [x] No Jev stub, paid model call, database stack, frontend scaffolding, or production claim was introduced.
+- [x] Task reviews and whole-branch review are complete; all reported findings are resolved.
+- [ ] Human selects branch integration or preservation; no merge or push has occurred.
 
 ## Documentation consulted while planning
 
@@ -732,3 +733,42 @@ Suggested commit: `feat: validate foundation API in compose and kind`. Obtain wh
 ## Review and handoff
 
 The approved spec authorizes planning. This written plan still requires review before implementation, as required by the Superpowers writing-plans handoff. Execution method is already chosen: fresh subagent per implementation task, with task and branch review. Ask whether this plan captures the intended Phase 0 scope; do not ask the user to choose the execution method again.
+
+
+## Execution record — 2026-09-25
+
+Implementation branch: `feat/phase-0-foundation`, based on `f11c76f` on `main`.
+Implementation commits: `ddb2301`, `8a9a2db`, `cd9316f`, `8ef81a4`, `809bc0f`,
+`2fcfab7`, and `c124698`. All four tasks passed independent task review. Whole-branch
+review found an outcome-currency omission and two minor validation/coverage gaps;
+the single final fix wave resolved all three, with scoped re-review approval.
+
+Final verification at `c124698`: 58 tests passed; Ruff lint and formatting passed;
+`git diff --check` passed; no dataset, generated artifacts, or secret files tracked.
+The same non-root image passed the health check separately in Docker Compose and kind.
+Task-created containers, cluster, and port-forward were removed. Archify’s evidence-backed
+phase view passed 9/9 validation checks, with zero errors and warnings.
+
+The streaming inventory scanned 24,386,900 simulated transactions, including 29,757
+fraud labels, in 111.06 seconds at 23,822,336-byte peak RSS. The source-readiness report
+contains counts and hashes. Currency, timezone, user-table mapping, and historical
+attribute availability remain explicit gates for subsequent normalization/enrichment.
+
+Hosted CI has not run. The Structurizr DSL was structurally checked but not parsed or
+rendered with the Structurizr CLI. Measurements cover only the delivered foundation,
+not the full future stack. No paid model/provider call was made.
+
+Two recorded execution rulings:
+
+1. Update `uv.lock` with Task 2’s dependency change despite its omission from that
+   task’s file list. This preserves reproducibility; the cost if wrong is a small,
+   reversible lockfile diff.
+2. Replace the planned development-only `httpx` dependency with `httpx2>=2,<3`
+   because the installed Starlette TestClient and its official upstream now prefer
+   `httpx2` and warn on the old fallback. No warning suppression was added. The cost
+   if wrong is a reversible development-dependency and lockfile change. Evidence:
+   [Starlette TestClient source](https://github.com/Kludex/starlette/blob/main/starlette/testclient.py).
+
+The repository’s `main` checkout contains only the initial documentation baseline.
+Implementation remains in `.worktrees/phase-0-foundation` until the human chooses its
+integration. Later phases require their own plans; Phase 1 has not begun.

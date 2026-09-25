@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: reckoner
+  namespace: touchstone-foundation
+  labels:
+    app: reckoner
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: reckoner
+  template:
+    metadata:
+      labels:
+        app: reckoner
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+      containers:
+        - name: reckoner
+          image: touchstone-reckoner:phase0
+          imagePullPolicy: Never
+          ports:
+            - name: http
+              containerPort: 8000
+          securityContext:
+            allowPrivilegeEscalation: false
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+          readinessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: reckoner
+  namespace: touchstone-foundation
+  labels:
+    app: reckoner
+spec:
+  type: ClusterIP
+  selector:
+    app: reckoner
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
