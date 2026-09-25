@@ -1,0 +1,24 @@
+[project]
+name = "touchstone-workspace"
+version = "0.1.0"
+requires-python = ">=3.12,<3.13"
+dependencies = []
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = ["workloads/reckoner"]
+
+[dependency-groups]
+dev = ["pytest>=8,<10", "ruff>=0.11,<1", "jsonschema[format]>=4,<5", "httpx>=0.28,<1"]
+
+[tool.pytest.ini_options]
+testpaths = ["workloads/reckoner/tests", "contracts/tests"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
