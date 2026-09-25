@@ -82,6 +82,25 @@ def test_load_config_rejects_tampering_without_a_new_identity(tmp_path, target, 
         load_config(config_path, price_path)
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("temperature", 100),
+        ("max_output_tokens", 1_000_000),
+        ("timeout_seconds", 1),
+        ("input_token_ceiling", 1),
+    ],
+)
+def test_load_config_rejects_reidentified_changes_to_fixed_execution_limits(tmp_path, field, value):
+    config, _, config_path, price_path = _documents(tmp_path)
+    config[field] = value
+    _identify(config, "config_id")
+    config_path.write_text(json.dumps(config))
+
+    with pytest.raises(ValueError, match="config"):
+        load_config(config_path, price_path)
+
+
 def test_config_and_decision_documents_obey_strict_contracts():
     config = json.loads(CONFIG.read_text())
     prices = json.loads(PRICES.read_text())

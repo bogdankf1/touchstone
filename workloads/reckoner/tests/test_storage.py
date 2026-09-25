@@ -87,6 +87,26 @@ def test_create_run_rejects_missing_or_cross_tenant_threshold_reference_before_t
         assert connection.execute("SELECT count(*) FROM reckoner.tasks").fetchone()[0] == 0
 
 
+def test_create_run_rejects_reidentified_changes_to_fixed_execution_limits(pg):
+    bundle_id = json.loads((pg.bundle / "bundle.json").read_text())["bundle_id"]
+    with PostgresRepository(pg.owner_dsn) as repo:
+        repo.import_bundle(pg.bundle)
+        _register_thresholds(repo)
+        for field, value in (
+            ("temperature", 100),
+            ("max_output_tokens", 1_000_000),
+            ("timeout_seconds", 1),
+            ("input_token_ceiling", 1),
+        ):
+            config = json.loads(json.dumps(_config()))
+            config[field] = value
+            config["config_id"] = content_id(
+                {key: item for key, item in config.items() if key != "config_id"}
+            )
+            with pytest.raises(ValueError, match="run configuration"):
+                repo.create_run(f"invalid-{field}", "pilot", config, bundle_id)
+
+
 def test_role_privileges_enforce_oracle_and_sanitized_api_boundaries(pg):
     with PostgresRepository(pg.owner_dsn) as repo:
         repo.import_bundle(pg.bundle)

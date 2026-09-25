@@ -70,6 +70,17 @@ class BudgetLedger:
             if current is None or current["status"] != "pending":
                 raise ValueError("task is not pending")
 
+            has_overage = cursor.execute(
+                """
+                SELECT EXISTS (
+                  SELECT 1 FROM reckoner.budget_entries
+                  WHERE actual_cost > maximum_cost
+                ) AS has_overage
+                """
+            ).fetchone()["has_overage"]
+            if has_overage:
+                raise BudgetExceeded("provider cost overage requires reconciliation")
+
             global_spent = self._spent(cursor)
             if global_spent >= GLOBAL_LIMIT or global_spent + maximum > GLOBAL_LIMIT:
                 raise BudgetExceeded("global provider budget exceeded")

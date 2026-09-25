@@ -110,3 +110,22 @@ def test_overage_is_persisted_and_blocks_future_dispatch(pg):
         assert ledger.remaining() == Decimal("0")
         with pytest.raises(BudgetExceeded):
             ledger.reserve(second, Decimal("0"))
+
+
+def test_below_cap_overage_blocks_dispatch_after_repository_restart(pg):
+    first = seed_run(pg, "below-cap-overage-a", "tenant-a")
+    second = seed_run(pg, "below-cap-overage-b", "tenant-b")
+    with PostgresRepository(pg.runner_dsn) as repo:
+        ledger = BudgetLedger(repo)
+        reservation = ledger.reserve(first, Decimal("1.00"))
+        ledger.settle(
+            reservation["call_id"],
+            Decimal("1.01"),
+            {"input_tokens": 1, "output_tokens": 1},
+        )
+
+    with PostgresRepository(pg.runner_dsn) as restarted:
+        ledger = BudgetLedger(restarted)
+        assert ledger.remaining() == Decimal("8.99")
+        with pytest.raises(BudgetExceeded, match="overage"):
+            ledger.reserve(second, Decimal("0.01"))
