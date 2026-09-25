@@ -1,7 +1,8 @@
 # Reckoner baseline operations
 
 All source transactions are simulated. Fake deployment evidence and measured Anthropic evidence
-are separate results. The current offline checks do not establish a successful paid experiment.
+are separate results. The recorded measured pilot failed its strict response-validity gate; the
+1,000-case baseline was not attempted. See the [evidence](../evidence/phase-1-baseline.md).
 The approved experiment is capped at $10 total provider spend with a $1 pilot sub-limit, across
 both tenants and all runs. Do not reset the ledger, retry a failed pilot automatically, or alter
 the frozen cohort to improve a result.
@@ -189,3 +190,49 @@ Stop the measured Compose project without deleting its volume. To resume, use th
 name, secret files, mounted artifacts, image and run IDs; start Postgres, verify the checksum
 migration history and persisted ledger, then start the API. Unknown charges remain reserved.
 Never use `down --volumes`, a fresh database, or a new project name as a recovery shortcut.
+
+
+## Recorded state and restart
+
+The 2026-09-25 run `phase1-pilot-001` has 20 failed, settled attempts costing $0.025043, with no
+uncertain reservation. Both OTLP streams and the incomplete report are under
+`artifacts/phase1/evidence/pilot/`. The measured services were stopped after a readable database
+backup and artifact archive were saved under `artifacts/phase1/backup/`. Keep the original root
+`archive/`: complete-history artifacts refer to its checksum-pinned source rather than copying it.
+
+From this Phase 1 worktree, restore the same local deployment paths and reviewed image identity:
+
+```bash
+export RECKONER_SECRET_DIR="$PWD/artifacts/phase1/secrets"
+export RECKONER_EXPORT_DIR="$PWD/artifacts/phase1/evidence"
+export RECKONER_IMPORT_DIR="$PWD/artifacts/phase1/data"
+export RECKONER_RUNTIME_DIR="$PWD/artifacts/phase1/runtime/pilot"
+export RECKONER_BUILD_REVISION=6e1d9707e0e8bc738a1a75e56c495460700c68e3
+export RECKONER_API_PORT=8008
+export RECKONER_POSTGRES_PORT=55432
+test "$(docker image inspect touchstone-reckoner:phase1 --format '{{.Id}}')" = 'sha256:5cf9661c1b7c8860841b88d8de7e09885d54c99d5f9de425b0e6228f3df0d6a4'
+docker compose -p touchstone-phase1-measured -f infra/compose.yaml -f infra/compose.host.yaml config --quiet
+docker compose -p touchstone-phase1-measured -f infra/compose.yaml -f infra/compose.host.yaml up -d --wait --no-build postgres
+docker compose -p touchstone-phase1-measured -f infra/compose.yaml -f infra/compose.host.yaml run --rm --no-deps owner reckoner migrate --env-file -
+docker compose -p touchstone-phase1-measured -f infra/compose.yaml -f infra/compose.host.yaml exec -T postgres psql -U postgres -d reckoner_measured -Atc "SELECT count(*), sum(actual_cost) FROM reckoner.budget_entries;"
+docker compose -p touchstone-phase1-measured -f infra/compose.yaml -f infra/compose.host.yaml up -d --wait --no-build reckoner
+```
+
+The checksum-checking migration command is idempotent. The initial restored ledger must show
+20 entries / 0.025043 before any newly approved experiment. Persistent volume:
+`touchstone-phase1-measured_postgres-data`. Never recreate it to reset the cap. API/PG bind only
+localhost8008/55432; the API has no provider key or data mount.
+
+The recorded preflight/run used the installed config at
+`/app/.venv/lib/python3.12/site-packages/reckoner/_resources/config/baseline-v1.json`, the selected
+four-file runtime subset mounted at `/data`, and role-scoped container DSNs. The provider key
+was read privately from the original root `.env` into the invoking process and passed by variable
+name (`-e ANTHROPIC_API_KEY`) only to the temporary runner; it was not written into an artifact,
+Docker command argument value, persistent service or image. The ignored operation wrapper at
+`artifacts/phase1/operations/compose.py` records these local paths and rejects a changed image ID.
+
+Restarting local services does not authorize another model experiment. The failed pilot cannot
+pass the baseline gate. A reviewed remedy and explicitly approved new pilot identity must retain
+all existing charges and use the remaining global/pilot funds; no repair, retry, model switch or
+new run was attempted during this task. A future operator must preserve the original failed
+report and both exports. Stop again with the same Compose arguments and `stop`, never volume deletion.
