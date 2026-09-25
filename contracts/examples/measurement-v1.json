@@ -1,0 +1,37 @@
+{
+  "schema_version": "measurement-v1",
+  "event_id": "measurement-fixture-1",
+  "tenant_id": "tenant-fixture-a",
+  "workflow_id": "reckoner",
+  "workflow_version": "fixture-v1",
+  "run_id": "run-fixture-1",
+  "task_id": "task-fixture-1",
+  "trace_id": "trace-fixture-1",
+  "span_id": "span-fixture-1",
+  "node_name": "fixture-node",
+  "event_kind": "execution",
+  "occurred_at": "2020-01-01T12:30:00Z",
+  "simulated": true,
+  "reproducibility": {
+    "experiment_version": "fixture-experiment-v1",
+    "cohort_version": "fixture-cohort-v1",
+    "config_version": "fixture-config-v1",
+    "code_revision": "fixture-revision",
+    "prompt_version": null,
+    "model_version": null,
+    "scorer_version": null,
+    "dataset_version": "fixture-dataset-v1",
+    "graph_version": null
+  },
+  "payload": {
+    "started_at": "2020-01-01T12:30:00Z",
+    "ended_at": "2020-01-01T12:30:00.125Z",
+    "duration_ms": 125,
+    "status": "completed",
+    "attempt_number": 1,
+    "parent_task_id": null,
+    "parent_span_id": null,
+    "provider": null,
+    "model": null
+  }
+}

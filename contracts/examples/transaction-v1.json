@@ -1,0 +1,34 @@
+{
+  "schema_version": "transaction-v1",
+  "event_id": "event-fixture-1",
+  "tenant_id": "tenant-fixture-a",
+  "transaction_id": "transaction-fixture-1",
+  "occurred_at": "2020-01-01T12:30:00Z",
+  "account_id": "account-fixture-1",
+  "card_id": "card-fixture-1",
+  "merchant_id": "merchant-fixture-1",
+  "amount_minor": 2001,
+  "currency": "USD",
+  "payment_channel": "swipe",
+  "merchant_category_code": "1234",
+  "merchant_location": {
+    "city": "Fixture City",
+    "region": "FS",
+    "postal_code": null,
+    "country": "US"
+  },
+  "processing_errors": [],
+  "device_id": null,
+  "ip_address": null,
+  "provenance": {
+    "dataset": "fabricated-contract-fixture",
+    "dataset_version": "v1",
+    "source_file_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "source_record": 1,
+    "adapter_version": "fixture-adapter-v1",
+    "simulated": true,
+    "normalization_assumptions": [
+      "fabricated fixture uses USD and UTC"
+    ]
+  }
+}

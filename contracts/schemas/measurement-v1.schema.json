@@ -1,0 +1,307 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://touchstone.example/contracts/measurement-v1.schema.json",
+  "title": "Generic workflow measurement envelope v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "event_id",
+    "tenant_id",
+    "workflow_id",
+    "workflow_version",
+    "run_id",
+    "task_id",
+    "trace_id",
+    "span_id",
+    "node_name",
+    "event_kind",
+    "occurred_at",
+    "simulated",
+    "reproducibility",
+    "payload"
+  ],
+  "properties": {
+    "schema_version": { "const": "measurement-v1" },
+    "event_id": { "$ref": "#/$defs/nonempty" },
+    "tenant_id": { "$ref": "#/$defs/nonempty" },
+    "workflow_id": { "$ref": "#/$defs/nonempty" },
+    "workflow_version": { "$ref": "#/$defs/nonempty" },
+    "run_id": { "$ref": "#/$defs/nonempty" },
+    "task_id": { "$ref": "#/$defs/nonempty" },
+    "trace_id": { "$ref": "#/$defs/nonempty" },
+    "span_id": { "$ref": "#/$defs/nonempty" },
+    "node_name": { "$ref": "#/$defs/nonempty" },
+    "event_kind": {
+      "enum": [
+        "execution",
+        "provider_usage",
+        "outcome",
+        "evaluation",
+        "review",
+        "metric_contribution"
+      ]
+    },
+    "occurred_at": { "type": "string", "format": "date-time" },
+    "simulated": { "type": "boolean" },
+    "reproducibility": { "$ref": "#/$defs/reproducibility" },
+    "payload": { "type": "object" }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "event_kind": { "const": "execution" },
+        "payload": { "$ref": "#/$defs/execution" }
+      }
+    },
+    {
+      "properties": {
+        "event_kind": { "const": "provider_usage" },
+        "payload": { "$ref": "#/$defs/provider_usage" }
+      }
+    },
+    {
+      "properties": {
+        "event_kind": { "const": "outcome" },
+        "payload": { "$ref": "#/$defs/outcome" }
+      }
+    },
+    {
+      "properties": {
+        "event_kind": { "const": "evaluation" },
+        "payload": { "$ref": "#/$defs/evaluation" }
+      }
+    },
+    {
+      "properties": {
+        "event_kind": { "const": "review" },
+        "payload": { "$ref": "#/$defs/review" }
+      }
+    },
+    {
+      "properties": {
+        "event_kind": { "const": "metric_contribution" },
+        "payload": { "$ref": "#/$defs/metric_contribution" }
+      }
+    }
+  ],
+  "$defs": {
+    "nonempty": {
+      "type": "string",
+      "minLength": 1
+    },
+    "nullable_nonempty": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/nonempty" }
+      ]
+    },
+    "decimal": {
+      "type": "string",
+      "pattern": "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$"
+    },
+    "nullable_decimal": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/decimal" }
+      ]
+    },
+    "reproducibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "experiment_version",
+        "cohort_version",
+        "config_version",
+        "code_revision",
+        "prompt_version",
+        "model_version",
+        "scorer_version",
+        "dataset_version",
+        "graph_version"
+      ],
+      "properties": {
+        "experiment_version": { "$ref": "#/$defs/nullable_nonempty" },
+        "cohort_version": { "$ref": "#/$defs/nullable_nonempty" },
+        "config_version": { "$ref": "#/$defs/nullable_nonempty" },
+        "code_revision": { "$ref": "#/$defs/nullable_nonempty" },
+        "prompt_version": { "$ref": "#/$defs/nullable_nonempty" },
+        "model_version": { "$ref": "#/$defs/nullable_nonempty" },
+        "scorer_version": { "$ref": "#/$defs/nullable_nonempty" },
+        "dataset_version": { "$ref": "#/$defs/nullable_nonempty" },
+        "graph_version": { "$ref": "#/$defs/nullable_nonempty" }
+      }
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "started_at",
+        "ended_at",
+        "duration_ms",
+        "status",
+        "attempt_number",
+        "parent_task_id",
+        "parent_span_id",
+        "provider",
+        "model"
+      ],
+      "properties": {
+        "started_at": { "type": "string", "format": "date-time" },
+        "ended_at": {
+          "oneOf": [
+            { "type": "null" },
+            { "type": "string", "format": "date-time" }
+          ]
+        },
+        "duration_ms": { "type": ["number", "null"], "minimum": 0 },
+        "status": { "enum": ["started", "completed", "failed"] },
+        "attempt_number": { "type": "integer", "minimum": 1 },
+        "parent_task_id": { "$ref": "#/$defs/nullable_nonempty" },
+        "parent_span_id": { "$ref": "#/$defs/nullable_nonempty" },
+        "provider": { "$ref": "#/$defs/nullable_nonempty" },
+        "model": { "$ref": "#/$defs/nullable_nonempty" }
+      }
+    },
+    "provider_usage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider",
+        "model",
+        "call_id",
+        "input_tokens",
+        "output_tokens",
+        "cached_tokens",
+        "cost_status",
+        "cost_amount",
+        "currency",
+        "price_table_version"
+      ],
+      "properties": {
+        "provider": { "$ref": "#/$defs/nonempty" },
+        "model": { "$ref": "#/$defs/nonempty" },
+        "call_id": { "$ref": "#/$defs/nonempty" },
+        "input_tokens": { "type": ["integer", "null"], "minimum": 0 },
+        "output_tokens": { "type": ["integer", "null"], "minimum": 0 },
+        "cached_tokens": { "type": ["integer", "null"], "minimum": 0 },
+        "cost_status": { "enum": ["actual", "estimated", "unavailable"] },
+        "cost_amount": { "$ref": "#/$defs/nullable_decimal" },
+        "currency": {
+          "oneOf": [
+            { "type": "null" },
+            { "type": "string", "pattern": "^[A-Z]{3}$" }
+          ]
+        },
+        "price_table_version": { "$ref": "#/$defs/nullable_nonempty" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "cost_status": { "const": "unavailable" } } },
+          "then": {
+            "properties": {
+              "cost_amount": { "type": "null" },
+              "currency": { "type": "null" }
+            }
+          },
+          "else": {
+            "properties": {
+              "cost_amount": { "$ref": "#/$defs/decimal" },
+              "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
+              "price_table_version": { "$ref": "#/$defs/nonempty" }
+            }
+          }
+        }
+      ]
+    },
+    "outcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "correct",
+        "review_cost",
+        "error_cost",
+        "outcome_version",
+        "evaluator_version"
+      ],
+      "properties": {
+        "status": { "enum": ["observed", "pending", "failed"] },
+        "correct": { "type": ["boolean", "null"] },
+        "review_cost": { "$ref": "#/$defs/nullable_decimal" },
+        "error_cost": { "$ref": "#/$defs/nullable_decimal" },
+        "outcome_version": { "$ref": "#/$defs/nonempty" },
+        "evaluator_version": { "$ref": "#/$defs/nullable_nonempty" }
+      }
+    },
+    "evaluation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "suite_id",
+        "case_id",
+        "metric_id",
+        "score",
+        "threshold",
+        "status",
+        "judge_model_version",
+        "judge_prompt_version",
+        "supporting_references"
+      ],
+      "properties": {
+        "suite_id": { "$ref": "#/$defs/nonempty" },
+        "case_id": { "$ref": "#/$defs/nonempty" },
+        "metric_id": { "$ref": "#/$defs/nonempty" },
+        "score": { "type": ["number", "null"] },
+        "threshold": { "type": ["number", "null"] },
+        "status": { "enum": ["pass", "fail", "error"] },
+        "judge_model_version": { "$ref": "#/$defs/nullable_nonempty" },
+        "judge_prompt_version": { "$ref": "#/$defs/nullable_nonempty" },
+        "supporting_references": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/nonempty" }
+        }
+      }
+    },
+    "review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "recommendation",
+        "review_id",
+        "reviewer_id",
+        "reviewer_type",
+        "agreement",
+        "reviewed_at"
+      ],
+      "properties": {
+        "recommendation": { "$ref": "#/$defs/nonempty" },
+        "review_id": { "$ref": "#/$defs/nonempty" },
+        "reviewer_id": { "$ref": "#/$defs/nonempty" },
+        "reviewer_type": { "enum": ["human", "simulated"] },
+        "agreement": { "type": ["boolean", "null"] },
+        "reviewed_at": { "type": "string", "format": "date-time" }
+      }
+    },
+    "metric_contribution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "metric_id",
+        "numerator",
+        "denominator",
+        "unit",
+        "definition_version",
+        "cost_component_id"
+      ],
+      "properties": {
+        "metric_id": { "$ref": "#/$defs/nonempty" },
+        "numerator": { "type": "number" },
+        "denominator": { "type": "number" },
+        "unit": { "$ref": "#/$defs/nonempty" },
+        "definition_version": { "$ref": "#/$defs/nonempty" },
+        "cost_component_id": { "$ref": "#/$defs/nullable_nonempty" }
+      }
+    }
+  }
+}

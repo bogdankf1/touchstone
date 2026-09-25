@@ -244,6 +244,12 @@ wheels = [
 name = "reckoner"
 version = "0.1.0"
 source = { editable = "workloads/reckoner" }
+dependencies = [
+    { name = "jsonschema", extra = ["format"] },
+]
+
+[package.metadata]
+requires-dist = [{ name = "jsonschema", extras = ["format"], specifier = ">=4,<5" }]
 
 [[package]]
 name = "referencing"

@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://touchstone.example/contracts/transaction-v1.schema.json",
+  "title": "Canonical transaction event v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "event_id",
+    "tenant_id",
+    "transaction_id",
+    "occurred_at",
+    "account_id",
+    "card_id",
+    "merchant_id",
+    "amount_minor",
+    "currency",
+    "payment_channel",
+    "merchant_category_code",
+    "merchant_location",
+    "processing_errors",
+    "device_id",
+    "ip_address",
+    "provenance"
+  ],
+  "properties": {
+    "schema_version": { "const": "transaction-v1" },
+    "event_id": { "$ref": "#/$defs/nonempty" },
+    "tenant_id": { "$ref": "#/$defs/nonempty" },
+    "transaction_id": { "$ref": "#/$defs/nonempty" },
+    "occurred_at": { "type": "string", "format": "date-time" },
+    "account_id": { "$ref": "#/$defs/nonempty" },
+    "card_id": { "$ref": "#/$defs/nonempty" },
+    "merchant_id": { "$ref": "#/$defs/nonempty" },
+    "amount_minor": { "type": "integer" },
+    "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
+    "payment_channel": {
+      "enum": ["chip", "swipe", "online", "other", "unknown"]
+    },
+    "merchant_category_code": {
+      "type": ["string", "null"]
+    },
+    "merchant_location": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/merchant_location" }
+      ]
+    },
+    "processing_errors": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/nonempty" }
+    },
+    "device_id": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/nonempty" }
+      ]
+    },
+    "ip_address": {
+      "oneOf": [
+        { "type": "null" },
+        { "type": "string", "format": "ip-address" }
+      ]
+    },
+    "provenance": { "$ref": "#/$defs/provenance" }
+  },
+  "$defs": {
+    "nonempty": {
+      "type": "string",
+      "minLength": 1
+    },
+    "nullable_string": {
+      "type": ["string", "null"]
+    },
+    "merchant_location": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["city", "region", "postal_code", "country"],
+      "properties": {
+        "city": { "$ref": "#/$defs/nullable_string" },
+        "region": { "$ref": "#/$defs/nullable_string" },
+        "postal_code": { "$ref": "#/$defs/nullable_string" },
+        "country": { "$ref": "#/$defs/nullable_string" }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "dataset",
+        "dataset_version",
+        "source_file_sha256",
+        "source_record",
+        "adapter_version",
+        "simulated",
+        "normalization_assumptions"
+      ],
+      "properties": {
+        "dataset": { "$ref": "#/$defs/nonempty" },
+        "dataset_version": { "$ref": "#/$defs/nonempty" },
+        "source_file_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "source_record": {
+          "oneOf": [
+            { "type": "integer", "minimum": 0 },
+            { "$ref": "#/$defs/nonempty" }
+          ]
+        },
+        "adapter_version": { "$ref": "#/$defs/nonempty" },
+        "simulated": { "const": true },
+        "normalization_assumptions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/nonempty" }
+        }
+      }
+    }
+  }
+}
