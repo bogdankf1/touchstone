@@ -98,6 +98,33 @@ def _field(value: object, name: str, default: Any = None) -> Any:
     return getattr(value, name, default)
 
 
+class _NativeUsageHTTPHandler(HTTPHandler):
+    """Retain Anthropic usage before LiteLLM coerces it into integer defaults."""
+
+    def __init__(self, *, timeout: float, client: httpx.Client | None = None):
+        super().__init__(timeout=timeout, client=client)
+        self.native_usage: dict[str, Any] | None = None
+
+    def reset_native_usage(self) -> None:
+        self.native_usage = None
+
+    def post(self, *args: Any, **kwargs: Any) -> httpx.Response:
+        response = super().post(*args, **kwargs)
+        try:
+            body = response.json()
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return response
+        usage = body.get("usage") if isinstance(body, dict) else None
+        self.native_usage = dict(usage) if isinstance(usage, dict) else None
+        return response
+
+
+def _native_usage_field(usage: dict[str, Any] | None, field: str, *, absent: Any = None) -> Any:
+    if usage is None:
+        return None
+    return usage[field] if field in usage else absent
+
+
 class AnthropicProvider:
     """Count and generate one pinned Anthropic request without retries or fallback."""
 
@@ -111,9 +138,7 @@ class AnthropicProvider:
             timeout=60,
             http_client=_http_client,
         )
-        self._completion_client = (
-            HTTPHandler(timeout=60, client=_http_client) if _http_client is not None else None
-        )
+        self._completion_client = _NativeUsageHTTPHandler(timeout=60, client=_http_client)
 
     @staticmethod
     def _validate_request(request: dict) -> None:
@@ -155,8 +180,8 @@ class AnthropicProvider:
             "max_retries": 0,
             "timeout": 60,
         }
-        if self._completion_client is not None:
-            arguments["client"] = self._completion_client
+        self._completion_client.reset_native_usage()
+        arguments["client"] = self._completion_client
         try:
             with warnings.catch_warnings():
                 warnings.filterwarnings(
@@ -172,7 +197,7 @@ class AnthropicProvider:
         choices = _field(response, "choices", [])
         choice = choices[0] if isinstance(choices, (list, tuple)) and choices else None
         message = _field(choice, "message")
-        usage = _field(response, "usage")
+        native_usage = self._completion_client.native_usage
         hidden = _field(response, "_hidden_params", {})
         headers = _field(hidden, "additional_headers", {})
         provider_request_id = _field(headers, "llm_provider-request-id") or _field(
@@ -184,8 +209,12 @@ class AnthropicProvider:
             "reported_model": _field(response, "model"),
             "finish_reason": _field(choice, "finish_reason"),
             "content": _field(message, "content"),
-            "input_tokens": _field(usage, "prompt_tokens"),
-            "output_tokens": _field(usage, "completion_tokens"),
-            "cache_read_tokens": _field(usage, "cache_read_input_tokens", 0),
-            "cache_creation_tokens": _field(usage, "cache_creation_input_tokens", 0),
+            "input_tokens": _native_usage_field(native_usage, "input_tokens"),
+            "output_tokens": _native_usage_field(native_usage, "output_tokens"),
+            "cache_read_tokens": _native_usage_field(
+                native_usage, "cache_read_input_tokens", absent=0
+            ),
+            "cache_creation_tokens": _native_usage_field(
+                native_usage, "cache_creation_input_tokens", absent=0
+            ),
         }

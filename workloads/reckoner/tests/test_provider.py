@@ -2,6 +2,7 @@ import json
 
 import httpx
 import pytest
+from reckoner.baseline.pricing import observed_cost
 from reckoner.baseline.provider import (
     AnthropicProvider,
     InvalidResponse,
@@ -123,6 +124,80 @@ def test_generate_uses_one_native_anthropic_request_with_retries_and_extras_disa
         "system": request()["system"],
         "temperature": 0,
     }
+
+
+@pytest.mark.parametrize(
+    ("native_field", "invalid_value", "result_field"),
+    [
+        ("input_tokens", None, "input_tokens"),
+        ("input_tokens", True, "input_tokens"),
+        ("input_tokens", 31.9, "input_tokens"),
+        ("output_tokens", None, "output_tokens"),
+        ("output_tokens", False, "output_tokens"),
+        ("output_tokens", 7.5, "output_tokens"),
+        ("cache_read_input_tokens", None, "cache_read_tokens"),
+        ("cache_read_input_tokens", True, "cache_read_tokens"),
+        ("cache_creation_input_tokens", None, "cache_creation_tokens"),
+        ("cache_creation_input_tokens", False, "cache_creation_tokens"),
+    ],
+)
+def test_generate_preserves_invalid_native_usage_for_local_rejection(
+    native_field, invalid_value, result_field
+):
+    response = anthropic_response()
+    response["usage"][native_field] = invalid_value
+
+    def handler(_http_request):
+        return httpx.Response(
+            200,
+            json=response,
+            headers={"request-id": "req_fake_123"},
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        generated = AnthropicProvider("sk-ant-fake-test-key", _http_client=client).generate(
+            request()
+        )
+
+    assert generated[result_field] == invalid_value
+    assert type(generated[result_field]) is type(invalid_value)
+    with pytest.raises(InvalidResponse, match="usage"):
+        parse_decision(generated)
+    assert (
+        observed_cost(generated, {"input_per_million": "1.00", "output_per_million": "5.00"})
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    ("missing_field", "result_field"),
+    [("input_tokens", "input_tokens"), ("output_tokens", "output_tokens")],
+)
+def test_generate_preserves_missing_required_native_usage_for_local_rejection(
+    missing_field, result_field
+):
+    response = anthropic_response()
+    response["usage"].pop(missing_field)
+
+    def handler(_http_request):
+        return httpx.Response(
+            200,
+            json=response,
+            headers={"request-id": "req_fake_123"},
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        generated = AnthropicProvider("sk-ant-fake-test-key", _http_client=client).generate(
+            request()
+        )
+
+    assert generated[result_field] is None
+    with pytest.raises(InvalidResponse, match="usage"):
+        parse_decision(generated)
+    assert (
+        observed_cost(generated, {"input_per_million": "1.00", "output_per_million": "5.00"})
+        is None
+    )
 
 
 @pytest.mark.parametrize("status", [429, 500])
