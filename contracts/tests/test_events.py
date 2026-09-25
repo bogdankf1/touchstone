@@ -72,10 +72,96 @@ def test_pending_outcome_accepts_nullable_correctness():
         "correct": None,
         "review_cost": None,
         "error_cost": None,
+        "currency": None,
         "outcome_version": "outcome-v1",
         "evaluator_version": None,
     }
     validate_document(event, SCHEMAS / "measurement-v1.schema.json")
+
+
+def test_observed_outcome_accepts_known_costs_with_currency():
+    event = load_example("measurement-v1.json")
+    event["event_kind"] = "outcome"
+    event["payload"] = {
+        "status": "observed",
+        "correct": True,
+        "review_cost": "4.00",
+        "error_cost": "12.50",
+        "currency": "USD",
+        "outcome_version": "outcome-v1",
+        "evaluator_version": "evaluator-v1",
+    }
+
+    validate_document(event, SCHEMAS / "measurement-v1.schema.json")
+
+
+def test_outcome_accepts_unavailable_costs_with_null_currency():
+    event = load_example("measurement-v1.json")
+    event["event_kind"] = "outcome"
+    event["payload"] = {
+        "status": "failed",
+        "correct": None,
+        "review_cost": None,
+        "error_cost": None,
+        "currency": None,
+        "outcome_version": "outcome-v1",
+        "evaluator_version": None,
+    }
+
+    validate_document(event, SCHEMAS / "measurement-v1.schema.json")
+
+
+def test_outcome_zero_cost_still_requires_currency():
+    event = load_example("measurement-v1.json")
+    event["event_kind"] = "outcome"
+    event["payload"] = {
+        "status": "observed",
+        "correct": True,
+        "review_cost": "0.00",
+        "error_cost": None,
+        "currency": "USD",
+        "outcome_version": "outcome-v1",
+        "evaluator_version": "evaluator-v1",
+    }
+
+    validate_document(event, SCHEMAS / "measurement-v1.schema.json")
+
+    event["payload"].pop("currency")
+    with pytest.raises(ValidationError):
+        validate_document(event, SCHEMAS / "measurement-v1.schema.json")
+
+
+def test_outcome_rejects_known_cost_without_currency():
+    event = load_example("measurement-v1.json")
+    event["event_kind"] = "outcome"
+    event["payload"] = {
+        "status": "observed",
+        "correct": True,
+        "review_cost": "4.00",
+        "error_cost": None,
+        "outcome_version": "outcome-v1",
+        "evaluator_version": "evaluator-v1",
+    }
+
+    with pytest.raises(ValidationError):
+        validate_document(event, SCHEMAS / "measurement-v1.schema.json")
+
+
+def test_outcome_rejects_invalid_currency():
+    event = load_example("measurement-v1.json")
+    event["event_kind"] = "outcome"
+    event["payload"] = {
+        "status": "observed",
+        "correct": True,
+        "review_cost": None,
+        "error_cost": "1.00",
+        "currency": "US dollars",
+        "outcome_version": "outcome-v1",
+        "evaluator_version": "evaluator-v1",
+    }
+
+    with pytest.raises(ValidationError):
+        validate_document(event, SCHEMAS / "measurement-v1.schema.json")
 
 
 def test_unavailable_provider_cost_requires_null_amount():
@@ -123,6 +209,7 @@ def cost_event(cost_field: str, amount: str) -> dict:
             "correct": True,
             "review_cost": "0.00",
             "error_cost": "0.00",
+            "currency": "USD",
             "outcome_version": "outcome-v1",
             "evaluator_version": "evaluator-v1",
         }
@@ -202,3 +289,19 @@ def test_measurement_rejects_domain_or_oracle_fields():
     event["payload"]["fraud_probability"] = 0.5
     with pytest.raises(ValidationError):
         validate_document(event, SCHEMAS / "measurement-v1.schema.json")
+
+
+@pytest.mark.parametrize("ip_address", ["192.0.2.10", "2001:db8::10", None])
+def test_transaction_accepts_valid_or_unavailable_ip_addresses(ip_address):
+    event = load_example("transaction-v1.json")
+    event["ip_address"] = ip_address
+
+    validate_document(event, SCHEMAS / "transaction-v1.schema.json")
+
+
+def test_transaction_rejects_invalid_ip_address():
+    event = load_example("transaction-v1.json")
+    event["ip_address"] = "not-an-ip-address"
+
+    with pytest.raises(ValidationError):
+        validate_document(event, SCHEMAS / "transaction-v1.schema.json")

@@ -59,7 +59,8 @@
     "ip_address": {
       "oneOf": [
         { "type": "null" },
-        { "type": "string", "format": "ip-address" }
+        { "type": "string", "format": "ipv4" },
+        { "type": "string", "format": "ipv6" }
       ]
     },
     "provenance": { "$ref": "#/$defs/provenance" }

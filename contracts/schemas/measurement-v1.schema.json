@@ -222,6 +222,7 @@
         "correct",
         "review_cost",
         "error_cost",
+        "currency",
         "outcome_version",
         "evaluator_version"
       ],
@@ -230,9 +231,31 @@
         "correct": { "type": ["boolean", "null"] },
         "review_cost": { "$ref": "#/$defs/nullable_nonnegative_decimal" },
         "error_cost": { "$ref": "#/$defs/nullable_nonnegative_decimal" },
+        "currency": {
+          "oneOf": [
+            { "type": "null" },
+            { "type": "string", "pattern": "^[A-Z]{3}$" }
+          ]
+        },
         "outcome_version": { "$ref": "#/$defs/nonempty" },
         "evaluator_version": { "$ref": "#/$defs/nullable_nonempty" }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "anyOf": [
+              { "properties": { "review_cost": { "type": "string" } } },
+              { "properties": { "error_cost": { "type": "string" } } }
+            ]
+          },
+          "then": {
+            "properties": {
+              "currency": { "type": "string", "pattern": "^[A-Z]{3}$" }
+            }
+          },
+          "else": { "properties": { "currency": { "type": "null" } } }
+        }
+      ]
     },
     "evaluation": {
       "type": "object",

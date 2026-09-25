@@ -199,6 +199,26 @@ def test_cli_returns_two_for_missing_source_files(tmp_path, capsys):
     assert "missing source files" in capsys.readouterr().err
 
 
+def test_cli_returns_two_for_undecodable_existing_input(tmp_path, capsys):
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    write_rows(archive / "credit_card_transactions-ibm_v2.csv", [row()])
+    write_rows(archive / "User0_credit_card_transactions.csv", [])
+    write_rows(
+        archive / "sd254_cards.csv",
+        [["0", "0"]],
+        headers=["User", "CARD INDEX"],
+    )
+    (archive / "sd254_users.csv").write_bytes(b"\xff")
+    output = tmp_path / "inventory.json"
+
+    exit_code = main(["--archive", str(archive), "--output", str(output)])
+
+    assert exit_code == 2
+    assert not output.exists()
+    assert "source inventory failed" in capsys.readouterr().err
+
+
 def test_cli_refuses_to_write_inside_source_archive(tmp_path, capsys):
     output = tmp_path / "inventory.json"
 
