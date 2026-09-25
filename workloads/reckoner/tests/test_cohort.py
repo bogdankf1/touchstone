@@ -2,6 +2,7 @@ import csv
 import json
 from pathlib import Path
 
+import pytest
 from reckoner.data.artifacts import load_runtime
 from reckoner.data.cohort import prepare
 
@@ -121,6 +122,13 @@ def test_prepare_is_deterministic_and_freezes_exact_disjoint_cohorts(tmp_path):
     }
     assert first["history"]["covered_fraud"] == first["history"]["source_fraud"]
     assert any(item["merchant_location"]["city"] == "North\nHarbor" for item in pilot)
+    for purpose in ("pilot", "baseline"):
+        for logical_name in first["cohorts"][purpose]["manifest_files"]:
+            counts = read_logical_file(tmp_path / "one", first, logical_name)["counts"]
+            assert (
+                counts["eligible"] + counts["unsupported"] + counts["invalid"]
+                == counts["interval_source"]
+            )
 
 
 def test_every_source_user_has_one_tenant_and_assignment_ignores_holdout_labels(tmp_path):
@@ -162,3 +170,51 @@ def test_future_fraud_changes_history_retention_but_never_runtime_fields(tmp_pat
     for transaction in load_runtime(tmp_path / "bundle", "baseline"):
         assert "label" not in transaction
         assert "source_user_id" not in transaction
+
+
+def test_invalid_blank_identifiers_are_counted_without_becoming_tenant_cases(tmp_path):
+    source_dir = tmp_path / "source"
+    write_source(source_dir)
+    transaction_path = source_dir / "credit_card_transactions-ibm_v2.csv"
+    with transaction_path.open("a", encoding="utf-8", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=HEADERS)
+        writer.writerow(row("", 2019, "No", 1900))
+        invalid_card = row("history-low", 2019, "No", 1901)
+        invalid_card["Card"] = ""
+        writer.writerow(invalid_card)
+
+    index = prepare(source_dir, tmp_path / "bundle")
+
+    assert index["source_counts"]["invalid"] == 2
+    assert index["source_counts"]["unassigned"] == {
+        "total": 1,
+        "eligible": 0,
+        "unsupported": 0,
+        "invalid": 1,
+        "periods": {
+            "pre_2019": 0,
+            "holdout_2019": 1,
+            "future_2020_plus": 0,
+            "invalid_timestamp": 0,
+        },
+    }
+    baseline_manifests = [
+        read_logical_file(tmp_path / "bundle", index, logical_name)
+        for logical_name in index["cohorts"]["baseline"]["manifest_files"]
+    ]
+    assert sum(manifest["counts"]["interval_source"] for manifest in baseline_manifests) == 1001
+    assert sum(manifest["counts"]["invalid"] for manifest in baseline_manifests) == 1
+    assert len(load_runtime(tmp_path / "bundle", "baseline")) == 1000
+
+
+def test_nonempty_unknown_card_reference_still_blocks_preparation(tmp_path):
+    source_dir = tmp_path / "source"
+    write_source(source_dir)
+    transaction_path = source_dir / "credit_card_transactions-ibm_v2.csv"
+    missing_card = row("history-low", 2019, "No", 1900)
+    missing_card["Card"] = "9"
+    with transaction_path.open("a", encoding="utf-8", newline="") as stream:
+        csv.DictWriter(stream, fieldnames=HEADERS).writerow(missing_card)
+
+    with pytest.raises(ValueError, match="unmatched transaction/card references"):
+        prepare(source_dir, tmp_path / "bundle")

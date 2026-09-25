@@ -61,8 +61,10 @@
       "required": [
         "source",
         "retained",
+        "interval_source",
         "eligible",
         "unsupported",
+        "invalid",
         "total",
         "fraud",
         "legitimate"
@@ -70,8 +72,10 @@
       "properties": {
         "source": { "$ref": "#/$defs/nonnegative_integer" },
         "retained": { "$ref": "#/$defs/nonnegative_integer" },
+        "interval_source": { "$ref": "#/$defs/nonnegative_integer" },
         "eligible": { "$ref": "#/$defs/nonnegative_integer" },
         "unsupported": { "$ref": "#/$defs/nonnegative_integer" },
+        "invalid": { "$ref": "#/$defs/nonnegative_integer" },
         "total": { "$ref": "#/$defs/nonnegative_integer" },
         "fraud": { "$ref": "#/$defs/nonnegative_integer" },
         "legitimate": { "$ref": "#/$defs/nonnegative_integer" }

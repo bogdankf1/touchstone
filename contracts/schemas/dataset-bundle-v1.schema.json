@@ -133,7 +133,7 @@
     "source_counts": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["total", "eligible", "unsupported", "invalid", "fraud", "legitimate", "periods"],
+      "required": ["total", "eligible", "unsupported", "invalid", "fraud", "legitimate", "periods", "unassigned"],
       "properties": {
         "total": { "$ref": "#/$defs/count" },
         "eligible": { "$ref": "#/$defs/count" },
@@ -141,17 +141,31 @@
         "invalid": { "$ref": "#/$defs/count" },
         "fraud": { "$ref": "#/$defs/count" },
         "legitimate": { "$ref": "#/$defs/count" },
-        "periods": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["pre_2019", "holdout_2019", "future_2020_plus", "invalid_timestamp"],
-          "properties": {
-            "pre_2019": { "$ref": "#/$defs/count" },
-            "holdout_2019": { "$ref": "#/$defs/count" },
-            "future_2020_plus": { "$ref": "#/$defs/count" },
-            "invalid_timestamp": { "$ref": "#/$defs/count" }
-          }
-        }
+        "periods": { "$ref": "#/$defs/period_counts" },
+        "unassigned": { "$ref": "#/$defs/status_counts" }
+      }
+    },
+    "period_counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pre_2019", "holdout_2019", "future_2020_plus", "invalid_timestamp"],
+      "properties": {
+        "pre_2019": { "$ref": "#/$defs/count" },
+        "holdout_2019": { "$ref": "#/$defs/count" },
+        "future_2020_plus": { "$ref": "#/$defs/count" },
+        "invalid_timestamp": { "$ref": "#/$defs/count" }
+      }
+    },
+    "status_counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["total", "eligible", "unsupported", "invalid", "periods"],
+      "properties": {
+        "total": { "$ref": "#/$defs/count" },
+        "eligible": { "$ref": "#/$defs/count" },
+        "unsupported": { "$ref": "#/$defs/count" },
+        "invalid": { "$ref": "#/$defs/count" },
+        "periods": { "$ref": "#/$defs/period_counts" }
       }
     }
   }

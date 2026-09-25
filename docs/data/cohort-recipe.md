@@ -35,9 +35,10 @@ cohort manifest is a one-record fabricated contract fixture and is not measured 
    place. A failed preparation publishes no partial bundle; a changed source or artifact fails
    verification.
 8. Report mutually exclusive eligible, unsupported, and invalid source counts alongside retained
-   and selected counts. Graph coverage is explicitly `none` with zero included transactions in
-   Reckoner v0. Later graph readers must apply per-transaction time cutoffs to the source-backed
-   histories.
+   and selected counts. Rows without a valid user owner remain explicit unassigned source metadata;
+   they never become a third operational tenant or an evaluation case. Graph coverage is explicitly
+   `none` with zero included transactions in Reckoner v0. Later graph readers must apply
+   per-transaction time cutoffs to the source-backed histories.
 
 The enriched 100/900 class ratio describes this evaluation cohort only. Do not infer natural
 population rates or population totals from it, and do not apply one sampling ratio across metrics

@@ -71,6 +71,23 @@ def test_fixture_cohort_manifest_is_valid():
     contracts.validate_cohort_manifest(document, SCHEMAS / "cohort-manifest-v1.schema.json")
 
 
+def test_manifest_accepts_complete_interval_status_partition():
+    document = load_example("cohort-manifest-v1.json")
+    document["counts"].update({"interval_source": 1, "invalid": 0})
+    refresh_identity(document, "manifest_id")
+
+    contracts.validate_cohort_manifest(document, SCHEMAS / "cohort-manifest-v1.schema.json")
+
+
+def test_manifest_rejects_incomplete_interval_status_partition():
+    document = load_example("cohort-manifest-v1.json")
+    document["counts"].update({"interval_source": 2, "invalid": 0})
+    refresh_identity(document, "manifest_id")
+
+    with pytest.raises(ValueError, match="interval counts"):
+        contracts.validate_cohort_manifest(document, SCHEMAS / "cohort-manifest-v1.schema.json")
+
+
 def test_manifest_rejects_stale_identity_after_selection_edit():
     document = load_example("cohort-manifest-v1.json")
     document["seed"] += 1

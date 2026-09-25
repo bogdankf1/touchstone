@@ -30,6 +30,7 @@ from reckoner.data.profile import (
 SEED = 20260925
 SOURCE_FILES = (TRANSACTIONS_FILE, TRANSACTION_SUBSET_FILE, CARDS_FILE, USERS_FILE)
 TENANTS = ("tenant-a", "tenant-b")
+_STATUSES = ("eligible", "unsupported", "invalid")
 LIMITS = {
     "pilot": {"fraud": 2, "legitimate": 18},
     "baseline": {"fraud": 100, "legitimate": 900},
@@ -217,8 +218,10 @@ def _manifest(
         "counts": {
             "source": source_count,
             "retained": retained_count,
+            "interval_source": sum(period_counts[status] for status in _STATUSES),
             "eligible": period_counts["eligible"],
             "unsupported": period_counts["unsupported"],
+            "invalid": period_counts["invalid"],
             "total": len(tenant_selected),
             "fraud": labels["fraud"],
             "legitimate": labels["legitimate"],
@@ -293,6 +296,8 @@ def prepare(source_dir: Path, output: Path) -> dict[str, Any]:
     source_status: Counter[str] = Counter()
     source_labels: Counter[str] = Counter()
     source_periods: Counter[str] = Counter()
+    unassigned_status: Counter[str] = Counter()
+    unassigned_periods: Counter[str] = Counter()
     unmatched_cards = 0
     for _, row in _iter_rows(source_dir / TRANSACTIONS_FILE, REQUIRED_COLUMNS):
         user = (row.get("User") or "").strip()
@@ -306,12 +311,16 @@ def prepare(source_dir: Path, output: Path) -> dict[str, Any]:
                 fraud_users.add(user)
         elif raw_label == "No":
             source_labels["legitimate"] += 1
-        if (user, card) not in card_keys:
+        if user and card and (user, card) not in card_keys:
             unmatched_cards += 1
         state = _source_state(row)
         source_status[state.status] += 1
-        source_periods[_period(state.occurred_at)] += 1
-        if state.occurred_at is not None and state.occurred_at.year < 2019 and state.label:
+        period = _period(state.occurred_at)
+        source_periods[period] += 1
+        if not user:
+            unassigned_status[state.status] += 1
+            unassigned_periods[period] += 1
+        if user and state.occurred_at is not None and state.occurred_at.year < 2019 and state.label:
             summary = pre_holdout.setdefault(user, Counter())
             summary["total"] += 1
             summary["fraud"] += state.label == "fraud"
@@ -580,6 +589,21 @@ def prepare(source_dir: Path, output: Path) -> dict[str, Any]:
                         "future_2020_plus",
                         "invalid_timestamp",
                     )
+                },
+                "unassigned": {
+                    "total": sum(unassigned_status.values()),
+                    "eligible": unassigned_status["eligible"],
+                    "unsupported": unassigned_status["unsupported"],
+                    "invalid": unassigned_status["invalid"],
+                    "periods": {
+                        name: unassigned_periods[name]
+                        for name in (
+                            "pre_2019",
+                            "holdout_2019",
+                            "future_2020_plus",
+                            "invalid_timestamp",
+                        )
+                    },
                 },
             },
         }

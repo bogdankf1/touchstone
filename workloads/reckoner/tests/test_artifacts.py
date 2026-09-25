@@ -9,6 +9,31 @@ from reckoner.data.cohort import prepare
 from test_cohort import write_source
 
 
+def write_bundle_index(artifact_dir, index):
+    index["bundle_id"] = content_id(
+        {key: value for key, value in index.items() if key != "bundle_id"}
+    )
+    (artifact_dir / "bundle.json").write_bytes(canonical_json(index))
+
+
+def write_json_artifact(artifact_dir, index, logical_name, document, identity_field):
+    document[identity_field] = content_id(
+        {key: value for key, value in document.items() if key != identity_field}
+    )
+    payload = canonical_json(document)
+    (artifact_dir / index["files"][logical_name]["path"]).write_bytes(payload)
+    index["files"][logical_name]["sha256"] = hashlib.sha256(payload).hexdigest()
+
+
+def write_jsonl_artifact(artifact_dir, index, logical_name, documents):
+    payload = b"".join(
+        (json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n").encode()
+        for document in documents
+    )
+    (artifact_dir / index["files"][logical_name]["path"]).write_bytes(payload)
+    index["files"][logical_name]["sha256"] = hashlib.sha256(payload).hexdigest()
+
+
 def test_verify_rejects_changed_source_bytes(tmp_path):
     source_dir = tmp_path / "source"
     write_source(source_dir)
@@ -55,18 +80,119 @@ def test_verify_rejects_internally_rehashed_false_tenant_class_counts(tmp_path):
         manifest["counts"]["legitimate"],
         manifest["counts"]["fraud"],
     )
-    manifest["manifest_id"] = content_id(
-        {key: value for key, value in manifest.items() if key != "manifest_id"}
-    )
-    payload = canonical_json(manifest)
-    manifest_path.write_bytes(payload)
-    index["files"][logical_name]["sha256"] = hashlib.sha256(payload).hexdigest()
-    index["bundle_id"] = content_id(
-        {key: value for key, value in index.items() if key != "bundle_id"}
-    )
-    (artifact_dir / "bundle.json").write_bytes(canonical_json(index))
+    write_json_artifact(artifact_dir, index, logical_name, manifest, "manifest_id")
+    write_bundle_index(artifact_dir, index)
 
     with pytest.raises(ValueError, match="tenant class counts"):
+        verify_bundle(artifact_dir)
+
+
+def test_verify_rejects_rehashed_transaction_id_duplicated_across_tenants(tmp_path):
+    source_dir = tmp_path / "source"
+    write_source(source_dir)
+    artifact_dir = tmp_path / "bundle"
+    index = prepare(source_dir, artifact_dir)
+    runtime_name = "runtime_baseline"
+    oracle_name = "oracle_baseline"
+    runtime_path = artifact_dir / index["files"][runtime_name]["path"]
+    oracle_path = artifact_dir / index["files"][oracle_name]["path"]
+    runtime = [json.loads(line) for line in runtime_path.read_text().splitlines()]
+    oracle = [json.loads(line) for line in oracle_path.read_text().splitlines()]
+    by_tenant = {}
+    for position, transaction in enumerate(runtime):
+        by_tenant.setdefault(transaction["tenant_id"], position)
+    source_position = by_tenant["tenant-a"]
+    target_position = by_tenant["tenant-b"]
+    source_id = runtime[source_position]["transaction_id"]
+    target_id = runtime[target_position]["transaction_id"]
+    runtime[target_position]["transaction_id"] = source_id
+    oracle[target_position]["transaction_id"] = source_id
+    target_manifest_name = "cohort_baseline_tenant_b"
+    target_manifest_path = artifact_dir / index["files"][target_manifest_name]["path"]
+    target_manifest = json.loads(target_manifest_path.read_text())
+    target_manifest["selected_transaction_ids"] = [
+        source_id if transaction_id == target_id else transaction_id
+        for transaction_id in target_manifest["selected_transaction_ids"]
+    ]
+    write_jsonl_artifact(artifact_dir, index, runtime_name, runtime)
+    write_jsonl_artifact(artifact_dir, index, oracle_name, oracle)
+    write_json_artifact(artifact_dir, index, target_manifest_name, target_manifest, "manifest_id")
+    write_bundle_index(artifact_dir, index)
+
+    with pytest.raises(ValueError, match="duplicate transaction IDs"):
+        verify_bundle(artifact_dir)
+
+
+@pytest.mark.parametrize(
+    ("logical_name", "identity_field"),
+    [
+        ("tenant_assignments", "assignment_id"),
+        ("history_entities", "history_id"),
+        ("normalization", "normalization_id"),
+    ],
+)
+def test_verify_rejects_rehashed_extra_metadata_properties(tmp_path, logical_name, identity_field):
+    source_dir = tmp_path / "source"
+    write_source(source_dir)
+    artifact_dir = tmp_path / "bundle"
+    index = prepare(source_dir, artifact_dir)
+    path = artifact_dir / index["files"][logical_name]["path"]
+    document = json.loads(path.read_text())
+    document["unexpected"] = True
+    write_json_artifact(artifact_dir, index, logical_name, document, identity_field)
+    write_bundle_index(artifact_dir, index)
+
+    with pytest.raises(ValueError, match="invalid .* metadata"):
+        verify_bundle(artifact_dir)
+
+
+def test_verify_converts_malformed_metadata_to_value_error(tmp_path):
+    source_dir = tmp_path / "source"
+    write_source(source_dir)
+    artifact_dir = tmp_path / "bundle"
+    index = prepare(source_dir, artifact_dir)
+    logical_name = "tenant_assignments"
+    path = artifact_dir / index["files"][logical_name]["path"]
+    document = json.loads(path.read_text())
+    document.pop("assignments")
+    write_json_artifact(artifact_dir, index, logical_name, document, "assignment_id")
+    write_bundle_index(artifact_dir, index)
+
+    with pytest.raises(ValueError, match="invalid tenant assignment metadata"):
+        verify_bundle(artifact_dir)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "assigned_users",
+        "history_counts",
+        "logical_reference",
+        "normalization_id",
+        "metadata_records",
+        "source_total",
+    ],
+)
+def test_verify_rejects_inconsistent_bundle_metadata(tmp_path, mutation):
+    source_dir = tmp_path / "source"
+    write_source(source_dir)
+    artifact_dir = tmp_path / "bundle"
+    index = prepare(source_dir, artifact_dir)
+    if mutation == "assigned_users":
+        index["tenant_assignment"]["assigned_users"] += 1
+    elif mutation == "history_counts":
+        index["history"]["retained_records"] += 1
+    elif mutation == "logical_reference":
+        index["history"]["manifest_file"] = "normalization"
+    elif mutation == "normalization_id":
+        index["normalization"]["normalization_id"] = "f" * 64
+    elif mutation == "metadata_records":
+        index["files"]["history_entities"]["records"] = 2
+    else:
+        index["source_counts"]["total"] += 1
+    write_bundle_index(artifact_dir, index)
+
+    with pytest.raises(ValueError, match="bundle metadata|source counts"):
         verify_bundle(artifact_dir)
 
 

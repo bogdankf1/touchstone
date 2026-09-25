@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://touchstone.example/contracts/history-entities-v1.schema.json",
+  "title": "Checksum-backed retained history entities v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "history_id",
+    "simulated",
+    "source_backing",
+    "users",
+    "counts",
+    "graph_coverage"
+  ],
+  "properties": {
+    "schema_version": { "const": "history-entities-v1" },
+    "history_id": { "$ref": "#/$defs/sha256" },
+    "simulated": { "const": true },
+    "source_backing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "complete_rows_are_not_copied"],
+      "properties": {
+        "path": { "$ref": "#/$defs/nonempty" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "complete_rows_are_not_copied": { "const": true }
+      }
+    },
+    "users": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "source_user_id",
+          "tenant_id",
+          "account_id",
+          "record_count",
+          "fraud_record_count"
+        ],
+        "properties": {
+          "source_user_id": { "$ref": "#/$defs/nonempty" },
+          "tenant_id": { "enum": ["tenant-a", "tenant-b"] },
+          "account_id": { "$ref": "#/$defs/sha256" },
+          "record_count": { "$ref": "#/$defs/count" },
+          "fraud_record_count": { "$ref": "#/$defs/count" }
+        }
+      }
+    },
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_fraud",
+        "covered_fraud",
+        "retained_users",
+        "retained_records",
+        "cards",
+        "merchants"
+      ],
+      "properties": {
+        "source_fraud": { "$ref": "#/$defs/count" },
+        "covered_fraud": { "$ref": "#/$defs/count" },
+        "retained_users": { "$ref": "#/$defs/count" },
+        "retained_records": { "$ref": "#/$defs/count" },
+        "cards": { "$ref": "#/$defs/count" },
+        "merchants": { "$ref": "#/$defs/count" }
+      }
+    },
+    "graph_coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scope", "included_transactions"],
+      "properties": {
+        "scope": { "const": "none" },
+        "included_transactions": { "const": 0 }
+      }
+    }
+  },
+  "$defs": {
+    "nonempty": { "type": "string", "minLength": 1 },
+    "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "count": { "type": "integer", "minimum": 0 }
+  }
+}

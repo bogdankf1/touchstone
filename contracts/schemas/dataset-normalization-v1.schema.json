@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://touchstone.example/contracts/dataset-normalization-v1.schema.json",
+  "title": "CCTD normalization assumptions v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "normalization_id",
+    "dataset",
+    "simulated",
+    "adapter_version",
+    "currency",
+    "source_timezone",
+    "assumptions"
+  ],
+  "properties": {
+    "schema_version": { "const": "dataset-normalization-v1" },
+    "normalization_id": { "$ref": "#/$defs/sha256" },
+    "dataset": { "$ref": "#/$defs/nonempty" },
+    "simulated": { "const": true },
+    "adapter_version": { "$ref": "#/$defs/nonempty" },
+    "currency": { "const": "USD" },
+    "source_timezone": { "const": "UTC" },
+    "assumptions": {
+      "type": "array",
+      "minItems": 2,
+      "uniqueItems": true,
+      "items": {
+        "enum": ["currency_assumed=USD", "source_timezone_assumed=UTC"]
+      }
+    }
+  },
+  "$defs": {
+    "nonempty": { "type": "string", "minLength": 1 },
+    "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+  }
+}
