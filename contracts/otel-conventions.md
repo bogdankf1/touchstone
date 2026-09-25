@@ -30,3 +30,24 @@ Local export writes the exact protobuf bytes from the durable outbox using deter
 and SHA-256 checksums. `manifest.json` preserves ordered filenames, checksums, event IDs, run IDs,
 tenant IDs, and task IDs. Replay sends those unchanged bytes to `/v1/traces` using OTLP/HTTP
 protobuf and treats any `partial_success.rejected_spans` value as incomplete delivery.
+
+For this simulated workload, every task, provider, and evaluator span carries
+`touchstone.dataset_simulated=true`. This describes the transaction data and is independent of
+provider execution. Canonical transaction `provenance.simulated` remains true. On all three span
+kinds, `touchstone.provider_call_mode` is the persisted `fake` or `measured` mode;
+`touchstone.simulated` and each measurement envelope's `simulated` are true only for `fake`
+(fabricated provider measurements). A measured call on simulated transactions sets these two
+measurement indicators to false without implying real customer transactions.
+
+Negative, boolean, missing, or otherwise invalid provider token counters remain unchanged in the
+operational response and usage evidence. Generic telemetry represents such counters as null
+(and omits their GenAI counter attributes); their cost remains unavailable.
+
+The operational response artifact allowlist is `provider_request_id`, `requested_model`,
+`reported_model`, `finish_reason`, `content`, `input_tokens`, `output_tokens`, `cache_read_tokens`,
+and `cache_creation_tokens`; absent fields are null and invalid received values are retained.
+`response_sha256` hashes this exact persisted JSON document as UTF-8, sorted object keys, compact
+`,`/`:` separators, unescaped Unicode, and no non-finite numbers. Artifact, checksum, settlement,
+and outbox are committed atomically, including invalid-but-received responses. No received
+response means no artifact or checksum. JSON/Markdown reports link tenant/task/call identities
+to the checksum without including response text. Existing artifacts/outbox bytes are not rewritten.

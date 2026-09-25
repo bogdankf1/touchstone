@@ -587,3 +587,55 @@ def test_completion_uses_cohort_from_frozen_bundle_when_transactions_overlap(pg)
         runner.execute_run(repo, provider, "overlap-run")
         decision = repo.snapshot("overlap-run", None)["decisions"][0]
     assert decision["cohort_id"] == f"zzzz-overlap-{task[0]}"
+
+
+@pytest.mark.parametrize("content", ['{"outcome":"escalate"}', "invalid received response"])
+def test_response_artifact_checksum_is_allowlisted_deterministic_and_reported(
+    pg, tmp_path, content
+):
+    import hashlib
+
+    from reckoner.baseline.report import build_report, write_report
+
+    runner = _runner()
+    _create_four_task_run(pg, "response-digest", task_limit=1)
+    artifact = FakeProvider().result | {"content": content}
+    received = dict(reversed(list(artifact.items()))) | {"debug_secret": "never-persist-canary"}
+    provider = FakeProvider(result=received)
+    with PostgresRepository(pg.runner_dsn) as repo:
+        runner.preflight(repo, provider, "response-digest")
+        runner.execute_run(repo, provider, "response-digest")
+        snapshot = repo.snapshot("response-digest", None)
+        attempt = snapshot["attempts"][0]
+        expected = hashlib.sha256(
+            json.dumps(
+                artifact,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+                allow_nan=False,
+            ).encode("utf-8")
+        ).hexdigest()
+        assert attempt["response_sha256"] == expected
+        assert attempt["response_document"] == artifact
+        assert len(repo.outbox_rows("response-digest")) == 1
+        runner.execute_run(repo, provider, "response-digest")
+        assert repo.snapshot("response-digest", None)["attempts"][0]["response_sha256"] == expected
+    assert provider.generation_calls == 1
+    with PostgresRepository(pg.evaluator_dsn) as repo:
+        report = build_report(repo.report_snapshot("response-digest"))
+    reference = report["response_artifacts"][0]
+    assert reference == {
+        key: attempt[key]
+        for key in (
+            "tenant_id",
+            "task_id",
+            "call_id",
+            "response_sha256",
+        )
+    }
+    write_report(report, tmp_path)
+    assert expected in (tmp_path / "report.json").read_text()
+    assert expected in (tmp_path / "report.md").read_text()
+    assert content not in (tmp_path / "report.md").read_text()
+    assert "never-persist-canary" not in json.dumps(report)

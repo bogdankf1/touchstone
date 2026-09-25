@@ -119,7 +119,8 @@ def _attributes(
         "touchstone.cohort_id": attempt["cohort_id"],
         "touchstone.event_id": attempt["event_id"],
         "touchstone.call_id": attempt["call_id"],
-        "touchstone.simulated": True,
+        "touchstone.simulated": attempt["provider_call_mode"] == "fake",
+        "touchstone.dataset_simulated": True,
         "touchstone.provider_call_mode": attempt["provider_call_mode"],
         "touchstone.status": status,
         "touchstone.price_table_version": price_table_version,
@@ -178,6 +179,10 @@ def _measurement(
     }
 
 
+def _telemetry_count(value: object) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
 def _cached_tokens(usage: dict | None) -> int | None:
     if usage is None:
         return None
@@ -224,6 +229,8 @@ def store_provider_span(
             "touchstone.cohort_id": attempt["cohort_id"],
             "touchstone.event_id": attempt["event_id"],
             "touchstone.simulated": attempt["provider_call_mode"] == "fake",
+            "touchstone.dataset_simulated": True,
+            "touchstone.provider_call_mode": attempt["provider_call_mode"],
             "touchstone.status": status,
         },
     )
@@ -278,8 +285,8 @@ def store_provider_span(
                     else attempt["request_document"]["model"]
                 ),
                 "call_id": attempt["call_id"],
-                "input_tokens": input_tokens if isinstance(input_tokens, int) else None,
-                "output_tokens": output_tokens if isinstance(output_tokens, int) else None,
+                "input_tokens": _telemetry_count(input_tokens),
+                "output_tokens": _telemetry_count(output_tokens),
                 "cached_tokens": _cached_tokens(usage),
                 "cost_status": "actual" if actual_cost is not None else "unavailable",
                 "cost_amount": format(actual_cost, "f") if actual_cost is not None else None,
@@ -351,7 +358,9 @@ def store_evaluation_span(
             "touchstone.task_id": row["task_id"],
             "touchstone.config_id": row["config_id"],
             "touchstone.evaluation_id": evaluation_id,
-            "touchstone.simulated": True,
+            "touchstone.simulated": row["provider_call_mode"] == "fake",
+            "touchstone.dataset_simulated": True,
+            "touchstone.provider_call_mode": row["provider_call_mode"],
             "touchstone.status": result["required_suite_status"],
         },
     )
@@ -381,7 +390,7 @@ def store_evaluation_span(
             "node_name": "evaluate",
             "event_kind": event_kind,
             "occurred_at": row["occurred_at"],
-            "simulated": True,
+            "simulated": row["provider_call_mode"] == "fake",
             "reproducibility": reproduction,
             "payload": payload,
         }

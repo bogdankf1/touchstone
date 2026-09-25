@@ -708,7 +708,24 @@ class PostgresRepository:
         outcome = None
         final_status = "uncertain"
         safe_error = error_category
+        response_sha256 = None
         if result is not None:
+            # The response artifact contains only provider evidence, including invalid usage.
+            result = {
+                key: result.get(key)
+                for key in (
+                    "provider_request_id",
+                    "requested_model",
+                    "reported_model",
+                    "finish_reason",
+                    "content",
+                    "input_tokens",
+                    "output_tokens",
+                    "cache_read_tokens",
+                    "cache_creation_tokens",
+                )
+            }
+            response_sha256 = content_id(result)
             usage = {
                 key: result.get(key)
                 for key in (
@@ -788,7 +805,7 @@ class PostgresRepository:
                 """
                 UPDATE reckoner.attempts
                 SET status = %s, requested_model = %s, reported_model = %s,
-                    response_document = %s, usage = %s, actual_cost = %s,
+                    response_document = %s, response_sha256 = %s, usage = %s, actual_cost = %s,
                     error_category = %s, started_at = %s, ended_at = %s,
                     duration_ms = %s, settled_at = now()
                 WHERE call_id = %s
@@ -797,7 +814,8 @@ class PostgresRepository:
                     "responded" if final_status == "completed" else final_status,
                     attempt["request_document"]["model"],
                     result.get("reported_model") if result else None,
-                    Jsonb(result) if result else None,
+                    Jsonb(result) if result is not None else None,
+                    response_sha256,
                     Jsonb(usage) if usage is not None else None,
                     actual,
                     safe_error,
@@ -976,7 +994,7 @@ class PostgresRepository:
                    o.label, d.outcome, tc.document AS thresholds,
                    t.trace_id, t.span_id AS task_span_id,
                    COALESCE(a.ended_at, r.preflight_at, r.created_at) AS occurred_at,
-                   r.config_id, r.bundle_id, r.preflight_code_revision,
+                   r.config_id, r.bundle_id, r.preflight_code_revision, r.provider_call_mode,
                    c.document AS config, ch.cohort_id
             FROM reckoner.tasks t
             JOIN reckoner.runs r
@@ -1107,7 +1125,8 @@ class PostgresRepository:
             (run_id,),
         ).fetchall()
         attempts = self._connection.execute(
-            "SELECT tenant_id, task_id, call_id, status, actual_cost, maximum_cost, duration_ms "
+            "SELECT tenant_id, task_id, call_id, status, actual_cost, maximum_cost, duration_ms, "
+            "response_sha256 "
             "FROM reckoner.attempts WHERE run_id = %s ORDER BY tenant_id, task_id, call_id",
             (run_id,),
         ).fetchall()

@@ -21,7 +21,7 @@ from reckoner.data.artifacts import sha256_file, verify_bundle
 from reckoner.data.cohort import prepare
 from reckoner.resources import CONFIG, SCHEMAS
 from reckoner.smoke import is_smoke_database, smoke
-from reckoner.storage.budget import BudgetExceeded
+from reckoner.storage.budget import BudgetExceeded, RunBusy
 from reckoner.storage.migrate import migrate, provision_roles
 from reckoner.storage.postgres import PostgresRepository
 from reckoner.telemetry.otlp import export_evaluations, export_run, replay
@@ -271,6 +271,9 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, UnicodeError, ValueError) as error:
         print(f"{args.command} failed: {error}", file=sys.stderr)
         return 2
+    except RunBusy:
+        print(f"{args.command} blocked: runner busy", file=sys.stderr)
+        return 3
     except (BudgetExceeded, ProviderError):
         print(f"{args.command} blocked", file=sys.stderr)
         return 3

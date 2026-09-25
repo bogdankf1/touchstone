@@ -210,7 +210,10 @@ def test_disk_export_failure_leaves_outbox_pending_without_regeneration(pg, tmp_
     assert provider.generation_calls == calls == 4
 
 
-def test_outbox_insert_failure_rolls_back_completion_and_leaves_dispatch_uncertain(pg, monkeypatch):
+@pytest.mark.parametrize("failure_point", ["outbox", "completion"])
+def test_outbox_insert_failure_rolls_back_completion_and_leaves_dispatch_uncertain(
+    pg, monkeypatch, failure_point
+):
     runner, _, _ = _modules()
     _create_four_task_run(pg, "outbox-failure")
     provider = FakeProvider()
@@ -220,14 +223,37 @@ def test_outbox_insert_failure_rolls_back_completion_and_leaves_dispatch_uncerta
         def fail_export(*_args, **_kwargs):
             raise RuntimeError("synthetic outbox write failure")
 
-        telemetry = importlib.import_module("reckoner.telemetry.events")
-        monkeypatch.setattr(telemetry, "store_provider_span", fail_export)
+        if failure_point == "outbox":
+            telemetry = importlib.import_module("reckoner.telemetry.events")
+            monkeypatch.setattr(telemetry, "store_provider_span", fail_export)
+        else:
+            original = repo._refresh_run_status
+
+            def fail_completion(cursor, run_id):
+                # Fail after artifact, checksum, settlement, decision and outbox writes.
+                stored = cursor.execute(
+                    "SELECT response_document, response_sha256 FROM reckoner.attempts "
+                    "WHERE run_id = %s",
+                    (run_id,),
+                ).fetchone()
+                assert stored["response_document"] == provider.result
+                assert stored["response_sha256"] is not None
+                monkeypatch.setattr(repo, "_refresh_run_status", original)
+                raise RuntimeError("synthetic final completion failure")
+
+            monkeypatch.setattr(repo, "_refresh_run_status", fail_completion)
         result = runner.execute_run(repo, provider, "outbox-failure")
         snapshot = repo.snapshot("outbox-failure", None)
     assert provider.generation_calls == 1
     assert result["uncertain"] == 1
     assert snapshot["decisions"] == []
     assert snapshot["attempts"][0]["status"] == "uncertain"
+    assert snapshot["attempts"][0]["response_document"] is None
+    assert snapshot["attempts"][0]["response_sha256"] is None
+    assert snapshot["attempts"][0]["usage"] is None
+    assert snapshot["budget_entries"][0]["actual_cost"] is None
+    with PostgresRepository(pg.runner_dsn) as repo:
+        assert repo.outbox_rows("outbox-failure") == []
 
 
 def test_runner_cannot_read_evaluator_outbox_payload(pg):
@@ -320,3 +346,76 @@ def test_replay_validates_every_checksum_before_any_network(pg, tmp_path):
         server.shutdown()
         thread.join()
     assert calls == []
+
+
+@pytest.mark.parametrize("field", ["input_tokens", "output_tokens"])
+@pytest.mark.parametrize("invalid", [-1, True, "7", None])
+def test_invalid_usage_preserves_received_evidence_and_exports_unknown_count(pg, field, invalid):
+    runner, _, protobuf = _modules()
+    run_id = "invalid-native-usage"
+    _create_four_task_run(pg, run_id, task_limit=1)
+    received = FakeProvider().result | {field: invalid}
+    provider = FakeProvider(result=received)
+    with PostgresRepository(pg.runner_dsn) as repo:
+        runner.preflight(repo, provider, run_id)
+        result = runner.execute_run(repo, provider, run_id)
+        snapshot = repo.snapshot(run_id, None)
+        outbox = repo.outbox_rows(run_id)
+        runner.execute_run(repo, provider, run_id)
+    assert result["uncertain"] == 1
+    assert provider.generation_calls == 1
+    attempt = snapshot["attempts"][0]
+    assert attempt["response_document"] == received
+    assert attempt["usage"][field] == invalid
+    assert attempt["error_category"] == "invalid_response"
+    assert attempt["actual_cost"] is None
+    assert snapshot["budget_entries"][0]["status"] == "uncertain"
+    assert snapshot["decisions"] == []
+    assert len(outbox) == 1
+    request = protobuf.ExportTraceServiceRequest.FromString(bytes(outbox[0]["payload"]))
+    spans = [s for r in request.resource_spans for scope in r.scope_spans for s in scope.spans]
+    provider_span = next(s for s in spans if s.name == "reckoner.provider.chat")
+    attrs = {a.key: a.value for a in provider_span.attributes}
+    assert f"gen_ai.usage.{field}" not in attrs
+    payload = json.loads(provider_span.events[0].attributes[0].value.string_value)["payload"]
+    assert payload[field] is None
+    assert payload["cost_status"] == "unavailable"
+
+
+@pytest.mark.parametrize("mode", ["fake", "measured"])
+def test_all_streams_distinguish_simulated_dataset_from_fabricated_measurement(pg, mode):
+    from reckoner.baseline.evaluate import evaluate_run
+    from test_runner import CountingAnthropicBoundary
+
+    runner, _, protobuf = _modules()
+    run_id = "provenance"
+    _create_four_task_run(
+        pg,
+        run_id,
+        execution_mode="paid" if mode == "measured" else "test",
+        purpose="pilot",
+        task_limit=1,
+    )
+    provider = CountingAnthropicBoundary() if mode == "measured" else FakeProvider()
+    with PostgresRepository(pg.runner_dsn) as repo:
+        runner.preflight(repo, provider, run_id)
+        runner.execute_run(repo, provider, run_id)
+        rows = repo.outbox_rows(run_id)
+    with PostgresRepository(pg.evaluator_dsn) as repo:
+        assert evaluate_run(repo, run_id)["evaluated"] == 1
+        rows += repo.evaluation_outbox_rows(run_id)
+    seen = set()
+    for row in rows:
+        request = protobuf.ExportTraceServiceRequest.FromString(bytes(row["payload"]))
+        for resource in request.resource_spans:
+            for scope in resource.scope_spans:
+                for span in scope.spans:
+                    attrs = {a.key: a.value for a in span.attributes}
+                    assert attrs["touchstone.simulated"].bool_value == (mode == "fake")
+                    assert attrs["touchstone.dataset_simulated"].bool_value is True
+                    assert attrs["touchstone.provider_call_mode"].string_value == mode
+                    for event in span.events:
+                        doc = json.loads(event.attributes[0].value.string_value)
+                        assert doc["simulated"] == (mode == "fake")
+                        seen.add(doc["event_kind"])
+    assert seen == {"execution", "provider_usage", "outcome", "evaluation", "metric_contribution"}

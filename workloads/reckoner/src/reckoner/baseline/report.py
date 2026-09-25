@@ -242,6 +242,15 @@ def build_report(snapshot: dict[str, Any]) -> dict[str, Any]:
             for task in missing_evaluations
         ],
         "exports": snapshot.get("exports", []),
+        "response_artifacts": [
+            {
+                "tenant_id": attempt["tenant_id"],
+                "task_id": attempt["task_id"],
+                "call_id": attempt["call_id"],
+                "response_sha256": attempt.get("response_sha256"),
+            }
+            for attempt in snapshot["attempts"]
+        ],
         "caveats": [
             "All transaction data is simulated; no production or real-customer claim is made.",
             (
@@ -369,6 +378,15 @@ def _markdown(report: dict[str, Any]) -> str:
         lines.extend(
             (f"- {item['producer']} / {item['status']} / {item['event_id']} / {item['task_id']}")
             for item in report["exports"]
+        )
+    else:
+        lines.append("- None")
+    lines.extend(["", "## Response artifact references", ""])
+    if report["response_artifacts"]:
+        lines.extend(
+            f"- {item['tenant_id']} / {item['task_id']} / {item['call_id']} / "
+            f"SHA-256: {_available(item['response_sha256'])}"
+            for item in report["response_artifacts"]
         )
     else:
         lines.append("- None")

@@ -335,3 +335,42 @@ def test_provision_roles_rejects_existing_oracle_membership(pg):
         connection.execute(sql.SQL("GRANT reckoner_evaluator TO {}").format(sql.Identifier(role)))
     with pytest.raises(ValueError, match="privileges"):
         provision_roles(pg.owner_dsn, {"RECKONER_RUNNER_DSN": pg.runner_dsn})
+
+
+@pytest.mark.integration
+def test_cli_runner_contention_returns_safe_blocked_status(pg, monkeypatch, capsys):
+    from reckoner import cli
+    from reckoner.baseline.runner import preflight
+    from reckoner.storage.postgres import PostgresRepository
+    from test_runner import FakeProvider, _create_four_task_run
+
+    _create_four_task_run(pg, "cli-busy", task_limit=1)
+    provider = FakeProvider()
+    with PostgresRepository(pg.runner_dsn) as repo:
+        preflight(repo, provider, "cli-busy")
+    monkeypatch.setattr(
+        cli, "_prepare_run", lambda *_: (PostgresRepository(pg.runner_dsn), provider)
+    )
+    with PostgresRepository(pg.runner_dsn) as holder, holder.exclusive_runner():
+        code = cli.main(
+            [
+                "run",
+                "--env-file",
+                "-",
+                "--artifact-dir",
+                "unused",
+                "--config",
+                "unused",
+                "--purpose",
+                "pilot",
+                "--run-id",
+                "cli-busy",
+                "--allow-paid",
+            ]
+        )
+    assert code == 3
+    captured = capsys.readouterr()
+    assert "blocked" in captured.err
+    assert "Traceback" not in captured.err
+    assert pg.runner_dsn not in captured.err
+    assert provider.generation_calls == 0
