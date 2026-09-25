@@ -34,6 +34,16 @@ def write_jsonl_artifact(artifact_dir, index, logical_name, documents):
     index["files"][logical_name]["sha256"] = hashlib.sha256(payload).hexdigest()
 
 
+def mutate_tenant_manifests(artifact_dir, index, tenant_id, mutation):
+    suffix = tenant_id.replace("-", "_")
+    for purpose in ("pilot", "baseline"):
+        logical_name = f"cohort_{purpose}_{suffix}"
+        path = artifact_dir / index["files"][logical_name]["path"]
+        manifest = json.loads(path.read_text())
+        mutation(manifest)
+        write_json_artifact(artifact_dir, index, logical_name, manifest, "manifest_id")
+
+
 def test_verify_rejects_changed_source_bytes(tmp_path):
     source_dir = tmp_path / "source"
     write_source(source_dir)
@@ -193,6 +203,39 @@ def test_verify_rejects_inconsistent_bundle_metadata(tmp_path, mutation):
     write_bundle_index(artifact_dir, index)
 
     with pytest.raises(ValueError, match="bundle metadata|source counts"):
+        verify_bundle(artifact_dir)
+
+
+def test_verify_rejects_matching_false_retained_records_in_both_purposes(tmp_path):
+    source_dir = tmp_path / "source"
+    write_source(source_dir)
+    artifact_dir = tmp_path / "bundle"
+    index = prepare(source_dir, artifact_dir)
+
+    def falsify_retained(manifest):
+        manifest["counts"]["retained"] += 1
+
+    mutate_tenant_manifests(artifact_dir, index, "tenant-a", falsify_retained)
+    write_bundle_index(artifact_dir, index)
+
+    with pytest.raises(ValueError, match="retained record counts"):
+        verify_bundle(artifact_dir)
+
+
+@pytest.mark.parametrize("field", ["users", "cards", "merchants"])
+def test_verify_rejects_matching_false_history_coverage_in_both_purposes(tmp_path, field):
+    source_dir = tmp_path / "source"
+    write_source(source_dir)
+    artifact_dir = tmp_path / "bundle"
+    index = prepare(source_dir, artifact_dir)
+
+    def falsify_history_coverage(manifest):
+        manifest["history_coverage"][field] += 1
+
+    mutate_tenant_manifests(artifact_dir, index, "tenant-a", falsify_history_coverage)
+    write_bundle_index(artifact_dir, index)
+
+    with pytest.raises(ValueError, match="history coverage counts"):
         verify_bundle(artifact_dir)
 
 

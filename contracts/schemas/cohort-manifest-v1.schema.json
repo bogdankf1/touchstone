@@ -92,7 +92,7 @@
         "limitations"
       ],
       "properties": {
-        "complete_selected_histories": { "type": "boolean" },
+        "complete_selected_histories": { "const": true },
         "users": { "$ref": "#/$defs/nonnegative_integer" },
         "cards": { "$ref": "#/$defs/nonnegative_integer" },
         "merchants": { "$ref": "#/$defs/nonnegative_integer" },

@@ -88,6 +88,15 @@ def test_manifest_rejects_incomplete_interval_status_partition():
         contracts.validate_cohort_manifest(document, SCHEMAS / "cohort-manifest-v1.schema.json")
 
 
+def test_manifest_rejects_incomplete_selected_histories():
+    document = load_example("cohort-manifest-v1.json")
+    document["history_coverage"]["complete_selected_histories"] = False
+    refresh_identity(document, "manifest_id")
+
+    with pytest.raises(ValidationError):
+        contracts.validate_cohort_manifest(document, SCHEMAS / "cohort-manifest-v1.schema.json")
+
+
 def test_manifest_rejects_stale_identity_after_selection_edit():
     document = load_example("cohort-manifest-v1.json")
     document["seed"] += 1

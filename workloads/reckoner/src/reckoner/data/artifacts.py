@@ -375,6 +375,29 @@ def verify_bundle(artifact_dir: Path, source_dir: Path | None = None) -> dict[st
             != pilot_manifests[tenant_id]["counts"]["retained"]
         ):
             raise ValueError("bundle metadata duplicated tenant counts mismatch")
+        if (
+            baseline_manifests[tenant_id]["history_coverage"]
+            != pilot_manifests[tenant_id]["history_coverage"]
+        ):
+            raise ValueError("bundle metadata duplicated history coverage mismatch")
+    if (
+        sum(manifest["counts"]["retained"] for manifest in baseline_manifests.values())
+        != history["counts"]["retained_records"]
+    ):
+        raise ValueError("bundle metadata retained record counts mismatch")
+    for manifest_field, history_field in (
+        ("users", "retained_users"),
+        ("cards", "cards"),
+        ("merchants", "merchants"),
+    ):
+        if (
+            sum(
+                manifest["history_coverage"][manifest_field]
+                for manifest in baseline_manifests.values()
+            )
+            != history["counts"][history_field]
+        ):
+            raise ValueError("bundle metadata history coverage counts mismatch")
     if source_counts["fraud"] != history["counts"]["source_fraud"]:
         raise ValueError("source counts do not reconcile with history")
     for period_name, manifests in (
