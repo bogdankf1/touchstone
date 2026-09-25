@@ -75,7 +75,7 @@ def test_evaluate_run_is_idempotent_and_evaluator_evidence_is_hidden_from_runner
         first = evaluate.evaluate_run(repo, "evaluate-four")
         second = evaluate.evaluate_run(repo, "evaluate-four")
     assert first == second
-    assert first == {"run_id": "evaluate-four", "evaluated": 4, "errors": 0}
+    assert first == {"run_id": "evaluate-four", "evaluated": 4, "errors": 0, "deferred": 0}
 
     with psycopg.connect(pg.evaluator_dsn) as connection:
         assert (
@@ -134,6 +134,51 @@ def test_evaluate_run_is_idempotent_and_evaluator_evidence_is_hidden_from_runner
                 "SELECT * FROM reckoner.evaluator_telemetry_outbox WHERE run_id = %s",
                 ("evaluate-four",),
             )
+
+
+@pytest.mark.integration
+def test_evaluate_before_completion_defers_publication_then_publishes_final_evidence(pg):
+    evaluate = importlib.import_module("reckoner.baseline.evaluate")
+    runner = importlib.import_module("reckoner.baseline.runner")
+    _create_four_task_run(pg, "evaluate-after-run")
+    provider = FakeProvider()
+    with PostgresRepository(pg.runner_dsn) as repo:
+        runner.preflight(repo, provider, "evaluate-after-run")
+
+    with PostgresRepository(pg.evaluator_dsn) as repo:
+        deferred = evaluate.evaluate_run(repo, "evaluate-after-run")
+    assert deferred == {
+        "run_id": "evaluate-after-run",
+        "evaluated": 0,
+        "errors": 0,
+        "deferred": 4,
+    }
+    with psycopg.connect(pg.evaluator_dsn) as connection:
+        assert (
+            connection.execute(
+                "SELECT count(*) FROM reckoner.evaluations WHERE run_id = %s",
+                ("evaluate-after-run",),
+            ).fetchone()[0]
+            == 0
+        )
+        assert (
+            connection.execute(
+                "SELECT count(*) FROM reckoner.evaluator_telemetry_outbox WHERE run_id = %s",
+                ("evaluate-after-run",),
+            ).fetchone()[0]
+            == 0
+        )
+
+    with PostgresRepository(pg.runner_dsn) as repo:
+        runner.execute_run(repo, provider, "evaluate-after-run")
+    with PostgresRepository(pg.evaluator_dsn) as repo:
+        published = evaluate.evaluate_run(repo, "evaluate-after-run")
+    assert published == {
+        "run_id": "evaluate-after-run",
+        "evaluated": 4,
+        "errors": 0,
+        "deferred": 0,
+    }
 
 
 @pytest.mark.integration

@@ -21,6 +21,7 @@ from reckoner.storage.budget import ACCOUNTING_LOCK, RunBusy
 ROOT = Path(__file__).resolve().parents[5]
 SCHEMAS = ROOT / "contracts" / "schemas"
 RUNNER_LOCK = 732019101
+REQUIRED_MIGRATION = "004_evaluation_reporting.sql"
 
 
 def _plain(value: Any) -> Any:
@@ -1143,6 +1144,8 @@ class PostgresRepository:
                 "run_id": run_id,
                 "purpose": context["purpose"],
                 "status": status,
+                "execution_mode": context["execution_mode"],
+                "provider_call_mode": context["provider_call_mode"],
                 "config_id": context["config_id"],
                 "bundle_id": context["bundle_id"],
                 "prompt_version": config["prompt_version"],
@@ -1176,11 +1179,13 @@ class PostgresRepository:
 
     def readiness(self) -> str:
         row = self._connection.execute(
-            "SELECT version FROM public.reckoner_schema_migrations ORDER BY version DESC LIMIT 1"
+            "SELECT EXISTS (SELECT 1 FROM public.reckoner_schema_migrations "
+            "WHERE version = %s) AS applied",
+            (REQUIRED_MIGRATION,),
         ).fetchone()
-        if row is None:
-            raise ValueError("schema is not migrated")
-        return row["version"]
+        if row is None or not row["applied"]:
+            raise ValueError("schema migration is incompatible")
+        return REQUIRED_MIGRATION
 
     def api_run_summary(self, tenant_id: str, run_id: str) -> dict[str, Any] | None:
         row = self._connection.execute(

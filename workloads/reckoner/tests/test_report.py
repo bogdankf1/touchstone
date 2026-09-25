@@ -5,6 +5,8 @@ import json
 from copy import deepcopy
 from decimal import Decimal
 
+import pytest
+
 
 def _snapshot() -> dict:
     outcomes = [
@@ -62,6 +64,8 @@ def _snapshot() -> dict:
             "run_id": "six-case",
             "purpose": "baseline",
             "status": "complete",
+            "execution_mode": "paid",
+            "provider_call_mode": "measured",
             "config_id": "config-1",
             "bundle_id": "bundle-1",
             "prompt_version": "prompt-1",
@@ -70,12 +74,24 @@ def _snapshot() -> dict:
             "code_revision": "code-1",
             "created_at": "2026-09-25T10:00:00+00:00",
             "preflight_at": "2026-09-25T10:01:00+00:00",
+            "threshold_config_ids": {
+                "tenant-a": "threshold-a",
+                "tenant-b": "threshold-b",
+            },
+            "cohort_ids": {"tenant-a": "cohort-a", "tenant-b": "cohort-b"},
         },
         "tenants": ["tenant-a", "tenant-b"],
         "tasks": tasks,
         "attempts": attempts,
         "evaluations": evaluations,
-        "exports": [{"producer": "runner", "status": "exported", "count": 6}],
+        "exports": [
+            {
+                "producer": "runner",
+                "status": "exported",
+                "event_id": "runner-event-1",
+                "task_id": "task-1",
+            }
+        ],
     }
 
 
@@ -265,3 +281,74 @@ def test_pilot_report_states_the_pilot_enriched_mix():
     caveats = " ".join(report["caveats"])
     assert "2 fraud and 18 legitimate" in caveats
     assert "100 fraud and 900 legitimate" not in caveats
+
+
+def test_report_distinguishes_fake_test_calls_from_paid_measured_calls():
+    build_report = importlib.import_module("reckoner.baseline.report").build_report
+    fake_snapshot = _snapshot()
+    fake_snapshot["run"]["execution_mode"] = "test"
+    fake_snapshot["run"]["provider_call_mode"] = "fake"
+
+    fake_report = build_report(fake_snapshot)
+    measured_report = build_report(_snapshot())
+
+    assert fake_report["run"]["provider_call_mode"] == "fake"
+    assert "explicit fake provider" in " ".join(fake_report["caveats"]).lower()
+    assert measured_report["run"]["provider_call_mode"] == "measured"
+    assert "external provider calls were measured" in " ".join(measured_report["caveats"]).lower()
+
+
+def test_markdown_renders_complete_report_evidence(tmp_path):
+    report_module = importlib.import_module("reckoner.baseline.report")
+    snapshot = _snapshot()
+    snapshot["tasks"][0]["status"] = "failed"
+    snapshot["tasks"][1]["status"] = "uncertain"
+    snapshot["evaluations"][0]["document"]["evaluation_errors"] = ["synthetic_error"]
+    snapshot["attempts"][0]["actual_cost"] = None
+    snapshot["attempts"][0]["status"] = "uncertain"
+    report = report_module.build_report(snapshot)
+
+    report_module.write_report(report, tmp_path)
+    markdown = (tmp_path / "report.md").read_text()
+
+    for required in (
+        "## Run provenance",
+        "Provider call mode: fake"
+        if report["run"]["provider_call_mode"] == "fake"
+        else "Provider call mode: measured",
+        "## Counts",
+        "Failed: 1",
+        "Uncertain: 1",
+        "False-positive rate",
+        "Missed-fraud rate",
+        "Escalation rate",
+        "Response-schema validity",
+        "Required-suite pass rate",
+        "Reserved unsettled",
+        "## Tenant tenant-a",
+        "## Tenant tenant-b",
+        "## Evaluation errors",
+        "synthetic_error",
+        "## Trace and export references",
+        "runner-event-1",
+    ):
+        assert required in markdown
+
+
+@pytest.mark.parametrize("invalid_money", ["01.00", "-1", "1e-2"])
+def test_report_schema_rejects_invalid_money_strings(tmp_path, invalid_money):
+    report_module = importlib.import_module("reckoner.baseline.report")
+    report = report_module.build_report(_snapshot())
+    report["aggregate"]["metrics"]["costs"]["model"] = invalid_money
+
+    with pytest.raises(ValueError, match="invalid report document"):
+        report_module.write_report(report, tmp_path)
+
+
+def test_report_schema_rejects_unknown_fields(tmp_path):
+    report_module = importlib.import_module("reckoner.baseline.report")
+    report = report_module.build_report(_snapshot())
+    report["unreviewed_extension"] = True
+
+    with pytest.raises(ValueError, match="invalid report document"):
+        report_module.write_report(report, tmp_path)

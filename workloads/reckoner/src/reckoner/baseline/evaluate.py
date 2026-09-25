@@ -70,14 +70,19 @@ def evaluate_run(repo, run_id: str) -> dict[str, Any]:
     """Persist one idempotent evaluation and generic telemetry record per fixed task."""
     rows = repo.evaluation_inputs(run_id)
     errors = 0
+    evaluated = 0
+    deferred = 0
     for row in rows:
+        if row["task_status"] not in {"completed", "failed"}:
+            deferred += 1
+            continue
         result = evaluate_case(
             row["outcome"],
             row["label"],
             row["amount_minor"],
             row["review_cost"],
             row["margin_rate"],
-            "pending" if row["task_status"] in {"pending", "dispatched"} else "failed",
+            "failed",
         )
         result["schema_valid"] = row["outcome"] is not None
         if result["status"] != "observed":
@@ -88,4 +93,10 @@ def evaluate_run(repo, run_id: str) -> dict[str, Any]:
             result["required_suite_status"] = "pass" if result["correct"] else "fail"
             result["evaluation_errors"] = []
         repo.persist_evaluation(row, result)
-    return {"run_id": run_id, "evaluated": len(rows), "errors": errors}
+        evaluated += 1
+    return {
+        "run_id": run_id,
+        "evaluated": evaluated,
+        "errors": errors,
+        "deferred": deferred,
+    }

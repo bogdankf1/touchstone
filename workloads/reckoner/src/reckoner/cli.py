@@ -228,7 +228,7 @@ def main(argv: list[str] | None = None) -> int:
                 raise ValueError("invalid environment")
             with PostgresRepository(evaluator_dsn) as repository:
                 result = evaluate_run(repository, args.run_id)
-            if result["errors"]:
+            if result["errors"] or result["deferred"]:
                 print(json.dumps(result, sort_keys=True))
                 return 3
         elif args.command == "report":

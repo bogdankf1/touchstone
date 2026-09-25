@@ -31,6 +31,16 @@ def test_readiness_uses_api_role_and_liveness_is_independent(pg):
     assert ready.status_code == 200
     assert ready.json() == {"status": "ready", "migration": "004_evaluation_reporting.sql"}
 
+    with psycopg.connect(pg.owner_dsn) as owner:
+        owner.execute(
+            "DELETE FROM public.reckoner_schema_migrations WHERE version = %s",
+            ("004_evaluation_reporting.sql",),
+        )
+    with TestClient(create_app(pg.api_dsn)) as client:
+        incompatible = client.get("/health/ready")
+    assert incompatible.status_code == 503
+    assert incompatible.json() == {"detail": "database unavailable"}
+
     with TestClient(create_app("postgresql://nobody:dsn-secret@127.0.0.1:1/missing")) as client:
         assert client.get("/health/live").status_code == 200
         unavailable = client.get("/health/ready")

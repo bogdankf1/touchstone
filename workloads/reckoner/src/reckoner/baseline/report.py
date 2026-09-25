@@ -7,6 +7,13 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+from jsonschema import ValidationError
+
+from reckoner.contracts import validate_document
+
+ROOT = Path(__file__).resolve().parents[5]
+REPORT_SCHEMA = ROOT / "contracts" / "schemas" / "reckoner-report-v1.schema.json"
+
 
 def _decimal(value: Decimal) -> str:
     rendered = format(value, "f")
@@ -195,7 +202,20 @@ def build_report(snapshot: dict[str, Any]) -> dict[str, Any]:
     enriched_mix = (
         "2 fraud and 18 legitimate" if run["purpose"] == "pilot" else "100 fraud and 900 legitimate"
     )
-    return {
+    provider_call_mode = run["provider_call_mode"]
+    if provider_call_mode == "fake":
+        provider_caveat = (
+            "Provider calls came from the explicit fake provider; they are test evidence and "
+            "not measured external model calls."
+        )
+    elif provider_call_mode == "measured":
+        provider_caveat = (
+            "External provider calls were measured from provider-reported usage; calculated "
+            "cost is not invoice reconciliation."
+        )
+    else:
+        provider_caveat = "Provider call mode is unavailable; model-call provenance is incomplete."
+    report = {
         "schema_version": "reckoner-report-v1",
         "report_version": "1",
         "run": run,
@@ -238,48 +258,125 @@ def build_report(snapshot: dict[str, Any]) -> dict[str, Any]:
                 "Case-note quality, faithfulness, calibration, and human agreement are not "
                 "evaluated in this phase."
             ),
+            provider_caveat,
         ],
     }
+    _validate_report(report)
+    return report
 
 
 def _available(value: Any) -> str:
     return "Unavailable" if value is None else str(value)
 
 
+def _validate_report(report: dict[str, Any]) -> None:
+    try:
+        validate_document(report, REPORT_SCHEMA)
+    except (ValidationError, OSError, TypeError, ValueError) as error:
+        raise ValueError("invalid report document") from error
+
+
+def _rate_line(label: str, rate: dict[str, Any]) -> str:
+    return (
+        f"- {label}: {rate['numerator']}/{rate['denominator']} (value: {_available(rate['value'])})"
+    )
+
+
+def _metric_lines(metrics: dict[str, Any]) -> list[str]:
+    costs = metrics["costs"]
+    cpst = metrics["cpst"]
+    latency = metrics["latency_ms"]
+    return [
+        f"- CPST: {_available(cpst['value'])} USD ({cpst['availability']})",
+        (
+            f"- CPST numerator / correct-decision denominator: "
+            f"{_available(cpst['numerator'])}/{cpst['denominator']}"
+        ),
+        _rate_line("Correctness", metrics["correctness"]),
+        _rate_line("False-positive rate", metrics["false_positive_rate"]),
+        _rate_line("Missed-fraud rate", metrics["missed_fraud_rate"]),
+        _rate_line("Escalation rate", metrics["escalation_rate"]),
+        _rate_line("Completion rate", metrics["completion_rate"]),
+        _rate_line("Response-schema validity", metrics["response_schema_validity"]),
+        (
+            _rate_line("Required-suite pass rate", metrics["required_suite_pass_rate"])
+            + f"; status: {metrics['required_suite_pass_rate']['status']}"
+        ),
+        f"- Model cost: {costs['model']} USD",
+        f"- Review cost: {costs['review']} USD",
+        f"- Error cost: {costs['error']} USD",
+        f"- Total observed cost: {costs['total']} USD",
+        f"- Unknown provider costs: {costs['unknown_provider_costs']}",
+        f"- Reserved unsettled: {costs['reserved_unsettled']} USD",
+        f"- Completed-task latency population: {latency['population']}",
+        f"- p99 completed-task latency: {_available(latency['p99_nearest_rank'])} ms",
+    ]
+
+
 def _markdown(report: dict[str, Any]) -> str:
     metrics = report["aggregate"]["metrics"]
-    cpst = metrics["cpst"]
+    run = report["run"]
+    counts = report["counts"]
     lines = [
-        f"# Reckoner baseline report: {report['run']['run_id']}",
+        f"# Reckoner baseline report: {run['run_id']}",
         "",
-        f"Run status: **{report['run']['status']}**",
+        f"Run status: **{run['status']}**",
+        "",
+        "## Run provenance",
+        "",
+        f"- Purpose: {run['purpose']}",
+        f"- Execution mode: {run['execution_mode']}",
+        f"- Provider call mode: {_available(run['provider_call_mode'])}",
+        f"- Config ID: {run['config_id']}",
+        f"- Bundle ID: {run['bundle_id']}",
+        f"- Prompt version: {run['prompt_version']}",
+        f"- Model: {run['model']}",
+        f"- Price table version: {run['price_table_version']}",
+        f"- Threshold config IDs: {json.dumps(run['threshold_config_ids'], sort_keys=True)}",
+        f"- Cohort IDs: {json.dumps(run['cohort_ids'], sort_keys=True)}",
+        f"- Code revision: {_available(run['code_revision'])}",
+        f"- Created at: {run['created_at']}",
+        f"- Preflight at: {_available(run['preflight_at'])}",
+        "",
+        "## Counts",
+        "",
+        f"- Expected: {counts['expected']}",
+        f"- Completed: {counts['completed']}",
+        f"- Failed: {counts['failed']}",
+        f"- Uncertain: {counts['uncertain']}",
+        f"- Pending: {counts['pending']}",
+        f"- Dispatched: {counts['dispatched']}",
+        f"- Evaluation errors: {counts['evaluation_errors']}",
         "",
         "## Aggregate metrics",
         "",
-        f"- CPST: {_available(cpst['value'])} USD ({cpst['availability']})",
-        (
-            f"- Correct decisions: {metrics['correctness']['numerator']}/"
-            f"{metrics['correctness']['denominator']}"
-        ),
-        (
-            f"- Completed tasks: {metrics['completion_rate']['numerator']}/"
-            f"{metrics['completion_rate']['denominator']}"
-        ),
-        f"- Model cost: {metrics['costs']['model']} USD",
-        f"- Review cost: {metrics['costs']['review']} USD",
-        f"- Error cost: {metrics['costs']['error']} USD",
-        f"- p99 completed-task latency: {_available(metrics['latency_ms']['p99_nearest_rank'])} ms",
-        "",
-        "## Caveats",
-        "",
-        *(f"- {caveat}" for caveat in report["caveats"]),
-        "",
+        *_metric_lines(metrics),
     ]
+    for tenant_id, tenant in sorted(report["per_tenant"].items()):
+        lines.extend(["", f"## Tenant {tenant_id}", "", *_metric_lines(tenant["metrics"])])
+    lines.extend(["", "## Evaluation errors", ""])
+    if report["evaluation_errors"]:
+        lines.extend(
+            f"- {item['tenant_id']} / {item['task_id']}: {', '.join(item['errors'])}"
+            for item in report["evaluation_errors"]
+        )
+    else:
+        lines.append("- None")
+    lines.extend(["", "## Trace and export references", ""])
+    if report["exports"]:
+        lines.extend(
+            (f"- {item['producer']} / {item['status']} / {item['event_id']} / {item['task_id']}")
+            for item in report["exports"]
+        )
+    else:
+        lines.append("- None")
+    lines.extend(["", "## Caveats", "", *(f"- {caveat}" for caveat in report["caveats"]), ""])
     return "\n".join(lines)
 
 
 def write_report(report: dict[str, Any], output: Path) -> None:
     """Write stable JSON and Markdown renderings of the same evidence document."""
+    _validate_report(report)
     output.mkdir(parents=True, exist_ok=True)
     json_body = json.dumps(report, sort_keys=True, indent=2, ensure_ascii=False) + "\n"
     (output / "report.json").write_text(json_body, encoding="utf-8")
