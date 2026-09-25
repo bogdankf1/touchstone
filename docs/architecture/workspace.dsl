@@ -21,6 +21,9 @@ workspace "Touchstone" "Measurement platform with the simulated Reckoner workloa
         }
 
         touchstone = softwareSystem "Touchstone" "Workflow-independent measurement platform." {
+            browser = container "Browser client" "Will render the reviewer console, metrics dashboard, and administration." "Web browser" {
+                tags "Planned"
+            }
             web = container "Web application" "Will provide the reviewer console, metrics dashboard, and administration." "Next.js" {
                 tags "Planned"
             }
@@ -42,7 +45,8 @@ workspace "Touchstone" "Measurement platform with the simulated Reckoner workloa
             tags "Planned"
         }
 
-        reviewer -> web "Will use in a browser" "HTTPS"
+        reviewer -> browser "Will use"
+        browser -> web "Will request application pages and APIs" "HTTPS"
         web -> pipeline "Will submit reviews and configuration changes" "HTTPS/JSON"
         pipeline -> postgres "Will persist tenant-scoped operational records"
         pipeline -> neo4j "Will query time-correct graph evidence" "Cypher"
@@ -66,6 +70,7 @@ workspace "Touchstone" "Measurement platform with the simulated Reckoner workloa
 
         container reckoner "ReckonerContainers" "Current and planned Reckoner containers" {
             include reviewer
+            include browser
             include web
             include *
             include anthropic
