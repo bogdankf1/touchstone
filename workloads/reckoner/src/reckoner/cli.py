@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -18,13 +19,12 @@ from reckoner.baseline.runner import execute_run, preflight
 from reckoner.contracts import content_id, validate_document
 from reckoner.data.artifacts import sha256_file, verify_bundle
 from reckoner.data.cohort import prepare
+from reckoner.resources import CONFIG, SCHEMAS
+from reckoner.smoke import is_smoke_database, smoke
 from reckoner.storage.budget import BudgetExceeded
-from reckoner.storage.migrate import migrate
+from reckoner.storage.migrate import migrate, provision_roles
 from reckoner.storage.postgres import PostgresRepository
 from reckoner.telemetry.otlp import export_evaluations, export_run, replay
-
-ROOT = Path(__file__).resolve().parents[4]
-SCHEMAS = ROOT / "contracts" / "schemas"
 
 
 def _environment(path: Path) -> dict[str, str]:
@@ -35,6 +35,8 @@ def _environment(path: Path) -> dict[str, str]:
         "RECKONER_EVALUATOR_DSN",
         "RECKONER_API_DSN",
     }
+    if path == Path("-"):
+        return {key: os.environ[key] for key in supported if key in os.environ}
     values = {}
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
@@ -62,6 +64,7 @@ def _parser() -> argparse.ArgumentParser:
     verify_command.add_argument("--source-dir", type=Path, required=True)
     migrate_command = commands.add_parser("migrate")
     migrate_command.add_argument("--env-file", type=Path, required=True)
+    migrate_command.add_argument("--provision-roles", action="store_true")
     import_command = commands.add_parser("import")
     import_command.add_argument("--env-file", type=Path, required=True)
     import_command.add_argument("--artifact-dir", type=Path, required=True)
@@ -92,6 +95,9 @@ def _parser() -> argparse.ArgumentParser:
     replay_command = commands.add_parser("replay")
     replay_command.add_argument("--artifact-dir", type=Path, required=True)
     replay_command.add_argument("--endpoint", required=True)
+    smoke_command = commands.add_parser("smoke")
+    smoke_command.add_argument("--env-file", type=Path, required=True)
+    smoke_command.add_argument("--output", type=Path, required=True)
     return parser
 
 
@@ -153,6 +159,8 @@ def _prepare_run(args, environment: dict[str, str]):
     api_key = environment.get("ANTHROPIC_API_KEY")
     if not runner_dsn or not api_key:
         raise ValueError("invalid environment")
+    if is_smoke_database(runner_dsn):
+        raise ValueError("paid execution cannot use a smoke database")
     bundle_id = _runtime_bundle_identity(args.artifact_dir, args.purpose)
     config, price, thresholds = _run_documents(args.config)
     provider = AnthropicProvider(api_key)
@@ -177,17 +185,25 @@ def _prepare_run(args, environment: dict[str, str]):
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
-        if args.command == "prepare":
+        if args.command == "smoke":
+            result = smoke(_environment(args.env_file), args.output, _run_documents(CONFIG))
+            if result["pending"] or result["uncertain"] or result["failed"]:
+                print(json.dumps(result, sort_keys=True))
+                return 3
+        elif args.command == "prepare":
             index = prepare(args.source_dir, args.output)
             result = {"bundle_id": index["bundle_id"]}
         elif args.command == "verify":
             index = verify_bundle(args.artifact_dir, args.source_dir)
             result = {"bundle_id": index["bundle_id"]}
         elif args.command == "migrate":
-            owner_dsn = _environment(args.env_file).get("RECKONER_OWNER_DSN")
+            environment = _environment(args.env_file)
+            owner_dsn = environment.get("RECKONER_OWNER_DSN")
             if not owner_dsn:
                 raise ValueError("invalid environment")
             migrate(owner_dsn)
+            if args.provision_roles:
+                provision_roles(owner_dsn, environment)
             result = {"status": "migrated"}
         elif args.command == "import":
             owner_dsn = _environment(args.env_file).get("RECKONER_OWNER_DSN")

@@ -10,9 +10,9 @@ from typing import Any
 from jsonschema import ValidationError
 
 from reckoner.contracts import validate_document
+from reckoner.resources import SCHEMAS
 
-ROOT = Path(__file__).resolve().parents[5]
-REPORT_SCHEMA = ROOT / "contracts" / "schemas" / "reckoner-report-v1.schema.json"
+REPORT_SCHEMA = SCHEMAS / "reckoner-report-v1.schema.json"
 
 
 def _decimal(value: Decimal) -> str:
@@ -203,6 +203,8 @@ def build_report(snapshot: dict[str, Any]) -> dict[str, Any]:
         "2 fraud and 18 legitimate" if run["purpose"] == "pilot" else "100 fraud and 900 legitimate"
     )
     provider_call_mode = run["provider_call_mode"]
+    if provider_call_mode == "fake":
+        enriched_mix = f"{len(tasks)} fabricated fixture"
     if provider_call_mode == "fake":
         provider_caveat = (
             "Provider calls came from the explicit fake provider; they are test evidence and "

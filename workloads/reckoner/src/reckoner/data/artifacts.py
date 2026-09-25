@@ -11,9 +11,7 @@ from typing import Any
 from jsonschema import Draft202012Validator, FormatChecker, ValidationError
 
 from reckoner.contracts import content_id, validate_cohort_manifest, validate_document
-
-ROOT = Path(__file__).resolve().parents[5]
-SCHEMAS = ROOT / "contracts" / "schemas"
+from reckoner.resources import SCHEMAS
 
 
 @lru_cache

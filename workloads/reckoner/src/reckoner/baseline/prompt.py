@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import json
 from decimal import Decimal, InvalidOperation
-from pathlib import Path
 from typing import Any
 
 from reckoner.contracts import content_id
+from reckoner.resources import PROMPTS
 
 FACT_FIELDS = (
     "amount_minor",
@@ -19,7 +19,7 @@ FACT_FIELDS = (
     "processing_errors",
 )
 MAX_USER_CONTENT_BYTES = 4096
-_TEMPLATE_PATH = Path(__file__).resolve().parents[3] / "prompts" / "baseline-v1.txt"
+_TEMPLATE_PATH = PROMPTS / "baseline-v1.txt"
 _SYSTEM_TEMPLATE = _TEMPLATE_PATH.read_text(encoding="utf-8").rstrip()
 _CONSTRUCTION_RULES = {
     "schema_version": "baseline-prompt-construction-v1",

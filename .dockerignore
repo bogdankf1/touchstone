@@ -12,3 +12,5 @@ __pycache__
 htmlcov
 node_modules
 .next
+.idea
+.superpowers

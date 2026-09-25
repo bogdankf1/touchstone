@@ -1,38 +1,63 @@
-# Foundation architecture
+# Current and planned architecture
 
-The Phase 0 runtime contains one implemented HTTP surface: Reckoner's liveness API. The source
-profiler is also implemented as a local CLI. Both use fabricated or simulated data only. The
-database, decision-pipeline, telemetry, provider, warehouse, and web containers in the
-[Structurizr model](workspace.dsl) are marked `Planned`; they are architectural intent rather than
-running services. The model's `Foundation` view contains only the two implemented components.
+All transaction data is simulated. Phase 1 implements the Reckoner batch CLI, role-separated
+Postgres persistence, operational API, oracle evaluation, reports, and durable OTLP export.
+The CLI and API are installed from the same wheel and container image. A paid baseline is a
+separate acceptance result; the offline deployment checks use four fabricated cases only.
 
-The platform boundary is fixed before those planned services exist: Reckoner will send generic
-workflow measurements to Touchstone only through OTLP. Touchstone must not import Reckoner code or
-read its operational tables to derive metrics. Future metric models key on generic dimensions such
-as `workflow_id`, `node_name`, and `tenant_id`, while fraud-specific calculations remain in the
-workload.
-
-The current liveness endpoint has no tenant because it creates no application or measurement
-record. It tests process availability only; it is not a readiness claim for any planned store or
-model provider.
-
-## Implemented source-inventory flow
+The [Structurizr model](workspace.dsl) marks the baseline software `Implemented`, with a `Baseline`
+view. Its original `Foundation` view retains the profiler/API boundary from Phase 0. The LangGraph
+cascade, Jev, graph, vector retrieval, frontend, collector, ClickHouse and warehouse are `Planned`.
+There is no implemented agent graph to draw in this phase.
 
 ```mermaid
-sequenceDiagram
-    actor Operator
-    participant Profiler as Reckoner profiler
-    participant Archive as Simulated CCTD archive
-    participant Artifact as Ignored inventory artifact
-
-    Operator->>Profiler: Run with archive and explicit output paths
-    loop Stream every transaction row once
-        Profiler->>Archive: Read the next CSV record
-        Archive-->>Profiler: Simulated source fields
-        Profiler->>Profiler: Update counts, hashes, joins, and blockers
-    end
-    Profiler->>Artifact: Write aggregate JSON outside archive
-    Profiler-->>Operator: Report counts, elapsed time, peak RSS, blockers
+flowchart LR
+    Source[Simulated CCTD archive] --> Prepare[Prepare and verify]
+    Prepare --> Runtime[Canonical runtime subset]
+    Prepare --> Oracle[Separate oracle artifact]
+    Runtime --> Import[Owner import]
+    Oracle --> Import
+    Import --> DB[(Postgres 17)]
+    DB --> Runner[Sequential runner role]
+    Runner --> Provider[Explicit Anthropic client or fabricated smoke]
+    Runner --> DB
+    DB --> Evaluator[Evaluator role: oracle joins]
+    Evaluator --> Report[Deterministic JSON / Markdown]
+    DB --> API[API role: sanitized tenant views]
+    Runner --> OTLP[Runner OTLP export]
+    Evaluator --> EOTLP[Evaluator OTLP export]
+    OTLP -. OTLP/HTTP replay .-> Platform[Touchstone collector: planned]
+    EOTLP -. OTLP/HTTP replay .-> Platform
 ```
 
-There is no LangGraph runtime in Phase 0, so no agent graph is drawn.
+The runner receives only `bundle.json`, the chosen runtime JSONL, and its two tenant manifests.
+Owner import validates the complete prepared bundle. The API receives only its own DSN, and the
+runner cannot read oracle/evaluation tables. Fake smoke is explicit, fixed, isolated to a
+`reckoner_smoke_` database, and rejected by the paid CLI. Missing credentials never select fake mode.
+
+Postgres persists reservations before dispatch. An uncertain call retains its reservation and
+blocks later dispatch across runs. Completed calls are skipped on resume. The evaluator retains
+failed cases in denominators; missing outcomes/usage withhold full CPST. Provider cost belongs to
+one call identity, while runner and evaluator telemetry remain separate durable streams.
+
+Touchstone ingests only through OTLP. It does not import Reckoner or read operational tables.
+Future metric models use `workflow_id`, `node_name`, and `tenant_id`; fraud-specific calculations
+remain within Reckoner. A synthetic second workflow remains scheduled with the platform.
+
+Compose and kind run separately. Each uses Postgres persistence, explicit owner migrations,
+512 MiB Postgres/API/CLI limits, `/health/live` liveness, and `/health/ready` migration-aware
+readiness. No archive, measured oracle, or provider credential is mounted into the API.
+
+## Phase 1 drift check
+
+The archify skill checked an eight-component architecture candidate against these source seams:
+`data/cohort.py`, `storage/postgres.py`, `baseline/runner.py`, `baseline/provider.py`, `smoke.py`,
+`api.py`, `baseline/evaluate.py`, `baseline/report.py`, and `telemetry/otlp.py` under
+`workloads/reckoner/src/reckoner/`. The checked candidate and receipt are local ignored artifacts
+under `artifacts/phase1-architecture/`; they contain no source transactions or credentials.
+
+The validator passed all nine showcase artifact checks with no composition errors or warnings.
+This is a code/diagram drift check and deterministic layout validation, not browser or perceptual
+visual review. The repository has no pinned public source URL; local source links were recorded
+in a separate evidence mapping rather than inventing public URLs. The current/planned model was
+updated to remove the Phase 0 claim that persistence and baseline processing were absent.

@@ -16,9 +16,9 @@ from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
 )
 
 from reckoner.contracts import validate_document
+from reckoner.resources import SCHEMAS
 
-ROOT = Path(__file__).resolve().parents[5]
-MANIFEST_SCHEMA = ROOT / "contracts" / "schemas" / "otlp-export-manifest-v1.schema.json"
+MANIFEST_SCHEMA = SCHEMAS / "otlp-export-manifest-v1.schema.json"
 
 
 def _atomic_write(path: Path, payload: bytes) -> None:

@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Sequence
 from decimal import Decimal
-from pathlib import Path
 from typing import Any
 
 from jsonschema import ValidationError
@@ -23,9 +22,9 @@ from opentelemetry.trace import (
 )
 
 from reckoner.contracts import validate_document
+from reckoner.resources import SCHEMAS
 
-ROOT = Path(__file__).resolve().parents[5]
-MEASUREMENT_SCHEMA = ROOT / "contracts" / "schemas" / "measurement-v1.schema.json"
+MEASUREMENT_SCHEMA = SCHEMAS / "measurement-v1.schema.json"
 
 
 class _FixedIdGenerator(IdGenerator):

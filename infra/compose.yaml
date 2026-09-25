@@ -1,21 +1,65 @@
 services:
+  postgres:
+    image: postgres:17@sha256:d74eeac9a635390a49bc21bd49fccd973de707e2a53a76ac49b552b8712ec46f
+    env_file: ${RECKONER_SECRET_DIR:?set protected local secret directory}/postgres.env
+    command: ["postgres", "-c", "shared_buffers=128MB", "-c", "max_connections=40"]
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    mem_limit: 512m
+    cpus: 1
+    healthcheck:
+      test: ["CMD-SHELL", 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 2s
+      timeout: 3s
+      retries: 30
   reckoner:
-    image: touchstone-reckoner:phase0
+    image: touchstone-reckoner:phase1
     build:
       context: ..
       dockerfile: infra/Dockerfile.reckoner
+      args:
+        RECKONER_BUILD_REVISION: ${RECKONER_BUILD_REVISION:?set full source commit ID}
+    env_file: ${RECKONER_SECRET_DIR}/api.env
     ports:
-      - "127.0.0.1:8000:8000"
-    mem_limit: 256m
+      - "127.0.0.1:${RECKONER_API_PORT:-8000}:8000"
+    mem_limit: 512m
     cpus: 0.5
+    depends_on:
+      postgres:
+        condition: service_healthy
     healthcheck:
-      test:
-        - CMD
-        - python
-        - -c
-        - >-
-          import urllib.request;
-          urllib.request.urlopen('http://127.0.0.1:8000/health/live', timeout=2)
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=2)"]
       interval: 5s
       timeout: 3s
-      retries: 6
+      retries: 12
+  owner:
+    image: touchstone-reckoner:phase1
+    profiles: [tools]
+    env_file: ${RECKONER_SECRET_DIR}/provision.env
+    command: ["reckoner", "migrate", "--env-file", "-", "--provision-roles"]
+    mem_limit: 512m
+    cpus: 1
+    volumes:
+      - ${RECKONER_IMPORT_DIR:?set preparation artifact directory}:/data:ro
+      - ${RECKONER_EXPORT_DIR:?set persistent output directory}:/evidence
+  runner:
+    image: touchstone-reckoner:phase1
+    profiles: [tools]
+    env_file: ${RECKONER_SECRET_DIR}/runner.env
+    command: ["reckoner", "--help"]
+    mem_limit: 512m
+    cpus: 1
+    volumes:
+      - ${RECKONER_RUNTIME_DIR:?set runtime-only artifact directory}:/data:ro
+      - ${RECKONER_EXPORT_DIR}:/evidence
+  evaluator:
+    image: touchstone-reckoner:phase1
+    profiles: [tools]
+    env_file: ${RECKONER_SECRET_DIR}/evaluator.env
+    command: ["reckoner", "--help"]
+    mem_limit: 512m
+    cpus: 1
+    volumes:
+      - ${RECKONER_EXPORT_DIR}:/evidence
+volumes:
+  postgres-data:

@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: reckoner
-  namespace: touchstone-foundation
+  namespace: touchstone-phase1-smoke
   labels:
     app: reckoner
 spec:
@@ -20,8 +20,11 @@ spec:
         runAsUser: 10001
       containers:
         - name: reckoner
-          image: touchstone-reckoner:phase0
+          image: touchstone-reckoner:phase1
           imagePullPolicy: Never
+          envFrom:
+            - secretRef:
+                name: api-env
           ports:
             - name: http
               containerPort: 8000
@@ -33,21 +36,21 @@ spec:
               memory: 64Mi
             limits:
               cpu: 500m
-              memory: 256Mi
+              memory: 512Mi
           livenessProbe:
             httpGet:
               path: /health/live
               port: http
           readinessProbe:
             httpGet:
-              path: /health/live
+              path: /health/ready
               port: http
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: reckoner
-  namespace: touchstone-foundation
+  namespace: touchstone-phase1-smoke
   labels:
     app: reckoner
 spec:

@@ -16,10 +16,9 @@ from psycopg.types.json import Jsonb
 
 from reckoner.contracts import content_id, validate_document, validate_threshold_config
 from reckoner.data.artifacts import verify_bundle
+from reckoner.resources import SCHEMAS
 from reckoner.storage.budget import ACCOUNTING_LOCK, RunBusy
 
-ROOT = Path(__file__).resolve().parents[5]
-SCHEMAS = ROOT / "contracts" / "schemas"
 RUNNER_LOCK = 732019101
 REQUIRED_MIGRATION = "004_evaluation_reporting.sql"
 

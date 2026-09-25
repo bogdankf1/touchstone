@@ -45,7 +45,7 @@ def _role_dsn(owner_dsn: str, database: str, role: str, password: str) -> str:
 
 
 @pytest.fixture
-def pg(fabricated_bundle):
+def pg(fabricated_bundle, request):
     from reckoner.storage.migrate import migrate
 
     admin_dsn = os.environ.get("RECKONER_TEST_OWNER_DSN")
@@ -53,7 +53,8 @@ def pg(fabricated_bundle):
         pytest.fail("integration test requires RECKONER_TEST_OWNER_DSN")
 
     suffix = uuid.uuid4().hex[:12]
-    database = f"reckoner_test_{suffix}"
+    prefix = "reckoner_smoke" if getattr(request, "param", None) == "smoke" else "reckoner_test"
+    database = f"{prefix}_{suffix}"
     login_roles = {
         kind: f"reckoner_test_{kind}_{suffix}" for kind in ("runner", "evaluator", "api")
     }

@@ -1,0 +1,74 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: smoke-evidence
+  namespace: touchstone-phase1-smoke
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 256Mi
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: reckoner-smoke
+  namespace: touchstone-phase1-smoke
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
+      initContainers:
+        - name: fabricated-run
+          image: touchstone-reckoner:phase1
+          imagePullPolicy: Never
+          command: ["reckoner", "smoke", "--env-file", "-", "--output", "/evidence/runner-otlp"]
+          envFrom:
+            - secretRef:
+                name: smoke-env
+          volumeMounts:
+            - name: evidence
+              mountPath: /evidence
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+      containers:
+        - name: evaluate
+          image: touchstone-reckoner:phase1
+          imagePullPolicy: Never
+          command: ["sh", "-ec"]
+          args:
+            - >-
+              reckoner evaluate --env-file - --run-id fabricated-smoke-v1 &&
+              reckoner export-evaluations --env-file - --run-id fabricated-smoke-v1 --output /evidence/evaluator-otlp &&
+              reckoner report --env-file - --run-id fabricated-smoke-v1 --output /evidence/report
+          envFrom:
+            - secretRef:
+                name: evaluator-env
+          volumeMounts:
+            - name: evidence
+              mountPath: /evidence
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+      volumes:
+        - name: evidence
+          persistentVolumeClaim:
+            claimName: smoke-evidence

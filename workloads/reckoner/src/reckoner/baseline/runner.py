@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import secrets
 import subprocess
 import time
@@ -16,6 +17,7 @@ from reckoner.baseline.pricing import (
     reservation_input_bound,
 )
 from reckoner.baseline.prompt import build_request
+from reckoner.resources import PACKAGE, PACKAGED
 from reckoner.storage.budget import BudgetExceeded, BudgetLedger
 
 ROOT = Path(__file__).resolve().parents[5]
@@ -27,6 +29,7 @@ def _relevant_source_files() -> list[Path]:
         (ROOT / "workloads" / "reckoner" / "src", "*.py"),
         (ROOT / "workloads" / "reckoner" / "src", "*.sql"),
         (ROOT / "workloads" / "reckoner" / "config", "*.json"),
+        (ROOT / "workloads" / "reckoner" / "prompts", "*.txt"),
         (ROOT / "contracts" / "schemas", "*.json"),
     )
     files = [path for root, pattern in patterns for path in root.rglob(pattern) if path.is_file()]
@@ -36,6 +39,16 @@ def _relevant_source_files() -> list[Path]:
 
 def _code_revision() -> str:
     """Return the immutable source revision recorded for a measured run."""
+    if PACKAGED.is_dir():
+        revision = json.loads((PACKAGED / "build.json").read_text())["revision"]
+        digest = hashlib.sha256()
+        for path in sorted(PACKAGE.rglob("*")):
+            if path.is_file() and path.suffix in {".py", ".sql", ".json", ".txt", ".lock", ".toml"}:
+                digest.update(path.relative_to(PACKAGE).as_posix().encode())
+                digest.update(b"\0")
+                digest.update(path.read_bytes())
+                digest.update(b"\0")
+        return f"{revision}:{digest.hexdigest()}"
     try:
         result = subprocess.run(
             ["git", "-C", str(ROOT), "rev-parse", "HEAD"],

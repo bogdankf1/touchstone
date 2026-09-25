@@ -9,9 +9,8 @@ from typing import Any
 from jsonschema import ValidationError
 
 from reckoner.contracts import content_id, validate_document
+from reckoner.resources import SCHEMAS
 
-ROOT = Path(__file__).resolve().parents[5]
-SCHEMAS = ROOT / "contracts" / "schemas"
 SUPPORTED_MODELS = {"anthropic": {"anthropic/claude-haiku-4-5-20251001"}}
 
 
