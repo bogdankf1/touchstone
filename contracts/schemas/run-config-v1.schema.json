@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://touchstone.example/contracts/run-config-v1.schema.json",
+  "title": "Reckoner baseline run configuration v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "config_id",
+    "provider",
+    "model",
+    "temperature",
+    "max_output_tokens",
+    "timeout_seconds",
+    "input_token_ceiling",
+    "prompt_version",
+    "price_table_version",
+    "threshold_config_ids"
+  ],
+  "properties": {
+    "schema_version": { "const": "run-config-v1" },
+    "config_id": { "$ref": "#/$defs/sha256" },
+    "provider": { "$ref": "#/$defs/nonempty" },
+    "model": { "$ref": "#/$defs/nonempty" },
+    "temperature": { "type": "number", "minimum": 0 },
+    "max_output_tokens": { "type": "integer", "minimum": 1 },
+    "timeout_seconds": { "type": "integer", "minimum": 1 },
+    "input_token_ceiling": { "type": "integer", "minimum": 1 },
+    "prompt_version": { "$ref": "#/$defs/nonempty" },
+    "price_table_version": { "$ref": "#/$defs/sha256" },
+    "threshold_config_ids": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": { "$ref": "#/$defs/nonempty" },
+      "additionalProperties": { "$ref": "#/$defs/sha256" }
+    }
+  },
+  "$defs": {
+    "nonempty": { "type": "string", "minLength": 1 },
+    "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+  }
+}

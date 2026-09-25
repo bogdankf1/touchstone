@@ -1,0 +1,16 @@
+{
+  "config_id": "fd21e6d6a5f00268600b7bba59a22c01782ddbc3c205fd64c821e0fb2f6567f1",
+  "input_token_ceiling": 8192,
+  "max_output_tokens": 256,
+  "model": "anthropic/claude-haiku-4-5-20251001",
+  "price_table_version": "245d2d3dd12226e11e1328b65a7a63eb2db964b9e40a71eb56a0f30d07e6bcc2",
+  "prompt_version": "baseline-prompt-v1",
+  "provider": "anthropic",
+  "schema_version": "run-config-v1",
+  "temperature": 0,
+  "threshold_config_ids": {
+    "tenant-a": "73706a2c45d7f2602ee7584587d4dfb56e6127bd2836184216821fc6a65155cd",
+    "tenant-b": "451ebb75350abdc77ee6e3eb742cdf0345d3e11d99c2749f64b1af7a460ec4ae"
+  },
+  "timeout_seconds": 60
+}

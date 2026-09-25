@@ -15,6 +15,7 @@ dev = ["pytest>=8,<10", "ruff>=0.11,<1", "jsonschema[format]>=4,<5", "httpx2>=2,
 
 [tool.pytest.ini_options]
 testpaths = ["workloads/reckoner/tests", "contracts/tests"]
+markers = ["integration: requires an isolated PostgreSQL test database"]
 
 [tool.ruff]
 target-version = "py312"
