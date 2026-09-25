@@ -227,6 +227,96 @@ def test_model_or_cache_uncertainty_blocks_later_runs_globally(pg):
     assert result["pending"] == 1
 
 
+@pytest.mark.parametrize("token_field", ["input_tokens", "output_tokens"])
+def test_known_below_dollar_token_bound_breach_stops_current_and_later_dispatch(pg, token_field):
+    runner = _runner()
+    _create_four_task_run(pg, f"{token_field}-bound", task_limit=2)
+    provider = FakeProvider()
+    with PostgresRepository(pg.runner_dsn) as repo:
+        runner.preflight(repo, provider, f"{token_field}-bound")
+        task = repo.pending_tasks(f"{token_field}-bound")[0]
+        if token_field == "input_tokens":
+            provider.result |= {
+                "input_tokens": int(task["reservation_input_tokens"]) + 1,
+                "output_tokens": 0,
+            }
+        else:
+            provider.result |= {"input_tokens": 0, "output_tokens": 257}
+
+        first = runner.execute_run(repo, provider, f"{token_field}-bound")
+        second = runner.execute_run(repo, provider, f"{token_field}-bound")
+        snapshot = repo.snapshot(f"{token_field}-bound", None)
+        outbox = repo.outbox_rows(f"{token_field}-bound")
+
+    assert provider.generation_calls == 1
+    assert first == second == {"completed": 0, "failed": 1, "uncertain": 0, "pending": 1}
+    attempt = snapshot["attempts"][0]
+    entry = snapshot["budget_entries"][0]
+    assert attempt["error_category"] == "provider_usage_bound_exceeded"
+    assert attempt["response_document"][token_field] == provider.result[token_field]
+    assert entry["status"] == "settled"
+    assert entry["actual_cost"] == attempt["actual_cost"] < entry["maximum_cost"]
+    assert snapshot["decisions"] == []
+    assert len(outbox) == 1
+
+
+def test_paid_gate_rejects_exported_legacy_pilot_with_known_token_bound_breach(pg, tmp_path):
+    runner = _runner()
+    otlp = importlib.import_module("reckoner.telemetry.otlp")
+    _create_four_task_run(
+        pg, "legacy-bound-pilot", purpose="pilot", execution_mode="paid", task_limit=None
+    )
+    provider = CountingAnthropicBoundary()
+    with PostgresRepository(pg.runner_dsn) as repo:
+        runner.preflight(repo, provider, "legacy-bound-pilot")
+        assert runner.execute_run(repo, provider, "legacy-bound-pilot")["completed"] == 20
+        otlp.export_run(repo, "legacy-bound-pilot", tmp_path / "pilot-export")
+    _create_four_task_run(pg, "baseline-after-bound-pilot", execution_mode="paid", task_limit=1)
+    with PostgresRepository(pg.runner_dsn) as repo:
+        assert repo.pilot_gate_satisfied("baseline-after-bound-pilot")
+
+    with psycopg.connect(pg.owner_dsn) as owner:
+        owner.execute(
+            """
+            UPDATE reckoner.attempts a
+            SET usage = jsonb_build_object(
+                  'input_tokens', t.reservation_input_tokens + 1,
+                  'output_tokens', 0,
+                  'cache_read_tokens', 0,
+                  'cache_creation_tokens', 0
+                ),
+                actual_cost = (t.reservation_input_tokens + 1)::numeric / 1000000,
+                response_document = jsonb_set(
+                  jsonb_set(a.response_document, '{input_tokens}',
+                    to_jsonb(t.reservation_input_tokens + 1)),
+                  '{output_tokens}', '0'::jsonb
+                )
+            FROM reckoner.tasks t
+            WHERE t.tenant_id = a.tenant_id AND t.run_id = a.run_id
+              AND t.task_id = a.task_id AND a.run_id = 'legacy-bound-pilot'
+              AND a.call_id = (
+                SELECT min(call_id) FROM reckoner.attempts
+                WHERE run_id = 'legacy-bound-pilot'
+              )
+            """
+        )
+        owner.execute(
+            """
+            UPDATE reckoner.budget_entries b
+            SET usage = a.usage, actual_cost = a.actual_cost
+            FROM reckoner.attempts a
+            WHERE a.call_id = b.call_id AND a.run_id = 'legacy-bound-pilot'
+              AND a.call_id = (
+                SELECT min(call_id) FROM reckoner.attempts
+                WHERE run_id = 'legacy-bound-pilot'
+              )
+            """
+        )
+
+    with PostgresRepository(pg.runner_dsn) as repo:
+        assert not repo.pilot_gate_satisfied("baseline-after-bound-pilot")
+
+
 def test_failure_before_reservation_creates_no_dispatched_attempt(pg, monkeypatch):
     runner = _runner()
     _create_four_task_run(pg, "before-reservation")

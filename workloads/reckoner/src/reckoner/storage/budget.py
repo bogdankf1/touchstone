@@ -86,6 +86,26 @@ class BudgetLedger:
             if has_overage:
                 raise BudgetExceeded("provider cost overage requires reconciliation")
 
+            has_token_overage = cursor.execute(
+                """
+                SELECT EXISTS (
+                  SELECT 1
+                  FROM reckoner.attempts a
+                  JOIN reckoner.tasks t
+                    ON t.tenant_id = a.tenant_id AND t.run_id = a.run_id
+                   AND t.task_id = a.task_id
+                  WHERE a.actual_cost IS NOT NULL AND a.usage IS NOT NULL
+                    AND (
+                      (a.usage->>'input_tokens')::numeric > t.reservation_input_tokens
+                      OR (a.usage->>'output_tokens')::numeric
+                           > (t.request_document->>'max_tokens')::numeric
+                    )
+                ) AS has_token_overage
+                """
+            ).fetchone()["has_token_overage"]
+            if has_token_overage:
+                raise BudgetExceeded("provider token bound exceeded")
+
             global_spent = self._spent(cursor)
             if global_spent >= GLOBAL_LIMIT or global_spent + maximum > GLOBAL_LIMIT:
                 raise BudgetExceeded("global provider budget exceeded")

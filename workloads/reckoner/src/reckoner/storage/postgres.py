@@ -452,6 +452,20 @@ class PostgresRepository:
                       OR length(t.span_id) <> 16 OR length(t.provider_span_id) <> 16
                       OR t.event_id IS NULL)
                 )
+                AND NOT EXISTS (
+                  SELECT 1
+                  FROM reckoner.attempts a
+                  JOIN reckoner.tasks t
+                    ON t.tenant_id = a.tenant_id AND t.run_id = a.run_id
+                   AND t.task_id = a.task_id
+                  WHERE a.run_id = candidate.run_id
+                    AND a.actual_cost IS NOT NULL AND a.usage IS NOT NULL
+                    AND (
+                      (a.usage->>'input_tokens')::numeric > t.reservation_input_tokens
+                      OR (a.usage->>'output_tokens')::numeric
+                           > (t.request_document->>'max_tokens')::numeric
+                    )
+                )
             ) AS satisfied
             """,
             (context["config_id"], context["bundle_id"]),
@@ -711,7 +725,8 @@ class PostgresRepository:
                 raise ValueError("unknown call identity")
             attempt = cursor.execute(
                 """
-                SELECT a.*, t.request_document, t.event_id, t.span_id AS task_span_id,
+                SELECT a.*, t.request_document, t.reservation_input_tokens,
+                       t.event_id, t.span_id AS task_span_id,
                        r.config_id, r.execution_mode,
                        r.bundle_id, r.preflight_code_revision, r.provider_call_mode,
                        c.threshold_config_id, c.document AS config,
@@ -736,6 +751,14 @@ class PostgresRepository:
             ).fetchone()
             if attempt is None or attempt["status"] != "dispatched":
                 raise ValueError("attempt is not dispatched")
+
+            if actual is not None and (
+                usage["input_tokens"] > attempt["reservation_input_tokens"]
+                or usage["output_tokens"] > attempt["request_document"]["max_tokens"]
+            ):
+                outcome = None
+                final_status = "failed"
+                safe_error = "provider_usage_bound_exceeded"
 
             store_provider_span(
                 cursor,
