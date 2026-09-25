@@ -1,0 +1,39 @@
+{
+  "schema_version": "cohort-manifest-v1",
+  "manifest_id": "648c0b16deca7c314dd42410d845923f916eaa51a620b120e53fa834525b7bcb",
+  "tenant_id": "tenant-fixture-a",
+  "cohort_id": "cohort-fixture-v1",
+  "purpose": "fixture",
+  "simulated": true,
+  "source_hashes": {
+    "fabricated-cohort-fixture-v1": "d19c7da7e6a46f3f1704167961902c20d62869716214e319ad532f5d64128b1c"
+  },
+  "seed": 20260925,
+  "history_end": "2019-12-31T23:59:00Z",
+  "evaluation_start": "2020-01-01T00:00:00Z",
+  "evaluation_end": "2020-01-02T00:00:00Z",
+  "inclusion_method": "one fabricated positive-value purchase selected without replacement",
+  "counts": {
+    "source": 1,
+    "retained": 1,
+    "eligible": 1,
+    "unsupported": 0,
+    "total": 1,
+    "fraud": 0,
+    "legitimate": 1
+  },
+  "history_coverage": {
+    "complete_selected_histories": true,
+    "users": 1,
+    "cards": 1,
+    "merchants": 1,
+    "limitations": ["fabricated fixture only"]
+  },
+  "graph_coverage": {
+    "scope": "none",
+    "included_transactions": 0,
+    "limitations": ["no graph is constructed for the contract fixture"]
+  },
+  "dataset_normalization_version": "fabricated-normalization-v1",
+  "selected_transaction_ids": ["transaction-fixture-1"]
+}
