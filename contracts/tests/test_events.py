@@ -100,6 +100,49 @@ def test_unavailable_provider_cost_requires_null_amount():
         validate_document(event, SCHEMAS / "measurement-v1.schema.json")
 
 
+def cost_event(cost_field: str, amount: str) -> dict:
+    event = load_example("measurement-v1.json")
+    if cost_field == "provider":
+        event["event_kind"] = "provider_usage"
+        event["payload"] = {
+            "provider": "example-provider",
+            "model": "example-model",
+            "call_id": "call-1",
+            "input_tokens": 10,
+            "output_tokens": 2,
+            "cached_tokens": 0,
+            "cost_status": "actual",
+            "cost_amount": amount,
+            "currency": "USD",
+            "price_table_version": "prices-v1",
+        }
+    else:
+        event["event_kind"] = "outcome"
+        event["payload"] = {
+            "status": "observed",
+            "correct": True,
+            "review_cost": "0.00",
+            "error_cost": "0.00",
+            "outcome_version": "outcome-v1",
+            "evaluator_version": "evaluator-v1",
+        }
+        event["payload"][f"{cost_field}_cost"] = amount
+    return event
+
+
+@pytest.mark.parametrize("cost_field", ["provider", "review", "error"])
+def test_measurement_rejects_negative_monetary_costs(cost_field):
+    event = cost_event(cost_field, "-1.00")
+    with pytest.raises(ValidationError):
+        validate_document(event, SCHEMAS / "measurement-v1.schema.json")
+
+
+@pytest.mark.parametrize("cost_field", ["provider", "review", "error"])
+def test_measurement_accepts_zero_monetary_costs(cost_field):
+    event = cost_event(cost_field, "0.00")
+    validate_document(event, SCHEMAS / "measurement-v1.schema.json")
+
+
 def test_metric_contribution_has_explicit_numerator_and_denominator():
     event = load_example("measurement-v1.json")
     event["event_kind"] = "metric_contribution"

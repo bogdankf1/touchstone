@@ -96,14 +96,14 @@
         { "$ref": "#/$defs/nonempty" }
       ]
     },
-    "decimal": {
+    "nonnegative_decimal": {
       "type": "string",
-      "pattern": "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$"
+      "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$"
     },
-    "nullable_decimal": {
+    "nullable_nonnegative_decimal": {
       "oneOf": [
         { "type": "null" },
-        { "$ref": "#/$defs/decimal" }
+        { "$ref": "#/$defs/nonnegative_decimal" }
       ]
     },
     "reproducibility": {
@@ -186,7 +186,7 @@
         "output_tokens": { "type": ["integer", "null"], "minimum": 0 },
         "cached_tokens": { "type": ["integer", "null"], "minimum": 0 },
         "cost_status": { "enum": ["actual", "estimated", "unavailable"] },
-        "cost_amount": { "$ref": "#/$defs/nullable_decimal" },
+        "cost_amount": { "$ref": "#/$defs/nullable_nonnegative_decimal" },
         "currency": {
           "oneOf": [
             { "type": "null" },
@@ -206,7 +206,7 @@
           },
           "else": {
             "properties": {
-              "cost_amount": { "$ref": "#/$defs/decimal" },
+              "cost_amount": { "$ref": "#/$defs/nonnegative_decimal" },
               "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
               "price_table_version": { "$ref": "#/$defs/nonempty" }
             }
@@ -228,8 +228,8 @@
       "properties": {
         "status": { "enum": ["observed", "pending", "failed"] },
         "correct": { "type": ["boolean", "null"] },
-        "review_cost": { "$ref": "#/$defs/nullable_decimal" },
-        "error_cost": { "$ref": "#/$defs/nullable_decimal" },
+        "review_cost": { "$ref": "#/$defs/nullable_nonnegative_decimal" },
+        "error_cost": { "$ref": "#/$defs/nullable_nonnegative_decimal" },
         "outcome_version": { "$ref": "#/$defs/nonempty" },
         "evaluator_version": { "$ref": "#/$defs/nullable_nonempty" }
       }
