@@ -10,7 +10,7 @@
 
 **Spec:** `docs/spec/001-reckoner-v0.md` (approved); `docs/spec/000-foundation.md` supplies unchanged contracts and metric definitions.
 
-**Plan status:** Proposed for review. No implementation, dependency installation, deployment, or provider request has begun under this plan.
+**Plan status:** Approved execution finished. Software verification passed (299 tests, Ruff, Compose and kind smoke). The measured pilot failed the strict response-format gate: 0/20 valid outcomes, known provider cost $0.025043. The 1,000-case baseline was not attempted; measured-baseline acceptance remains incomplete. See `docs/evidence/phase-1-baseline.md`. Branch integration awaits the human decision.
 
 ## Global Constraints
 
@@ -61,11 +61,11 @@ exists only where tests need to intercept IO. Keep SQL visible and parameterized
 
 ## Preparation after plan approval
 
-- [ ] Use `superpowers:using-git-worktrees` to create `.worktrees/phase-1-reckoner-v0`, branch `feat/phase-1-reckoner-v0`, from the approved documentation commit. Preserve `.idea/` and other user changes.
-- [ ] Read both specs and this plan in the worktree. Run the existing 58-test foundation baseline, Ruff, and `git diff --check` from a frozen uv environment before changes.
-- [ ] Locate the original `archive/` and `.env` by explicit absolute paths; do not copy the credential file into a worktree, artifact, image, or git. Future CLI `--env-file` reads only supported keys without printing values.
-- [ ] Record free disk, Docker limits/architecture, tool versions, and existing containers/volumes. Use distinct test namespaces/projects and a separate persistent paid-run database.
-- [ ] Resolve compatible dependency releases during their owning tasks, inspect required APIs, and commit `uv.lock`. Record installed versions in the run evidence. No unpinned dependency resolution during measured runs.
+- [x] Use `superpowers:using-git-worktrees` to create `.worktrees/phase-1-reckoner-v0`, branch `feat/phase-1-reckoner-v0`, from the approved documentation commit. Preserve `.idea/` and other user changes.
+- [x] Read both specs and this plan in the worktree. Run the existing 58-test foundation baseline, Ruff, and `git diff --check` from a frozen uv environment before changes.
+- [x] Locate the original `archive/` and `.env` by explicit absolute paths; do not copy the credential file into a worktree, artifact, image, or git. Future CLI `--env-file` reads only supported keys without printing values.
+- [x] Record free disk, Docker limits/architecture, tool versions, and existing containers/volumes. Use distinct test namespaces/projects and a separate persistent paid-run database.
+- [x] Resolve compatible dependency releases during their owning tasks, inspect required APIs, and commit `uv.lock`. Record installed versions in the run evidence. No unpinned dependency resolution during measured runs.
 
 ## Shared document and command contracts
 
@@ -75,7 +75,7 @@ is an integer number of minor units or a nonnegative decimal string; Python calc
 
 Configuration document fields: `schema_version`, `config_id`, `provider`, `model`,
 `temperature`, `max_output_tokens`, `timeout_seconds`, `input_token_ceiling`, `prompt_version`,
-`price_table_version`, `threshold_config_id`. `config_id` hashes every field except itself using
+`price_table_version`, `threshold_config_ids` (tenant ID to threshold-config ID). `config_id` hashes every field except itself using
 the existing `content_id()`. Initial model is `anthropic/claude-haiku-4-5-20251001`; provider is
 `anthropic`; input reservation ceiling is 8192. Validate these against capability/price records;
 configuration cannot activate another provider implicitly.
@@ -135,7 +135,7 @@ tenant_id: str) -> dict` returns `transaction`, `oracle`, `status`, `reason`; st
 index or raises `ValueError`. `load_runtime(artifact_dir: Path, purpose: str) -> list[dict]`
 returns only canonical transaction documents. No provider or database dependencies.
 
-- [ ] **Step 1: Write adapter identity/money/leakage tests.** Use a local fixture helper:
+- [x] **Step 1: Write adapter identity/money/leakage tests.** Use a local fixture helper:
 
 ```python
 def source_row(amount="$20.01", label="No"):
@@ -161,8 +161,8 @@ dates/IDs/labels, missing columns, UTF-8 failures, and quoted CSV records with e
 Unknown channels map to `other`; blank channels to `unknown`. Missing optional values remain
 null; postal codes remain strings. Validate every emitted transaction/oracle against its schema.
 
-- [ ] **Step 2: Run the focused tests red.** `uv run --package reckoner pytest workloads/reckoner/tests/test_adapter.py -q`; expect missing module/functions before implementation.
-- [ ] **Step 3: Implement the minimal adapter and stable IDs.** Core identity rule:
+- [x] **Step 2: Run the focused tests red.** `uv run --package reckoner pytest workloads/reckoner/tests/test_adapter.py -q`; expect missing module/functions before implementation.
+- [x] **Step 3: Implement the minimal adapter and stable IDs.** Core identity rule:
 
 ```python
 def transaction_id(source_sha256: str, source_record: int) -> str:
@@ -175,7 +175,7 @@ never serialize the entire source dictionary. Add normalization strings `currenc
 and `source_timezone_assumed=UTC`. Return a reason for unsupported/invalid records without dropping
 their source accounting. Keep labels entirely outside the transaction document.
 
-- [ ] **Step 4: Add red selection/artifact tests.** Build a tiny CSV fixture with at least
+- [x] **Step 4: Add red selection/artifact tests.** Build a tiny CSV fixture with at least
 100 fraud/900 legitimate positive 2019 cases, 2/18 pre-2019 cases, a 2020 row, a negative fraud
 row, and a user with no pre-holdout history. Generate it in the test using the fixture helper;
 do not commit copied dataset rows. Run `prepare()` twice into different output directories:
@@ -196,7 +196,7 @@ rejection, tampered runtime/oracle/manifest rejection, and insufficient-cohort f
 published partial bundle. Changing holdout labels must not change tenant assignment for users
 with identical pre-holdout records. A user's future fraud may affect retention, never runtime inputs.
 
-- [ ] **Step 5: Implement bounded-memory passes and atomic publication.** First pass hashes and
+- [x] **Step 5: Implement bounded-memory passes and atomic publication.** First pass hashes and
 validates sources, accumulates per-user pre-holdout counts/risk and all-fraud user IDs, and checks
 card reference coverage. Tenant B is the sorted prefix nearest 30% pre-holdout volume (tie: smaller
 prefix); compare fractions exactly with `Fraction`, not float. Zero-history users use seeded hash
@@ -213,7 +213,7 @@ source counts, retained counts, eligible counts in the relevant interval, and mu
 invalid/unsupported counts. Write into a sibling staging directory then atomically rename;
 refuse overwriting a different existing bundle. Expose `prepare` and `verify` commands.
 
-- [ ] **Step 6: Run green tests and commit.**
+- [x] **Step 6: Run green tests and commit.**
 
 ```bash
 uv run --package reckoner pytest workloads/reckoner/tests/test_adapter.py workloads/reckoner/tests/test_cohort.py workloads/reckoner/tests/test_artifacts.py -q
@@ -247,14 +247,14 @@ and `exclusive_runner() -> ContextManager[None]`. Task documents contain `tenant
 `remaining() -> Decimal`, and `pilot_remaining() -> Decimal`. Reservation documents contain
 `tenant_id`, `run_id`, `task_id`, `call_id`, `maximum`, `status`.
 
-- [ ] **Step 1: Write red config and migration tests.** Config tampering, unknown properties,
+- [x] **Step 1: Write red config and migration tests.** Config tampering, unknown properties,
 unknown/unpriced models, nonzero retries, invalid decimal values, and changed prompt/price IDs
 must be rejected. Integration tests create a unique test database/roles through an owner DSN;
 mark them `integration` and fail a required integration job if its DSN is absent. Add
 `psycopg[binary]>=3,<4` only when implementing this task; pin the resolved version in the lockfile.
 Verify migration rerun is idempotent and edited already-applied migration text is rejected.
 
-- [ ] **Step 2: Run tests red, then implement tables and role grants.** Use immutable JSONB
+- [x] **Step 2: Run tests red, then implement tables and role grants.** Use immutable JSONB
 documents plus typed identity/status/money columns where constraints and accounting require them.
 Tables: `transactions`, `cohorts`, `cohort_members`, `run_configs`, `runs`, `tasks`, `attempts`,
 `decisions`, `oracle_labels`, `evaluations`, `telemetry_outbox`, `budget_entries`. All contain
@@ -283,7 +283,7 @@ The paid pilot gate depends only on response validity, usage, bounds, config ide
 export completion; expose those non-oracle fields to the runner. It does not depend on fraud
 labels, correctness, or attaining a favorable quality score.
 
-- [ ] **Step 3: Add race/recovery tests red.** The `pg` pytest fixture creates a fresh test
+- [x] **Step 3: Add race/recovery tests red.** The `pg` pytest fixture creates a fresh test
 database, applies migrations, imports Task 1 fabricated artifacts, and exposes per-role DSNs.
 Never point it at the persistent measured database. `seed_run(pg, run_id, tenant_id)` creates a
 one-task fabricated run using valid configs; define that helper in `conftest.py`.
@@ -308,7 +308,7 @@ conflicting second settlement is rejected; cross-tenant FK misuse fails. Crash a
 must leave a dispatched/uncertain record and hold funds. Unrelated schema-version bookkeeping
 is exempt from tenant data, not a loophole for application rows.
 
-- [ ] **Step 4: Implement serialized accounting and immutability.** Use a fixed Postgres
+- [x] **Step 4: Implement serialized accounting and immutability.** Use a fixed Postgres
 session advisory lock for the active runner; a separate transaction-scoped advisory lock covers
 all reserve/settle operations. Under the accounting lock, compute global encumbrance as settled
 actual costs plus outstanding/uncertain maximum reservations. Sum across both tenants and all
@@ -321,7 +321,7 @@ insert-or-compare semantics: same bytes/identity is a no-op, a mismatch raises. 
 response allowlisted documents plus hashes durably with attempts. Do not log arbitrary exceptions
 whose strings may include DSNs. Local persistent volume and backup paths are Task 6 responsibilities.
 
-- [ ] **Step 5: Run green integration tests and commit.**
+- [x] **Step 5: Run green integration tests and commit.**
 
 ```bash
 docker compose -p touchstone-phase1-tests -f infra/compose.test.yaml up -d --wait
@@ -349,14 +349,14 @@ Result fields: `provider_request_id`, `requested_model`, `reported_model`, `fini
 `reservation_cost(request: dict, estimated_input_tokens: int, prices: dict) -> Decimal`;
 `observed_cost(result: dict, prices: dict) -> Decimal | None`.
 
-- [ ] **Step 1: Write prompt leakage tests red.** Load a fabricated canonical transaction,
+- [x] **Step 1: Write prompt leakage tests red.** Load a fabricated canonical transaction,
 inject extra `label`, `tenant_id`, source positions, and credential-shaped sentinel values into
 unused fields, then assert those values never appear in serialized request content. Mutating
 unused fields must not change the prompt. Include a merchant-city string that looks like an
 instruction; it must remain JSON data, never part of the system instruction. Reject overlong
 request content rather than silently truncating measured inputs.
 
-- [ ] **Step 2: Implement the fixed prompt and allowlist.**
+- [x] **Step 2: Implement the fixed prompt and allowlist.**
 
 ```python
 FACT_FIELDS = ("amount_minor", "currency", "occurred_at", "payment_channel",
@@ -370,7 +370,7 @@ decline costs 30% of amount. Render cost assumptions from the frozen threshold d
 record its ID outside the prompt. No probability, oracle distribution, tenant risk profile,
 history, few-shot labels, tools, or calibration claim. Use one user message with canonical JSON.
 
-- [ ] **Step 3: Add provider-transport and budget tests red.** Test malformed JSON, fences,
+- [x] **Step 3: Add provider-transport and budget tests red.** Test malformed JSON, fences,
 extra keys, duplicate JSON keys, wrong types, unknown outcomes, non-stop finish, missing usage,
 and unexpected requested/reported model mismatch. A malformed but billed response retains its
 usage and cost. Supply an HTTP transport spy beneath LiteLLM and simulate 429, 500, timeout,
@@ -390,7 +390,7 @@ Add ceiling breach, negative/missing counts, non-ASCII content, actual-over-rese
 unknown price tests. Money rounding is upward to a micro-dollar only for reservations;
 observed usage is retained at exact decimal precision.
 
-- [ ] **Step 4: Implement provider-compatible counting and a conservative reservation.**
+- [x] **Step 4: Implement provider-compatible counting and a conservative reservation.**
 Use Anthropic's count endpoint for the exact native system/messages payload with matching model;
 configure its client with `max_retries=0`, timeout 60. Counting is not a paid generation call;
 count failures block dispatch. Serialize the exact native request with compact UTF-8 JSON.
@@ -421,7 +421,7 @@ Set no caching controls, tools, thinking, proxy callbacks, or remote logging. Di
 remote price-map refresh; use the committed price record. Unknown/error usage returns no known
 cost, never zero. Unexpected caching or model identity stops measured execution for diagnosis.
 
-- [ ] **Step 5: Run green provider tests, then commit/review.**
+- [x] **Step 5: Run green provider tests, then commit/review.**
 
 ```bash
 uv run --package reckoner pytest workloads/reckoner/tests/test_prompt.py workloads/reckoner/tests/test_provider.py workloads/reckoner/tests/test_pricing.py -q
@@ -444,7 +444,7 @@ result: dict | None, error_category: str | None, timing: dict) -> None` on the r
 outcome, usage, state, and telemetry atomically. `export_run(repo, run_id: str, output: Path) -> dict`
 writes OTLP requests plus manifest; `replay(artifact_dir: Path, endpoint: str) -> dict` sends them.
 
-- [ ] **Step 1: Add red recovery/instrumentation tests with a fake provider.** Define a counting
+- [x] **Step 1: Add red recovery/instrumentation tests with a fake provider.** Define a counting
 fake provider implementing Task 3's two methods, returning a valid response with known usage or
 raising a safe synthetic exception. It is explicitly labelled fake and never selected by missing
 credentials. Reuse Task 2's real Postgres fixtures. The four-task runner fixture creates an
@@ -464,7 +464,7 @@ uncertain task/reservation. Simulate failure before reservation to prove no disp
 exists. Test insufficient budget, no successful pilot, changed request hash, changed code/config,
 missing price, and export failure all leave explicit states and never cause hidden re-generation.
 
-- [ ] **Step 2: Implement one-call state transitions.** Under `exclusive_runner`, validate all
+- [x] **Step 2: Implement one-call state transitions.** Under `exclusive_runner`, validate all
 run/config/artifact IDs and prohibit any unresolved dispatched/uncertain attempt. Preflight all
 pending task requests using provider count calls; persist their hashes/estimates. For a baseline,
 require a successful 20-case pilot with identical config/prompt/model/price versions and observed
@@ -494,7 +494,7 @@ reservation fields are persisted against the task and returned by `pending_tasks
 not added to the canonical transaction. CLI preflight uses insert-or-compare `create_run` before
 counting; CLI run reuses that run and its validated preflight. Missing preflight blocks generation.
 
-- [ ] **Step 3: Add red OTLP round-trip/replay tests.** Each exported `.pb` is one serialized
+- [x] **Step 3: Add red OTLP round-trip/replay tests.** Each exported `.pb` is one serialized
 `ExportTraceServiceRequest`, with a manifest of ordered filenames, SHA-256s, event IDs and run IDs.
 Use generated protobuf decoding in tests. Include genuine 16-byte trace and 8-byte span IDs.
 Run a local HTTP test receiver on an ephemeral port, POST protobuf to `/v1/traces`, and return an
@@ -502,7 +502,7 @@ encoded OTLP response. Confirm replay preserves bytes/IDs, duplicate exports kee
 HTTP errors retain pending state, partial-success rejection is not counted as complete success,
 and decoded attributes contain no prompt/body/key/label sentinel.
 
-- [ ] **Step 4: Implement durable SDK span export.** Pin semantic convention document version
+- [x] **Step 4: Implement durable SDK span export.** Pin semantic convention document version
 `v1.37.0` and cite it in `contracts/otel-conventions.md`; it is an explicit project version, not
 a claim to use the latest convention. Provider spans record `gen_ai.operation.name=chat`,
 `gen_ai.provider.name=anthropic`, requested/reported model and available input/output usage.
@@ -525,7 +525,7 @@ checksums and deterministic names; repeat exports reuse bytes. For replay use OT
 and inspect `partial_success`. Network retry of telemetry is allowed with unchanged IDs; retry
 of model generation is not. A telemetry failure blocks the next measured task, preserving evidence.
 
-- [ ] **Step 5: Run green tests and commit/review.**
+- [x] **Step 5: Run green tests and commit/review.**
 
 ```bash
 uv run --all-packages pytest workloads/reckoner/tests/test_runner.py workloads/reckoner/tests/test_telemetry.py -q
@@ -547,7 +547,7 @@ and generic metric contributions as evaluator role. `build_report(snapshot: dict
 pure; `write_report(report: dict, output: Path) -> None` writes deterministic JSON/Markdown.
 `create_app(api_dsn: str | None = None) -> FastAPI` is the app factory; retain module `app` for uvicorn.
 
-- [ ] **Step 1: Add red known-answer tests.**
+- [x] **Step 1: Add red known-answer tests.**
 
 ```python
 @pytest.mark.parametrize("outcome,label,correct,review,error", [
@@ -572,7 +572,7 @@ denominator 4, no invented error/review cost, incomplete run/full CPST unavailab
 provider cost, no correct outcomes, no completed tasks, empty tenant population, duplicated call
 IDs, and sub-cent false-decline loss. Nearest-rank p99 of [1,2,3,4] is 4, without interpolation.
 
-- [ ] **Step 2: Implement decimal arithmetic and generic contributions.**
+- [x] **Step 2: Implement decimal arithmetic and generic contributions.**
 
 ```python
 amount = Decimal(amount_minor) / Decimal(100)
@@ -589,7 +589,7 @@ and evaluator version in every result. No fraud formula is added to platform cod
 Schema validity and correctness are separate deterministic suites; required-suite errors cannot
 produce an overall pass. Case-note, human agreement and calibration remain not evaluated.
 
-- [ ] **Step 3: Add red API/report access tests.** Routes are `GET /health/live`,
+- [x] **Step 3: Add red API/report access tests.** Routes are `GET /health/live`,
 `GET /health/ready`, `GET /tenants/{tenant_id}/runs/{run_id}`, and
 `GET /tenants/{tenant_id}/runs/{run_id}/results?limit=100&offset=0`.
 Readiness checks database reachability/migration version; liveness remains independent. Return
@@ -599,7 +599,7 @@ No write route, prompt, raw response, oracle label, DSN, or key appears in any A
 Aggregate correctness metrics may be exposed after evaluator publication; individual oracle
 labels stay private. Test in real-role integration plus FastAPI TestClient.
 
-- [ ] **Step 4: Implement reports and read-only routes.** Report JSON includes schema/version,
+- [x] **Step 4: Implement reports and read-only routes.** Report JSON includes schema/version,
 run status, all manifest/config/prompt/model/code IDs, expected/completed/failed/uncertain counts,
 per-tenant and aggregate metrics with raw numerators/denominators, exact cost components,
 reservation/unknown-cost status, completed-task latency population, evaluation errors, and
@@ -608,7 +608,7 @@ No timestamps generated during report rendering may change its content hash; use
 Markdown is a readable rendering of the same data, with unavailable values visibly labelled.
 Expose sanitized read models through API role/views, never owner connections.
 
-- [ ] **Step 5: Run green tests, full suite, and commit/review.**
+- [x] **Step 5: Run green tests, full suite, and commit/review.**
 
 ```bash
 uv run --all-packages pytest -q
@@ -633,14 +633,14 @@ Commit `feat: report baseline quality cost and completeness`.
 Container resources include schemas, SQL migrations, templates, and default configs. Resolve
 resources using installed package paths/explicit configured paths, never the developer's cwd.
 
-- [ ] **Step 1: Add red CLI/installed-package tests.** Build/install into an isolated test
+- [x] **Step 1: Add red CLI/installed-package tests.** Build/install into an isolated test
 environment; run outside the checkout. Test `--help`, invalid paths, absent credentials,
 unapproved paid mode, unknown model, and incomplete execution exit code 3. `smoke` uses only
 a bundled fabricated fixture and fake provider, emitting `touchstone.provider_call_mode=fake`;
 it cannot pass the paid pilot gate or affect the real budget. Ensure fixture mode cannot be
 selected by missing credentials. A standard `run` without `--allow-paid` makes zero requests.
 
-- [ ] **Step 2: Extend Compose with a persistent Postgres and package the image.** Pin the
+- [x] **Step 2: Extend Compose with a persistent Postgres and package the image.** Pin the
 PostgreSQL 17 image to the resolved tested multi-architecture digest and record it; the exact
 digest is obtained at execution, not invented here. Start with API/runner limits 512 MiB each
 and Postgres 512 MiB, `shared_buffers=128MB`, bounded connections. Only runner and API needed
@@ -654,7 +654,7 @@ read-only for import; do not mount archive/oracle into runner/API containers. Ex
 to a persistent bind mount writable by UID 10001. Docker build must exclude `.env`, `.idea`,
 archive, artifacts and agent scratch; add exclusions only if current `.dockerignore` needs them.
 
-- [ ] **Step 3: Prove Compose behavior with fabricated data before paid work.**
+- [x] **Step 3: Prove Compose behavior with fabricated data before paid work.**
 
 ```bash
 docker compose -p touchstone-phase1-smoke -f infra/compose.yaml config --quiet
@@ -669,21 +669,21 @@ run identifiers. Check readiness, expected metrics, tenant isolation, Postgres r
 and report/OTLP artifacts. Do not print `docker compose config` or inspect full environment values.
 Use the project's empty example env only after locally supplying disposable test DSNs.
 
-- [ ] **Step 4: Repeat the same image smoke in kind, separately.** Use a dedicated cluster,
+- [x] **Step 4: Repeat the same image smoke in kind, separately.** Use a dedicated cluster,
 kubeconfig, namespace, Postgres PVC/StatefulSet, migration Job and smoke Job. Generate local
 Kubernetes Secrets from protected env files without echoing their values; no provider key is
 needed for smoke. Readiness uses `/health/ready`, liveness `/health/live`. Copy generated evidence
 out before deleting only the task-owned smoke cluster. Do not delete unrelated clusters or
 overwrite the user's kubeconfig. Record pod limits, measured memory, restart counts and image IDs.
 
-- [ ] **Step 5: Extend CI and verify offline software readiness.** Add a Postgres service,
+- [x] **Step 5: Extend CI and verify offline software readiness.** Add a Postgres service,
 role/migration setup and required integration test job. Network-intercept tests prove zero paid
 provider access. CI builds the image and runs the fabricated end-to-end smoke; artifact tests
 must not depend on the local CCTD archive. Pin GitHub actions as the current workflow does.
 Run all test/lint/format checks locally; distinguish local workflow checks from a hosted CI run.
 Get whole-branch review and resolve all dispatch/budget/leakage findings before paid generation.
 
-- [ ] **Step 6: Prepare the real cohort and preflight.** In the implementation worktree,
+- [x] **Step 6: Prepare the real cohort and preflight.** In the implementation worktree,
 set shell variables using literal local paths; never print the contents of the secret file.
 
 ```bash
@@ -704,7 +704,7 @@ Recheck provider price/model availability and record the verified values. Approv
 plan authorizes the bounded experiment described here; do not repeatedly request permission
 for the same $10 experiment, but stop if its approved constraints cannot be satisfied.
 
-- [ ] **Step 7: Execute the paid pilot and gate the full run.** Use unique run IDs with
+- [x] **Step 7: Execute the paid pilot and gate the full run.** Completed with a failed gate: all 20 responses were invalid; no baseline preflight, baseline generation, or retry occurred. The conditional full run below remains unexecuted. Use unique run IDs with
 persisted config/code revision, e.g. `phase1-pilot-001` and `phase1-baseline-001`.
 
 ```bash
@@ -726,7 +726,7 @@ to obtain a more flattering result. Known failed cases stay failed; uncertain ch
 additional dispatch. An interrupted run may resume only its never-dispatched tasks after all
 uncertainty is reconciled with evidence. Unknown charges remain reserved without speculation.
 
-- [ ] **Step 8: Record evidence, back up state, and finish.** Export a database backup and
+- [x] **Step 8: Record evidence, back up state, and finish.** Incomplete-experiment evidence and readable backups were preserved, services stopped, and the settled budget volume retained. Finish-branch handoff awaits the human integration decision. Export a database backup and
 artifact checksums into ignored local storage; verify backup readability before stopping the
 measured services. Stop containers without deleting their volumes. Document a restart path and
 the budget ledger location so future phases cannot accidentally reset the $10 cap.
