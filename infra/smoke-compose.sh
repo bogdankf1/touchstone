@@ -25,7 +25,7 @@ fi
 "${compose[@]}" restart postgres
 "${compose[@]}" up -d --wait postgres reckoner
 "${compose[@]}" run --rm --no-deps owner reckoner smoke --env-file - --output /evidence/runner-otlp
-python3 infra/verify_smoke.py "$RECKONER_EXPORT_DIR" "http://127.0.0.1:${RECKONER_API_PORT:-8000}"
+"${compose[@]}" run --rm --no-deps verifier
 "${compose[@]}" exec -T postgres psql -U postgres -d reckoner_smoke_compose -Atc 'SELECT version(); SELECT count(*) FROM reckoner.attempts;'
 attempt_count="$("${compose[@]}" exec -T postgres psql -U postgres -d reckoner_smoke_compose -Atc 'SELECT count(*) FROM reckoner.attempts;')"
 [[ "$attempt_count" == 4 ]]

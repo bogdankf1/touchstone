@@ -61,5 +61,14 @@ services:
     cpus: 1
     volumes:
       - ${RECKONER_EXPORT_DIR}:/evidence
+  verifier:
+    image: touchstone-reckoner:phase1
+    profiles: [tools]
+    command: ["python", "/verify_smoke.py", "/evidence", "http://reckoner:8000"]
+    mem_limit: 128m
+    cpus: 0.5
+    volumes:
+      - ./verify_smoke.py:/verify_smoke.py:ro
+      - ${RECKONER_EXPORT_DIR}:/evidence:ro
 volumes:
   postgres-data:
