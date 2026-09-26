@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import copy
 import hashlib
 import json
 from collections.abc import Mapping
@@ -31,7 +30,11 @@ class ValidatedEvent:
     span_id: str
     received_at: str
     content_sha256: str
-    document: dict[str, Any]
+    _document_json: str
+
+    @property
+    def document(self) -> dict[str, Any]:
+        return json.loads(self._document_json)
 
     @property
     def tenant_id(self) -> str:
@@ -57,11 +60,14 @@ def _validate(document: dict[str, Any], version: str) -> None:
     _validator(version).validate(document)
 
 
-def canonical_sha256(document: dict[str, Any]) -> str:
-    body = json.dumps(
+def _canonical_json(document: dict[str, Any]) -> str:
+    return json.dumps(
         document, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
     )
-    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def canonical_sha256(document: dict[str, Any]) -> str:
+    return hashlib.sha256(_canonical_json(document).encode("utf-8")).hexdigest()
 
 
 def validate_event(document: dict, received_at: str) -> ValidatedEvent:
@@ -71,14 +77,15 @@ def validate_event(document: dict, received_at: str) -> ValidatedEvent:
     identity = EventIdentity(
         document["tenant_id"], document["workflow_id"], document["run_id"], document["event_id"]
     )
+    document_json = _canonical_json(document)
     return ValidatedEvent(
         identity=identity,
         task_id=document["task_id"],
         trace_id=document["trace_id"],
         span_id=document["span_id"],
         received_at=received_at,
-        content_sha256=canonical_sha256(document),
-        document=copy.deepcopy(document),
+        content_sha256=hashlib.sha256(document_json.encode("utf-8")).hexdigest(),
+        _document_json=document_json,
     )
 
 
@@ -89,10 +96,11 @@ def validate_event_context(
     span_id: str,
 ) -> None:
     """Check envelope identity against the enclosing OTLP span at extraction time."""
+    document = event.document
     for field in ("tenant_id", "workflow_id", "workflow_version", "run_id", "task_id"):
-        if span_attributes.get(f"touchstone.{field}") != event.document[field]:
+        if span_attributes.get(f"touchstone.{field}") != document[field]:
             raise ValueError(f"measurement {field} disagrees with enclosing span")
-    if span_attributes.get("touchstone.simulated") is not event.document["simulated"]:
+    if span_attributes.get("touchstone.simulated") is not document["simulated"]:
         raise ValueError("measurement simulated disagrees with enclosing span")
     if trace_id != event.trace_id:
         raise ValueError("measurement trace_id disagrees with enclosing span")
@@ -107,7 +115,7 @@ def validate_declaration(document: dict) -> dict:
     suite_ids = [suite["suite_id"] for suite in document["evaluation_suites"]]
     if len(suite_ids) != len(set(suite_ids)):
         raise ValidationError("evaluation suite IDs must be distinct")
-    return copy.deepcopy(document)
+    return json.loads(_canonical_json(document))
 
 
 def declarations_conflict(existing: dict, new: dict) -> bool:
