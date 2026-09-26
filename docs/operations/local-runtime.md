@@ -56,11 +56,14 @@ UID/GID 10001. Postgres 17.11 uses the verified multiarchitecture OCI index:
 
 `postgres:17@sha256:d74eeac9a635390a49bc21bd49fccd973de707e2a53a76ac49b552b8712ec46f`
 
-Actual Phase 1 deployment, preparation and measured-pilot evidence is recorded in
-[phase-1-baseline.md](../evidence/phase-1-baseline.md). Fabricated smoke results are separate from
-the failed measured pilot; the full baseline was not attempted. Preparation took 926.11 seconds
-at one CPU, with observed process peak RSS 347,520 KiB under a 512 MiB limit. Measured services
-were stopped after backup verification; their persistent ledger volume remains intact.
+Original Phase 1 deployment, preparation and failed-pilot evidence remains in
+[phase-1-baseline.md](../evidence/phase-1-baseline.md). The subsequent native structured-output
+revision and completed 1,000-case measured baseline are recorded separately in
+[phase-1-completion.md](../evidence/phase-1-completion.md), including the current installed image,
+resource samples, budget ledger and backup identities. Fabricated smoke remains separate from
+measured provider results. The unchanged original preparation took 926.11 seconds at one CPU,
+with observed process peak RSS 347,520 KiB under a 512 MiB limit. Measured services were stopped
+after backup verification; their persistent ledger volume remains intact.
 
 The task reused the existing verified kind v0.33.0 binary at
 `.worktrees/phase-0-foundation/artifacts/tools/kind` from the root checkout. Its original official

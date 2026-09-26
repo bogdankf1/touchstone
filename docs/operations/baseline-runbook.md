@@ -236,3 +236,54 @@ pass the baseline gate. A reviewed remedy and explicitly approved new pilot iden
 all existing charges and use the remaining global/pilot funds; no repair, retry, model switch or
 new run was attempted during this task. A future operator must preserve the original failed
 report and both exports. Stop again with the same Compose arguments and `stop`, never volume deletion.
+
+## Phase 1 completion revision (2026-09-26)
+
+The preceding recorded-state section describes the original failed pilot and its
+historical image. The separately approved native structured-output revision uses
+`baseline-v2.json`, code `8cf7d068c2b80d3bfe362582771af5713f8f4184`, and image
+`touchstone-reckoner:phase1-completion-8cf7d06` with immutable ID
+`sha256:a02cd32cbae8eaf397c774b8af1276c6de96f11be1270352fb733dc07b5de327`.
+The original image tag and artifacts remain intact. Current aggregate results and
+backup identities are in [phase-1-completion.md](../evidence/phase-1-completion.md).
+
+The guarded local wrapper `artifacts/phase1-completion/operations/compose.py` uses
+that image via its adjacent `image.yaml` override. It reuses the original measured
+project, persistent volume, credentials and source/runtime paths; all new outputs
+go under `artifacts/phase1-completion/`. It asserts the image ID before every
+operation and allows the provider-facing branch only for the approved
+`phase1-pilot-002` and conditional `phase1-baseline-001` identities. The provider
+key remains transient runner environment, never in persisted service configuration,
+command-line values, images, logs or backups.
+
+After completion the preserved ledger contains 20 original pilot calls / USD
+0.025043, 20 revised pilot calls / USD 0.009168, and 1,000 baseline calls / USD
+0.458940: 1,040 settled entries totaling USD 0.493151, with no unknown charges.
+The measured API and Postgres stopped cleanly after backup verification.
+
+For read-only inspection after the experiment, from the same worktree:
+
+```bash
+python3 artifacts/phase1-completion/operations/compose.py up -d --wait --no-build postgres
+python3 artifacts/phase1-completion/operations/compose.py run --rm --no-deps owner reckoner migrate --env-file -
+python3 artifacts/phase1-completion/operations/compose.py exec -T postgres psql -U postgres -d reckoner_measured -Atc "SELECT run_id, count(*), sum(actual_cost), count(*) FILTER (WHERE status <> 'settled') AS unsettled FROM reckoner.budget_entries GROUP BY run_id ORDER BY run_id;"
+python3 artifacts/phase1-completion/operations/compose.py up -d --wait --no-build reckoner
+# Stop again when inspection is finished; preserve the measured volume.
+python3 artifacts/phase1-completion/operations/compose.py stop reckoner postgres
+```
+
+The wrapper's name and run-ID checks are operational safeguards, not authorization
+for future provider calls. This approval covers exactly one revised pilot and one
+conditional baseline; it does not authorize another run, a failed-case retry, a
+ledger reset, or changing frozen settings. Export/evaluation/report replay needs
+no provider credential. Read-only private evidence verification runs as image
+UID 10001 with read-only evidence/script mounts, rather than weakening export file
+permissions for the host account.
+
+The completion backup uses an explicit allowlist: original prepared data/runtime
+and pilot evidence, new measured evidence/operations, and versioned configuration/
+prompt files. It excludes all measured/smoke secret directories, `.env` files,
+kubeconfigs and credentials. Both the custom database dump and artifact archive
+are fully decoded for readability and SHA-256 recorded; this check is not a
+restore into a fresh database. Keep the original root `archive/` for source-backed
+history and preserve both generations of evidence.

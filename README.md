@@ -9,7 +9,8 @@ software and fabricated deployment checks.
 - [Approved foundation](docs/spec/000-foundation.md) and [Phase 1 specification](docs/spec/001-reckoner-v0.md)
 - [Architecture and current/planned boundaries](docs/architecture/foundation.md)
 - [Baseline operations, credential separation, recovery and budget gates](docs/operations/baseline-runbook.md)
-- [Runtime resources](docs/operations/local-runtime.md) and [Phase 1 evidence](docs/evidence/phase-1-baseline.md)
+- [Runtime resources](docs/operations/local-runtime.md) and [completed Phase 1 baseline](docs/evidence/phase-1-completion.md)
+- [Original failed pilot evidence](docs/evidence/phase-1-baseline.md) (preserved history)
 
 Install the locked environment and run checks:
 
