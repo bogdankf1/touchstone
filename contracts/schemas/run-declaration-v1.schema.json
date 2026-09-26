@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://touchstone.example/contracts/run-declaration-v1.schema.json",
+  "title": "Generic workflow run declaration v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "event_id", "tenant_id", "workflow_id", "workflow_version",
+    "run_id", "declared_at", "expected_task_count", "expected_task_ids",
+    "experiment_version", "cohort_version", "config_version", "code_revision",
+    "dataset_version", "measurement_mode", "dataset_simulated", "replay",
+    "evaluation_suites"
+  ],
+  "properties": {
+    "schema_version": { "const": "run-declaration-v1" },
+    "event_id": { "$ref": "#/$defs/nonempty" },
+    "tenant_id": { "$ref": "#/$defs/nonempty" },
+    "workflow_id": { "$ref": "#/$defs/nonempty" },
+    "workflow_version": { "$ref": "#/$defs/nonempty" },
+    "run_id": { "$ref": "#/$defs/nonempty" },
+    "declared_at": { "type": "string", "format": "date-time" },
+    "expected_task_count": { "type": "integer", "minimum": 1 },
+    "expected_task_ids": {
+      "type": "array", "minItems": 1, "uniqueItems": true,
+      "items": { "$ref": "#/$defs/nonempty" }
+    },
+    "experiment_version": { "$ref": "#/$defs/nonempty" },
+    "cohort_version": { "$ref": "#/$defs/nonempty" },
+    "config_version": { "$ref": "#/$defs/nonempty" },
+    "code_revision": { "$ref": "#/$defs/nonempty" },
+    "dataset_version": { "$ref": "#/$defs/nonempty" },
+    "measurement_mode": { "enum": ["measured", "fabricated"] },
+    "dataset_simulated": { "type": "boolean" },
+    "replay": {
+      "type": "object", "additionalProperties": false,
+      "required": ["is_replay", "source_manifest_sha256"],
+      "properties": {
+        "is_replay": { "type": "boolean" },
+        "source_manifest_sha256": {
+          "oneOf": [
+            { "type": "null" },
+            { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+          ]
+        }
+      },
+      "if": { "properties": { "is_replay": { "const": true } } },
+      "then": { "properties": { "source_manifest_sha256": { "type": "string" } } },
+      "else": { "properties": { "source_manifest_sha256": { "type": "null" } } }
+    },
+    "evaluation_suites": {
+      "type": "array", "uniqueItems": true,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["suite_id", "suite_version", "expected_case_ids", "required_checks"],
+        "properties": {
+          "suite_id": { "$ref": "#/$defs/nonempty" },
+          "suite_version": { "$ref": "#/$defs/nonempty" },
+          "expected_case_ids": {
+            "type": "array", "uniqueItems": true,
+            "items": { "$ref": "#/$defs/nonempty" }
+          },
+          "required_checks": {
+            "type": "array", "minItems": 1, "uniqueItems": true,
+            "items": { "$ref": "#/$defs/nonempty" }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "nonempty": { "type": "string", "minLength": 1 }
+  }
+}

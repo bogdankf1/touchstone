@@ -1,0 +1,25 @@
+[project]
+name = "touchstone-platform"
+version = "0.1.0"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "clickhouse-connect==1.9.0",
+    "dagster==1.13.24",
+    "dagster-webserver==1.13.24",
+    "dbt-duckdb==1.11.0",
+    "dbt-metricflow==0.15.0",
+    "dbt-snowflake==1.12.1",
+    "fastapi>=0.115,<1",
+    "jsonschema[format]>=4,<5",
+    "uvicorn>=0.30,<1",
+]
+
+[build-system]
+requires = ["hatchling>=1.26,<2"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/touchstone_platform"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"../contracts/schemas" = "touchstone_platform/_resources/schemas"

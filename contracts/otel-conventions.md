@@ -26,6 +26,21 @@ Generic `measurement-v1` JSON documents are validated against
 only when a cost is known; unknown costs and currency remain null. Future outcome and evaluation
 spans link to the task trace rather than duplicating provider cost.
 
+Touchstone v1 run expectations use `contracts/schemas/run-declaration-v1.schema.json`. A
+declaration is a named `touchstone.run.declaration` span event whose
+`touchstone.run.json` attribute contains canonical compact JSON. It declares tenant,
+workflow, run, distinct expected task IDs and count, experiment versions, simulated-source
+status, measurement mode, replay provenance, and required evaluation checks/cases. It carries
+expectations, never calculated results. A replay declaration identifies its frozen source
+manifest by SHA-256; historical provider spans are not rewritten. Repeated identical
+declarations have the same canonical SHA-256 identity. A changed declaration for the same
+tenant/workflow/run identity is a conflict that ingestion must surface.
+
+At extraction, the platform validates each measurement JSON document and separately compares
+its tenant, workflow, workflow version, run, task, simulation flag, trace ID, and span ID with
+the enclosing span. The validator's `received_at` is ingestion time, independent of the
+envelope's `occurred_at`; neither field is inferred from a file path.
+
 Local export writes the exact protobuf bytes from the durable outbox using deterministic names
 and SHA-256 checksums. `manifest.json` preserves ordered filenames, checksums, event IDs, run IDs,
 tenant IDs, and task IDs. Replay sends those unchanged bytes to `/v1/traces` using OTLP/HTTP
