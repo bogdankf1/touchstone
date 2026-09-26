@@ -58,6 +58,30 @@ Negative, boolean, missing, or otherwise invalid provider token counters remain 
 operational response and usage evidence. Generic telemetry represents such counters as null
 (and omits their GenAI counter attributes); their cost remains unavailable.
 
+Touchstone v1 accepts these OTLP/HTTP protobuf requests at the Collector and writes traces to
+ClickHouse using the pinned `clickhouseexporter` v0.136.0 trace schema. Its `Events.Name` and
+`Events.Attributes` nested arrays preserve each measurement or declaration JSON attribute.
+`Timestamp` remains the original span start time. The custom raw table adds server-assigned
+`ReceivedAt` (`DateTime64(6, 'UTC')`) and `ReceiptId` (UUID) defaults for ingestion progress.
+It also materializes `tenant_id` from the span attribute. An invalid raw span with a missing
+or mismatched tenant has no trusted tenant assignment; extraction emits a rejection rather than
+creating an attributed measurement or declaration.
+Extractor refreshes scan **all** raw receipts through one fixed UTC cutoff in bounded pages,
+ordered by `(ReceivedAt, ReceiptId)`. The UUID disambiguates timestamp ties; the microsecond
+precision matches Python's exact `datetime` cursor precision. Late-arriving old events therefore
+enter a later refresh. The staging refresh must record its cutoff plus extracted, rejected and
+declaration counts in its operator receipt; current events without a valid declaration never imply complete
+task coverage.
+
+The Collector uses a file-backed exporter queue on a named volume and does not expire raw trace
+rows during Phase 2 acceptance. An OTLP 200 response acknowledges queue acceptance; extraction
+must still confirm ClickHouse receipts. The queue is bounded and a full queue can reject new
+requests, which replay reports as pending. Before any finite raw-data retention is enabled,
+choose a policy longer than the maximum refresh outage and replay window, verify warehouse
+materialization and a recoverable backup, then prove late arrivals remain visible across the
+boundary. A disposable Compose `queue-init` container sets ownership of the queue volume to
+the pinned Collector image's UID/GID 10001; the Collector itself remains non-root.
+
 The operational response artifact allowlist is `provider_request_id`, `requested_model`,
 `reported_model`, `finish_reason`, `content`, `input_tokens`, `output_tokens`, `cache_read_tokens`,
 and `cache_creation_tokens`; absent fields are null and invalid received values are retained.

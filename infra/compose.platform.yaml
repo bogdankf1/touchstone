@@ -1,0 +1,47 @@
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.8@sha256:0152dd511befe6a2c2ef53e930726179669b08116da78500b37c51c96ff5ee77
+    environment:
+      CLICKHOUSE_DB: otel
+      CLICKHOUSE_USER: touchstone
+      CLICKHOUSE_PASSWORD: ${TOUCHSTONE_CH_PASSWORD:?set a disposable local password}
+    ports:
+      - "127.0.0.1::8123"
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - ../platform/clickhouse/init.sql:/docker-entrypoint-initdb.d/01-traces.sql:ro
+    mem_limit: 1536m
+    healthcheck:
+      test: ["CMD-SHELL", "clickhouse-client --user touchstone --password \"$${CLICKHOUSE_PASSWORD}\" --query 'SELECT 1'"]
+      interval: 2s
+      timeout: 5s
+      retries: 45
+
+  queue-init:
+    image: clickhouse/clickhouse-server:25.8@sha256:0152dd511befe6a2c2ef53e930726179669b08116da78500b37c51c96ff5ee77
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-c", "chown -R 10001:10001 /queue"]
+    network_mode: none
+    volumes:
+      - collector-queue:/queue
+
+  collector:
+    image: otel/opentelemetry-collector-contrib:0.136.0@sha256:45392d534c1edcc809c2d112394029246bc679d2ae5ea7081414a1fc74f2c621
+    command: ["--config=/etc/otelcol/config.yaml"]
+    environment:
+      CLICKHOUSE_PASSWORD: ${TOUCHSTONE_CH_PASSWORD}
+    ports:
+      - "127.0.0.1::4318"
+    volumes:
+      - ../platform/collector/config.yaml:/etc/otelcol/config.yaml:ro
+      - collector-queue:/var/lib/otelcol/storage
+    mem_limit: 384m
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      queue-init:
+        condition: service_completed_successfully
+
+volumes:
+  clickhouse-data:
+  collector-queue:

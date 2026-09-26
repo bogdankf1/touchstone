@@ -2472,6 +2472,7 @@ dependencies = [
     { name = "dbt-snowflake" },
     { name = "fastapi" },
     { name = "jsonschema", extra = ["format"] },
+    { name = "opentelemetry-proto" },
     { name = "uvicorn" },
 ]
 
@@ -2485,6 +2486,7 @@ requires-dist = [
     { name = "dbt-snowflake", specifier = "==1.12.1" },
     { name = "fastapi", specifier = ">=0.115,<1" },
     { name = "jsonschema", extras = ["format"], specifier = ">=4,<5" },
+    { name = "opentelemetry-proto", specifier = "==1.37.0" },
     { name = "uvicorn", specifier = ">=0.30,<1" },
 ]
 

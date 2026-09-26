@@ -11,8 +11,12 @@ dependencies = [
     "dbt-snowflake==1.12.1",
     "fastapi>=0.115,<1",
     "jsonschema[format]>=4,<5",
+    "opentelemetry-proto==1.37.0",
     "uvicorn>=0.30,<1",
 ]
+
+[project.scripts]
+touchstone = "touchstone_platform.cli:main"
 
 [build-system]
 requires = ["hatchling>=1.26,<2"]
