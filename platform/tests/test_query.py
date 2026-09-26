@@ -369,8 +369,10 @@ def test_no_observed_contributions_keep_components_unknown_in_tenant_and_aggrega
     assert tenant["contribution_rates"][0]["numerator"] is None
     assert tenant["contribution_rates"][0]["denominator"] is None
     assert tenant["contribution_rates"][0]["rate"] is None
-    assert aggregate["contribution_rates"][0]["numerator"] is None
-    assert aggregate["contribution_rates"][0]["denominator"] is None
+    assert aggregate["contribution_rates"][0]["numerator"] == 1.0
+    assert aggregate["contribution_rates"][0]["denominator"] == 2.0
+    assert aggregate["contribution_rates"][0]["expected_tasks"] == 4
+    assert aggregate["contribution_rates"][0]["task_contributions"] == 1
     assert aggregate["contribution_rates"][0]["rate"] is None
 
 

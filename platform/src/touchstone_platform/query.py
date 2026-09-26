@@ -293,16 +293,14 @@ class SnapshotReader:
                 and all(row["expected_tasks"] is not None for row in members)
                 else None
             )
-            numerator = (
-                sum(row["numerator_sum"] for row in members)
-                if all(row["numerator_sum"] is not None for row in members)
-                else None
-            )
-            denominator = (
-                sum(row["denominator_sum"] for row in members)
-                if all(row["denominator_sum"] is not None for row in members)
-                else None
-            )
+            observed_numerators = [
+                row["numerator_sum"] for row in members if row["numerator_sum"] is not None
+            ]
+            observed_denominators = [
+                row["denominator_sum"] for row in members if row["denominator_sum"] is not None
+            ]
+            numerator = sum(observed_numerators) if observed_numerators else None
+            denominator = sum(observed_denominators) if observed_denominators else None
             eligible = expected is not None and all(
                 row["eligible_numerator"] is not None and row["eligible_denominator"] is not None
                 for row in members
