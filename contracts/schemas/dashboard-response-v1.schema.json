@@ -1,0 +1,142 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://touchstone.local/contracts/dashboard-response-v1.schema.json",
+  "title": "Touchstone dashboard read responses v1",
+  "$defs": {
+    "metadata": {
+      "type": "object",
+      "required": ["generation", "warehouse", "published_at", "cutoff", "latest_refresh"],
+      "properties": {
+        "generation": {"type": "string"},
+        "warehouse": {"type": "string"},
+        "published_at": {"type": ["string", "null"]},
+        "cutoff": {"type": ["string", "null"]},
+        "accepted_measurements": {"type": ["integer", "null"]},
+        "accepted_declarations": {"type": ["integer", "null"]},
+        "rejected_count": {"type": ["integer", "null"]},
+        "latest_refresh": {
+          "type": "object",
+          "required": ["state", "attempted_at", "reason"],
+          "properties": {
+            "state": {"enum": ["unknown", "succeeded", "failed", "published_with_warning"]},
+            "attempted_at": {"type": ["string", "null"]},
+            "reason": {"type": ["string", "null"]}
+          }
+        }
+      }
+    },
+    "money": {"type": ["string", "null"], "pattern": "^-?[0-9]+(\\.[0-9]+)?$"},
+    "run": {
+      "type": "object",
+      "required": ["workflow_id", "run_id", "tenant_id", "measurement_mode", "dataset_simulated", "completeness_known", "metrics_complete", "expected_tasks", "received_tasks", "missing_tasks", "correct_tasks", "model_cost", "review_cost", "error_cost", "cpst", "currency", "latency_population", "latency_p99_ms", "metric_definitions"],
+      "properties": {
+        "workflow_id": {"type": "string"},
+        "run_id": {"type": "string"},
+        "tenant_id": {"type": ["string", "null"]},
+        "measurement_mode": {"type": ["string", "null"]},
+        "dataset_simulated": {"type": ["boolean", "null"]},
+        "completeness_known": {"type": "boolean"},
+        "metrics_complete": {"type": "boolean"},
+        "expected_tasks": {"type": ["integer", "null"]},
+        "received_tasks": {"type": ["integer", "null"]},
+        "missing_tasks": {"type": ["integer", "null"]},
+        "correct_tasks": {"type": ["integer", "null"]},
+        "model_cost": {"$ref": "#/$defs/money"},
+        "review_cost": {"$ref": "#/$defs/money"},
+        "error_cost": {"$ref": "#/$defs/money"},
+        "cpst": {"$ref": "#/$defs/money"},
+        "currency": {"type": ["string", "null"]},
+        "latency_population": {"type": ["integer", "null"]},
+        "latency_p99_ms": {"type": ["number", "null"]},
+        "metric_definitions": {"type": "object"}
+      }
+    },
+    "ready": {
+      "type": "object", "required": ["status", "metadata"],
+      "properties": {
+        "status": {"const": "ready"},
+        "metadata": {"$ref": "#/$defs/metadata"}
+      }
+    },
+    "workflows": {
+      "type": "object", "required": ["metadata", "data"],
+      "properties": {
+        "metadata": {"$ref": "#/$defs/metadata"},
+        "data": {"type": "array", "items": {
+          "type": "object", "required": ["workflow_id", "tenant_count", "run_count"]
+        }}
+      }
+    },
+    "runs": {
+      "type": "object", "required": ["metadata", "data"],
+      "properties": {
+        "metadata": {"$ref": "#/$defs/metadata"},
+        "data": {"type": "array", "items": {"$ref": "#/$defs/run"}}
+      }
+    },
+    "summary": {
+      "type": "object", "required": ["metadata", "data"],
+      "properties": {
+        "metadata": {"$ref": "#/$defs/metadata"},
+        "data": {"allOf": [{"$ref": "#/$defs/run"}, {
+          "type": "object", "required": ["tenant_ids", "excluded_tenants", "tenants", "quality", "contribution_rates"],
+          "properties": {
+            "tenant_ids": {"type": "array", "items": {"type": "string"}},
+            "excluded_tenants": {"type": "array", "items": {"type": "string"}},
+            "tenants": {"type": "array", "items": {"$ref": "#/$defs/run"}},
+            "quality": {
+              "type": "object",
+              "required": ["identity_conflicts", "incomplete_calls", "unavailable_prices", "rejected_events"],
+              "properties": {
+                "identity_conflicts": {"type": "integer"},
+                "incomplete_calls": {"type": "integer"},
+                "unavailable_prices": {"type": "integer"},
+                "rejected_events": {"type": "integer"}
+              }
+            },
+            "contribution_rates": {"type": "array", "items": {
+              "type": "object", "required": ["metric_id", "definition_version", "expected_tasks", "task_contributions", "numerator", "denominator", "rate"],
+              "properties": {"rate": {"type": ["number", "null"]}}
+            }}
+          }
+        }]}
+      }
+    },
+    "tasks": {
+      "type": "object", "required": ["metadata", "data"],
+      "properties": {
+        "metadata": {"$ref": "#/$defs/metadata"},
+        "data": {"$ref": "#/$defs/page"}
+      }
+    },
+    "trace": {
+      "type": "object", "required": ["metadata", "data"],
+      "properties": {
+        "metadata": {"$ref": "#/$defs/metadata"},
+        "data": {
+          "type": "object", "required": ["trace_id", "events", "page", "page_size", "total"],
+          "properties": {
+            "trace_id": {"type": "string"},
+            "events": {"type": "array", "items": {
+              "type": "object", "required": ["tenant_id", "workflow_id", "run_id", "task_id", "event_id", "event_kind", "node_name", "trace_id", "span_id", "received_at"]
+            }},
+            "page": {"type": "integer"},
+            "page_size": {"type": "integer"},
+            "total": {"type": "integer"}
+          }
+        }
+      }
+    },
+    "page": {
+      "type": "object", "required": ["items", "page", "page_size", "total"],
+      "properties": {
+        "items": {"type": "array", "items": {
+          "type": "object", "required": ["tenant_id", "workflow_id", "run_id", "task_id", "terminal_status", "latency_ms", "incomplete", "nodes"]
+        }},
+        "page": {"type": "integer"},
+        "page_size": {"type": "integer"},
+        "total": {"type": "integer"}
+      }
+    }
+  }
+}

@@ -7,7 +7,6 @@ from pathlib import Path
 
 import duckdb
 import pytest
-from test_metrics import declaration, event
 from touchstone_platform.refresh import (
     RefreshBusy,
     open_published_snapshot,
@@ -15,6 +14,8 @@ from touchstone_platform.refresh import (
 )
 from touchstone_platform.settings import Settings
 from touchstone_platform.staging import StagingReceipt
+
+from .test_metrics import declaration, event
 
 
 def settings(tmp_path):

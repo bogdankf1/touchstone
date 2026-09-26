@@ -18,6 +18,9 @@ def main() -> int:
     replay.add_argument("--manifest-dir", type=Path, required=True)
     replay.add_argument("--endpoint", required=True)
     commands.add_parser("refresh", help="build and publish a verified local warehouse snapshot")
+    serve = commands.add_parser("serve", help="serve the read-only dashboard API")
+    serve.add_argument("--host", default="127.0.0.1")
+    serve.add_argument("--port", type=int, default=8000)
     args = parser.parse_args()
     if args.command == "replay":
         result = replay_exports(args.manifest_dir, args.endpoint)
@@ -26,6 +29,13 @@ def main() -> int:
     if args.command == "refresh":
         result = refresh(Settings.from_env())
         print(json.dumps(vars(result), sort_keys=True))
+        return 0
+    if args.command == "serve":
+        import uvicorn
+
+        from touchstone_platform.api import create_app
+
+        uvicorn.run(create_app(Settings.from_env()), host=args.host, port=args.port)
         return 0
     return 2
 

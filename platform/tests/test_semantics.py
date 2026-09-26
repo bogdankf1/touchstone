@@ -9,9 +9,10 @@ from decimal import Decimal
 from pathlib import Path
 
 import duckdb
-from test_metrics import declaration, event
 from touchstone_platform.contracts import canonical_sha256, validate_event
 from touchstone_platform.staging import build_snapshot
+
+from .test_metrics import declaration, event
 
 PROJECT = Path(__file__).resolve().parents[1] / "dbt"
 

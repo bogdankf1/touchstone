@@ -1,0 +1,136 @@
+"""Public read API contracts over a pinned published warehouse."""
+
+import json
+from pathlib import Path
+
+from fastapi.testclient import TestClient
+from jsonschema import validate
+from touchstone_platform.api import create_app
+from touchstone_platform.settings import Settings
+
+pytest_plugins = ("tests.test_query",)
+
+
+SCHEMA = json.loads(
+    (
+        Path(__file__).resolve().parents[2] / "contracts/schemas/dashboard-response-v1.schema.json"
+    ).read_text()
+)
+
+
+def assert_schema(response, kind):
+    assert response.status_code == 200, response.text
+    validate(response.json(), {**SCHEMA, "$ref": f"#/$defs/{kind}"})
+
+
+def test_missing_snapshot_is_not_ready_and_has_safe_reason(tmp_path):
+    client = TestClient(create_app(Settings(warehouse_dir=tmp_path)))
+    assert client.get("/healthz").status_code == 200
+    response = client.get("/readyz")
+    assert response.status_code == 503
+    assert response.json() == {"status": "unavailable", "reason": "no published snapshot"}
+    assert client.get("/v1/workflows").status_code == 503
+
+
+def test_read_endpoints_validate_schema_and_preserve_unknowns(published):
+    client = TestClient(create_app(published))
+    (published.warehouse_dir / "refresh-status.json").write_text(
+        json.dumps(
+            {
+                "state": "failed",
+                "attempted_at": "2026-09-26T10:04:00Z",
+                "error": "credentials=secret token=hidden internal path /private/tmp/source",
+            }
+        )
+    )
+    ready = client.get("/readyz")
+    assert_schema(ready, "ready")
+    assert ready.json()["metadata"]["latest_refresh"]["state"] == "failed"
+    assert "secret" not in ready.text
+    assert_schema(client.get("/v1/workflows"), "workflows")
+    assert_schema(
+        client.get("/v1/runs", params={"workflow_id": "workflow", "tenant_id": "tenant-a"}), "runs"
+    )
+    summary = client.get(
+        "/v1/runs/run/summary", params={"workflow_id": "workflow", "tenant_id": "tenant-a"}
+    )
+    assert_schema(summary, "summary")
+    assert summary.json()["data"]["model_cost"] == "0.100000000001"
+    assert summary.json()["data"]["cpst"] is None
+    assert summary.json()["data"]["contribution_rates"][0]["rate"] is None
+    assert_schema(
+        client.get(
+            "/v1/runs/run/tasks", params={"workflow_id": "workflow", "tenant_id": "tenant-a"}
+        ),
+        "tasks",
+    )
+    trace = client.get(
+        "/v1/traces/shared-trace",
+        params={"workflow_id": "workflow", "run_id": "run", "tenant_id": "tenant-a"},
+    )
+    assert_schema(trace, "trace")
+    assert "private" not in trace.text
+
+
+def test_filters_404_422_and_tenant_scoped_trace(published):
+    client = TestClient(create_app(published))
+    assert (
+        client.get(
+            "/v1/runs/missing/summary", params={"workflow_id": "workflow", "tenant_id": "tenant-a"}
+        ).status_code
+        == 404
+    )
+    assert client.get("/v1/runs/run/summary").status_code == 422
+    assert (
+        client.get(
+            "/v1/runs/run/summary",
+            params={"workflow_id": "workflow", "aggregate": "true", "tenant_id": "tenant-a"},
+        ).status_code
+        == 422
+    )
+    assert (
+        client.get(
+            "/v1/runs/run/tasks",
+            params={"workflow_id": "workflow", "tenant_id": "tenant-a", "page_size": 101},
+        ).status_code
+        == 422
+    )
+    trace = client.get(
+        "/v1/traces/shared-trace",
+        params={"workflow_id": "workflow", "run_id": "run", "tenant_id": "tenant-a"},
+    )
+    assert [e["tenant_id"] for e in trace.json()["data"]["events"]] == ["tenant-a"]
+    assert (
+        client.get(
+            "/v1/traces/shared-trace",
+            params={"workflow_id": "workflow", "run_id": "run", "tenant_id": "tenant-x"},
+        ).status_code
+        == 404
+    )
+    assert (
+        client.get(
+            "/v1/runs/run/summary",
+            params={"workflow_id": "workflow", "tenant_id": "tenant-a' OR 1=1 --"},
+        ).status_code
+        == 404
+    )
+    assert (
+        client.get(
+            "/v1/runs/run/summary", params={"workflow_id": "workflow", "tenant_id": "../tenant-b"}
+        ).status_code
+        == 404
+    )
+
+
+def test_explicit_aggregate_excludes_incompatible_run_and_retains_tenants(published):
+    client = TestClient(create_app(published))
+    response = client.get(
+        "/v1/runs/run/summary", params={"workflow_id": "workflow", "aggregate": "true"}
+    )
+    assert_schema(response, "summary")
+    data = response.json()["data"]
+    assert data["tenant_ids"] == ["tenant-a", "tenant-b"]
+    assert data["excluded_tenants"] == ["tenant-c"]
+    assert data["latency_p99_ms"] == 1000.0
+    assert data["model_cost"] == "0.300000000003"
+    assert len(data["tenants"]) == 2

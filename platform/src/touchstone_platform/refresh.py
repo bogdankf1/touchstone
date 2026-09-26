@@ -252,9 +252,10 @@ def refresh(settings: Settings) -> RefreshResult:
 
 
 @contextmanager
-def open_published_snapshot(settings: Settings):
+def open_published_snapshot(settings: Settings, *, manifest: dict | None = None):
     """Pin one request to one immutable generation for its whole read."""
-    manifest = json.loads((settings.warehouse_dir / "current.json").read_text())
+    if manifest is None:
+        manifest = json.loads((settings.warehouse_dir / "current.json").read_text())
     generation = manifest["generation"]
     if (
         Path(generation).name != generation
