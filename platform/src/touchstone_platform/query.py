@@ -18,7 +18,8 @@ RUN_COLUMNS = (
     "completed_tasks, failed_tasks, missing_tasks, correct_tasks, missing_outcomes, "
     "model_cost, review_cost, error_cost, currency, latency_population, "
     "latency_p99_ms, expected_cases, passed_cases, missing_checks, error_checks, "
-    "conflicting_checks, metrics_complete, code_revision, dataset_version, price_table_version"
+    "conflicting_checks, metrics_complete, code_revision, dataset_version, "
+    "price_table_version, declaration_versions"
 )
 COMPATIBILITY = (
     "workflow_version",
@@ -108,6 +109,7 @@ class SnapshotReader:
         return self._rows(
             f"select {RUN_COLUMNS} from mart_runs r "
             "left join (select tenant_id, workflow_id, run_id, "
+            "count(distinct content_sha256) as declaration_versions, "
             "case when count(distinct content_sha256) = 1 then "
             "min(json_extract_string(document_json, '$.code_revision')) end as code_revision, "
             "case when count(distinct content_sha256) = 1 then "
@@ -126,7 +128,9 @@ class SnapshotReader:
     def workflows(self):
         rows = self._rows(
             "select workflow_id, count(distinct tenant_id) as tenant_count, "
-            "count(*) as run_count from mart_runs group by workflow_id order by workflow_id",
+            "count(*) as run_count, "
+            "array_agg(distinct tenant_id order by tenant_id) as tenant_ids "
+            "from mart_runs group by workflow_id order by workflow_id",
             [],
         )
         return rows
@@ -160,7 +164,9 @@ class SnapshotReader:
         return result
 
     def _compatible(self, rows):
-        declared = [row for row in rows if row["completeness_known"]]
+        declared = [
+            row for row in rows if row["completeness_known"] and row["declaration_versions"] == 1
+        ]
         if not declared:
             return [], sorted(row["tenant_id"] for row in rows)
         groups = {}
@@ -238,6 +244,7 @@ class SnapshotReader:
                 "declared_at": min(_text(row["declared_at"]) for row in rows),
                 "completeness_known": all(row["completeness_known"] for row in rows),
                 "metrics_complete": all(row["metrics_complete"] for row in rows),
+                "declaration_versions": 1,
             }
         )
         for key in COUNTS:
@@ -286,8 +293,16 @@ class SnapshotReader:
                 and all(row["expected_tasks"] is not None for row in members)
                 else None
             )
-            numerator = sum(row["numerator_sum"] or 0 for row in members)
-            denominator = sum(row["denominator_sum"] or 0 for row in members)
+            numerator = (
+                sum(row["numerator_sum"] for row in members)
+                if all(row["numerator_sum"] is not None for row in members)
+                else None
+            )
+            denominator = (
+                sum(row["denominator_sum"] for row in members)
+                if all(row["denominator_sum"] is not None for row in members)
+                else None
+            )
             eligible = expected is not None and all(
                 row["eligible_numerator"] is not None and row["eligible_denominator"] is not None
                 for row in members
@@ -370,7 +385,12 @@ class SnapshotReader:
 @contextmanager
 def open_snapshot(settings: Settings):
     """Resolve metadata once, then open that exact generation read-only."""
-    manifest = json.loads((settings.warehouse_dir / "current.json").read_text())
+    try:
+        manifest = json.loads((settings.warehouse_dir / "current.json").read_text())
+    except json.JSONDecodeError as error:
+        raise ValueError("invalid published manifest") from error
+    if not isinstance(manifest, dict) or not isinstance(manifest.get("generation"), str):
+        raise ValueError("invalid published manifest")
     status_path = settings.warehouse_dir / "refresh-status.json"
     try:
         status = json.loads(status_path.read_text())

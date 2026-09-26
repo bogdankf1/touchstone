@@ -134,3 +134,29 @@ def test_explicit_aggregate_excludes_incompatible_run_and_retains_tenants(publis
     assert data["latency_p99_ms"] == 1000.0
     assert data["model_cost"] == "0.300000000003"
     assert len(data["tenants"]) == 2
+
+
+def test_workflow_discovery_exposes_tenant_ids_for_run_selection(published):
+    response = TestClient(create_app(published)).get("/v1/workflows")
+    assert_schema(response, "workflows")
+    assert response.json()["data"] == [
+        {
+            "workflow_id": "workflow",
+            "tenant_count": 3,
+            "run_count": 4,
+            "tenant_ids": ["tenant-a", "tenant-b", "tenant-c"],
+        }
+    ]
+
+
+def test_invalid_manifest_is_safe_503_for_readiness_and_data(published):
+    client = TestClient(create_app(published))
+    manifest = published.warehouse_dir / "current.json"
+    for contents in ("{broken", "{}", "[]", '{"generation": 17}'):
+        manifest.write_text(contents)
+        ready = client.get("/readyz")
+        assert ready.status_code == 503
+        assert ready.json() == {"status": "unavailable", "reason": "no published snapshot"}
+        data = client.get("/v1/workflows")
+        assert data.status_code == 503
+        assert data.json() == {"detail": "published snapshot unavailable"}

@@ -337,6 +337,43 @@ def test_aggregate_excludes_other_dataset_or_price_version(published):
         ]
 
 
+def test_aggregate_excludes_conflicting_declaration_even_when_completeness_known(published):
+    with duckdb.connect(str(published.warehouse_dir / "generation-one.duckdb")) as db:
+        db.execute("""
+            insert into raw_declarations values
+            ('tenant-a','workflow','run','conflicting-hash-a',
+             '{"code_revision":"rev3","dataset_version":"data1"}'),
+            ('tenant-b','workflow','run','conflicting-hash',
+             '{"code_revision":"rev2","dataset_version":"data1"}')
+        """)
+    with open_snapshot(published) as snapshot:
+        assert (
+            snapshot.summary("workflow", "run", tenant_id="tenant-b")["completeness_known"] is True
+        )
+        aggregate = snapshot.summary("workflow", "run", aggregate=True)
+    assert aggregate["tenant_ids"] == ["tenant-c"]
+    assert aggregate["excluded_tenants"] == ["tenant-a", "tenant-b"]
+    assert aggregate["model_cost"] == "9.000000000000"
+
+
+def test_no_observed_contributions_keep_components_unknown_in_tenant_and_aggregate(published):
+    with duckdb.connect(str(published.warehouse_dir / "generation-one.duckdb")) as db:
+        db.execute("""
+            insert into mart_contribution_rates values
+            ('tenant-b','workflow','run','false_positive','v1','ratio',2,1,0,0,0,
+             null,null,'2026-09-26T10:00:00Z',true,2,null,null,null)
+        """)
+    with open_snapshot(published) as snapshot:
+        tenant = snapshot.summary("workflow", "run", tenant_id="tenant-b")
+        aggregate = snapshot.summary("workflow", "run", aggregate=True)
+    assert tenant["contribution_rates"][0]["numerator"] is None
+    assert tenant["contribution_rates"][0]["denominator"] is None
+    assert tenant["contribution_rates"][0]["rate"] is None
+    assert aggregate["contribution_rates"][0]["numerator"] is None
+    assert aggregate["contribution_rates"][0]["denominator"] is None
+    assert aggregate["contribution_rates"][0]["rate"] is None
+
+
 def test_snapshot_uses_parameters_for_hostile_run_and_tenant_values(published):
     with open_snapshot(published) as snapshot:
         assert snapshot.summary("workflow", "run' OR 1=1 --", tenant_id="tenant-a") is None

@@ -63,7 +63,8 @@
       "properties": {
         "metadata": {"$ref": "#/$defs/metadata"},
         "data": {"type": "array", "items": {
-          "type": "object", "required": ["workflow_id", "tenant_count", "run_count"]
+          "type": "object", "required": ["workflow_id", "tenant_count", "run_count", "tenant_ids"],
+          "properties": {"tenant_ids": {"type": "array", "items": {"type": "string"}}}
         }}
       }
     },
@@ -96,7 +97,11 @@
             },
             "contribution_rates": {"type": "array", "items": {
               "type": "object", "required": ["metric_id", "definition_version", "expected_tasks", "task_contributions", "numerator", "denominator", "rate"],
-              "properties": {"rate": {"type": ["number", "null"]}}
+              "properties": {
+                "numerator": {"type": ["number", "null"]},
+                "denominator": {"type": ["number", "null"]},
+                "rate": {"type": ["number", "null"]}
+              }
             }}
           }
         }]}
