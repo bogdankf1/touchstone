@@ -93,7 +93,8 @@ def build_snapshot(
         """)
         connection.execute("""
             create table raw_rejections (
-                tenant_id varchar, received_at timestamptz not null,
+                tenant_id varchar, workflow_id varchar, run_id varchar,
+                task_id varchar, received_at timestamptz not null,
                 trace_id varchar, span_id varchar, event_name varchar,
                 reason varchar not null
             )
@@ -101,12 +102,15 @@ def build_snapshot(
         connection.execute("create table staging_metadata (cutoff timestamptz not null)")
         connection.execute("insert into staging_metadata values (?)", [cutoff])
 
-        def reject(item: RejectedEvent) -> None:
+        def reject(item: RejectedEvent, trusted: ValidatedEvent | None = None) -> None:
             nonlocal rejected
             connection.execute(
-                "insert into raw_rejections values (?, ?, ?, ?, ?, ?)",
+                "insert into raw_rejections values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [
                     item.tenant_id,
+                    trusted.workflow_id if trusted else None,
+                    trusted.run_id if trusted else None,
+                    trusted.task_id if trusted else None,
                     item.received_at,
                     item.trace_id,
                     item.span_id,
@@ -140,7 +144,8 @@ def build_snapshot(
                         document["event_kind"],
                         str(exc),
                         item.tenant_id,
-                    )
+                    ),
+                    trusted=item,
                 )
                 continue
             connection.execute(

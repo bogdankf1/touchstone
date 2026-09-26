@@ -1,6 +1,8 @@
 """Atomic local publication keeps readers on a complete generation."""
 
 import json
+import os
+import stat
 from pathlib import Path
 
 import duckdb
@@ -12,6 +14,7 @@ from touchstone_platform.refresh import (
     refresh,
 )
 from touchstone_platform.settings import Settings
+from touchstone_platform.staging import StagingReceipt
 
 
 def settings(tmp_path):
@@ -167,3 +170,100 @@ def test_semantic_component_mismatch_blocks_publication(tmp_path, monkeypatch):
         refresh(settings(tmp_path))
     assert not (tmp_path / "current.json").exists()
     assert json.loads((tmp_path / "refresh-status.json").read_text())["state"] == "failed"
+
+
+def test_relative_warehouse_directory_is_resolved_before_dbt(tmp_path, monkeypatch):
+    import touchstone_platform.refresh as module
+
+    class Client:
+        def close(self):
+            pass
+
+    monkeypatch.setattr(module.clickhouse_connect, "get_client", lambda **_kwargs: Client())
+    monkeypatch.setattr(
+        module,
+        "iter_measurements",
+        lambda *_args, **_kwargs: iter(
+            [
+                event("execution", "a"),
+                event("outcome", "a"),
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        module, "iter_declarations", lambda *_args, **_kwargs: iter([declaration(("a",))])
+    )
+    relative = Path(os.path.relpath(tmp_path, Path.cwd()))
+    result = refresh(Settings(warehouse_dir=relative))
+    assert (tmp_path / result.generation).exists()
+    with open_published_snapshot(Settings(warehouse_dir=relative)) as connection:
+        assert connection.execute("select correct_tasks from mart_runs").fetchone()[0] == 1
+
+
+def _fake_generation(_settings, target, cutoff):
+    with duckdb.connect(str(target)) as connection:
+        connection.execute("create table marker(value integer)")
+        connection.execute("insert into marker values (2)")
+    return StagingReceipt(cutoff.isoformat(), 1, 1, 0), ()
+
+
+def test_manifest_replace_failure_does_not_publish(tmp_path, monkeypatch):
+    import touchstone_platform.refresh as module
+
+    publish_fixture(tmp_path, "old", 1)
+    monkeypatch.setattr(module, "_build_generation", _fake_generation)
+    original_replace = module.os.replace
+
+    def fail_manifest_replace(source, destination):
+        if Path(destination).name == "current.json":
+            raise OSError("manifest replacement failed")
+        return original_replace(source, destination)
+
+    monkeypatch.setattr(module.os, "replace", fail_manifest_replace)
+    with pytest.raises(OSError, match="manifest replacement failed"):
+        refresh(settings(tmp_path))
+    assert (
+        json.loads((tmp_path / "current.json").read_text())["generation"] == "generation-old.duckdb"
+    )
+    assert json.loads((tmp_path / "refresh-status.json").read_text())["state"] == "failed"
+
+
+def test_manifest_directory_fsync_failure_is_post_commit(tmp_path, monkeypatch):
+    import touchstone_platform.refresh as module
+
+    publish_fixture(tmp_path, "old", 1)
+    monkeypatch.setattr(module, "_build_generation", _fake_generation)
+    original_fsync = module.os.fsync
+    failed = False
+
+    def fail_first_directory_fsync(fd):
+        nonlocal failed
+        if stat.S_ISDIR(os.fstat(fd).st_mode) and not failed:
+            failed = True
+            raise OSError("directory fsync failed")
+        return original_fsync(fd)
+
+    monkeypatch.setattr(module.os, "fsync", fail_first_directory_fsync)
+    result = refresh(settings(tmp_path))
+    assert result.status_warning is not None
+    assert json.loads((tmp_path / "current.json").read_text())["generation"] == result.generation
+    assert json.loads((tmp_path / "refresh-status.json").read_text())["state"] != "failed"
+
+
+def test_status_write_failure_cannot_relabel_published_generation_failed(tmp_path, monkeypatch):
+    import touchstone_platform.refresh as module
+
+    publish_fixture(tmp_path, "old", 1)
+    monkeypatch.setattr(module, "_build_generation", _fake_generation)
+    original_write = module._write_json
+
+    def fail_success_status(path, value, **kwargs):
+        if Path(path).name == "refresh-status.json" and value["state"] == "succeeded":
+            raise OSError("status write failed")
+        return original_write(path, value, **kwargs)
+
+    monkeypatch.setattr(module, "_write_json", fail_success_status)
+    result = refresh(settings(tmp_path))
+    assert result.status_warning is not None
+    assert json.loads((tmp_path / "current.json").read_text())["generation"] == result.generation
+    assert not (tmp_path / "refresh-status.json").exists()

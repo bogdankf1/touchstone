@@ -35,6 +35,9 @@ expectations, never calculated results. A replay declaration identifies its froz
 manifest by SHA-256; historical provider spans are not rewritten. Repeated identical
 declarations have the same canonical SHA-256 identity. A changed declaration for the same
 tenant/workflow/run identity is a conflict that ingestion must surface.
+Optional `metric_expectations` entries declare each generic metric ID, definition version,
+unit, and expected task IDs. Without a matching expectation, observed contribution sums
+remain visible but their rate has unknown coverage and is unavailable.
 
 At extraction, the platform validates each measurement JSON document and separately compares
 its tenant, workflow, workflow version, run, task, simulation flag, trace ID, and span ID with

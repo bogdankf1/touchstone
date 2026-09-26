@@ -75,10 +75,10 @@ semantic_models:
     measures:
       - name: contribution_numerator
         agg: sum
-        expr: numerator_sum
+        expr: eligible_numerator
       - name: contribution_denominator
         agg: sum
-        expr: denominator_sum
+        expr: eligible_denominator
 metrics:
   - name: model_cost
     type: simple

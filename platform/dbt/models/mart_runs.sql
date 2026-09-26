@@ -24,6 +24,12 @@ with declared as (
         count(distinct config_version) as config_versions
     from {{ ref('int_calls') }}
     group by 1, 2, 3, 4
+), rejected_costs as (
+    select tenant_id, workflow_id, run_id, task_id, count(*) as rejected_calls
+    from {{ source('staging', 'raw_rejections') }}
+    where workflow_id is not null and run_id is not null and task_id is not null
+        and event_name = 'provider_usage'
+    group by 1, 2, 3, 4
 ), run_call_versions as (
     select tenant_id, workflow_id, run_id,
         count(distinct price_table_version) as price_versions
@@ -38,7 +44,8 @@ with declared as (
             or e.config_version is distinct from json_extract_string(d.document_json, '$.config_version')
             or e.code_revision is distinct from json_extract_string(d.document_json, '$.code_revision')
             or e.dataset_version is distinct from json_extract_string(d.document_json, '$.dataset_version')
-            or e.simulated is distinct from cast(json_extract_string(d.document_json, '$.dataset_simulated') as boolean)
+            or e.simulated is distinct from
+                (json_extract_string(d.document_json, '$.measurement_mode') = 'fabricated')
             as integer)) as version_mismatch
     from {{ ref('stg_events') }} e
     join declaration d using (tenant_id, workflow_id, run_id)
@@ -60,11 +67,13 @@ with declared as (
             or coalesce(c.config_versions, 0) > 1
             or (c.currency is not null and o.currency is not null
                 and c.currency <> o.currency)
+            or coalesce(j.rejected_calls, 0) > 0
             or coalesce(v.identity_conflict, 0) > 0
             or coalesce(v.version_mismatch, 0) > 0) as incomplete
     from {{ ref('int_tasks') }} t
     left join {{ ref('int_outcomes') }} o using (tenant_id, workflow_id, run_id, task_id)
     left join task_costs c using (tenant_id, workflow_id, run_id, task_id)
+    left join rejected_costs j using (tenant_id, workflow_id, run_id, task_id)
     left join event_compat v using (tenant_id, workflow_id, run_id, task_id)
 ), run_rollup as (
     select tenant_id, workflow_id, run_id,
@@ -148,6 +157,7 @@ select d.tenant_id, d.workflow_id, d.run_id,
     coalesce(e.error_checks, 0) as error_checks,
     coalesce(e.conflicting_checks, 0) as conflicting_checks,
     (d.versions = 1 and r.received_tasks = r.expected_tasks
+        and r.completed_tasks + r.failed_tasks = r.expected_tasks
         and r.missing_outcomes = 0 and r.any_incomplete = 0
         and r.call_currencies <= 1 and r.outcome_currencies <= 1
         and coalesce(cv.price_versions, 0) <= 1

@@ -252,7 +252,125 @@ def test_generic_contribution_rate_sums_by_definition_and_nulls_zero(tmp_path):
             "select definition_version, numerator_sum, denominator_sum, rate "
             "from mart_contribution_rates order by definition_version"
         ).fetchall()
-        assert rows == [("v1", 3.0, 4.0, 0.75), ("v2", 5.0, 0.0, None)]
+        assert rows == [("v1", 3.0, 4.0, None), ("v2", 5.0, 0.0, None)]
+
+
+def test_measured_envelopes_on_simulated_dataset_match_measured_declaration(tmp_path):
+    measured = []
+    for item in [event("execution", "a"), event("outcome", "a"), event("provider_usage", "a")]:
+        document = item.document
+        document["simulated"] = False
+        measured.append(validate_event(document, item.received_at))
+    warehouse = build_marts(tmp_path, measured, [declaration(("a",))])
+    with duckdb.connect(str(warehouse), read_only=True) as connection:
+        assert connection.execute(
+            "select measurement_mode, dataset_simulated, metrics_complete from mart_runs"
+        ).fetchone() == ("measured", True, True)
+
+
+def test_rejected_unpriced_provider_cost_is_unknown_not_zero(tmp_path):
+    too_precise = event("provider_usage", "a", cost_amount="0.0000000000001")
+    warehouse = build_marts(
+        tmp_path,
+        [event("execution", "a"), event("outcome", "a"), too_precise],
+        [declaration(("a",))],
+    )
+    with duckdb.connect(str(warehouse), read_only=True) as connection:
+        assert connection.execute(
+            "select model_cost, metrics_complete from mart_runs"
+        ).fetchone() == (None, False)
+        assert connection.execute(
+            "select tenant_id, workflow_id, run_id, task_id from raw_rejections"
+        ).fetchone() == ("tenant-fixture-a", "reckoner", "run-fixture-1", "a")
+
+
+def test_pending_result_can_resolve_to_unambiguous_observed_result(tmp_path):
+    warehouse = build_marts(
+        tmp_path,
+        [
+            event("execution", "a"),
+            event(
+                "outcome",
+                "a",
+                event_id="pending-a",
+                status="pending",
+                correct=None,
+                review_cost=None,
+                error_cost=None,
+                currency=None,
+            ),
+            event("outcome", "a", event_id="observed-a"),
+        ],
+        [declaration(("a",))],
+    )
+    with duckdb.connect(str(warehouse), read_only=True) as connection:
+        assert connection.execute(
+            "select correct_tasks, metrics_complete from mart_runs"
+        ).fetchone() == (1, True)
+
+
+def test_started_root_and_unfinished_latest_retry_are_incomplete(tmp_path):
+    started = event("execution", "a", status="started", ended_at=None, duration_ms=None)
+    warehouse = build_marts(tmp_path, [started, event("outcome", "a")], [declaration(("a",))])
+    with duckdb.connect(str(warehouse), read_only=True) as connection:
+        assert connection.execute("select metrics_complete from mart_runs").fetchone()[0] is False
+    first = event("execution", "a", event_id="first-terminal")
+    later = event(
+        "execution",
+        "a",
+        event_id="later-started",
+        attempt_number=2,
+        status="started",
+        ended_at=None,
+        duration_ms=None,
+    )
+    second_warehouse = build_marts(
+        tmp_path / "later", [first, later, event("outcome", "a")], [declaration(("a",))]
+    )
+    with duckdb.connect(str(second_warehouse), read_only=True) as connection:
+        assert connection.execute("select metrics_complete from mart_runs").fetchone()[0] is False
+
+
+def test_fully_observed_failed_task_is_receipt_complete(tmp_path):
+    warehouse = build_marts(
+        tmp_path,
+        [event("execution", "a", status="failed"), event("outcome", "a", correct=False)],
+        [declaration(("a",))],
+    )
+    with duckdb.connect(str(warehouse), read_only=True) as connection:
+        assert connection.execute(
+            "select failed_tasks, completed_tasks, metrics_complete from mart_runs"
+        ).fetchone() == (1, 0, True)
+
+
+def test_declared_contribution_population_gates_rate_but_keeps_components(tmp_path):
+    declared = declaration(("a", "b"))
+    document = declared.document
+    document["metric_expectations"] = [
+        {
+            "metric_id": "fixture-rate",
+            "definition_version": "v1",
+            "unit": "count",
+            "expected_task_ids": ["a", "b"],
+        }
+    ]
+    declared = replace(
+        declared, _document_json=json.dumps(document), content_sha256=canonical_sha256(document)
+    )
+    first = event("metric_contribution", "a", numerator=1, denominator=2)
+    partial = build_marts(tmp_path / "partial", [first], [declared])
+    with duckdb.connect(str(partial), read_only=True) as connection:
+        assert connection.execute(
+            "select expected_tasks, task_contributions, numerator_sum, "
+            "denominator_sum, rate from mart_contribution_rates"
+        ).fetchone() == (2, 1, 1.0, 2.0, None)
+    second = event("metric_contribution", "b", numerator=2, denominator=2)
+    full = build_marts(tmp_path / "full", [first, second], [declared])
+    with duckdb.connect(str(full), read_only=True) as connection:
+        assert connection.execute(
+            "select expected_tasks, task_contributions, numerator_sum, "
+            "denominator_sum, rate from mart_contribution_rates"
+        ).fetchone() == (2, 2, 3.0, 4.0, 0.75)
 
 
 def test_nearest_rank_p99_uses_only_selected_tenant(tmp_path):

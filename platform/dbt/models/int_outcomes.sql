@@ -1,23 +1,23 @@
 with outcomes as (
     select tenant_id, workflow_id, run_id, task_id,
-        count(distinct content_sha256) as versions,
-        count(distinct status) as statuses,
-        count(distinct correct) as correctness_versions,
-        count(distinct review_cost) as review_versions,
-        count(distinct error_cost) as error_versions,
-        count(distinct currency) as currencies,
-        count(distinct outcome_version) as outcome_versions,
+        count(*) filter (where status = 'observed') as observed_rows,
+        count(distinct cast(json_extract(document_json, '$.payload') as varchar))
+            filter (where status = 'observed') as observed_versions,
         max(cast(identity_conflict as integer)) as identity_conflict,
-        min(status) as status, min(correct) as correct,
-        min(review_cost) as review_cost, min(error_cost) as error_cost,
-        min(currency) as currency, min(outcome_version) as outcome_version
+        min(status) filter (where status = 'observed') as observed_status,
+        min(status) as provisional_status,
+        min(correct) filter (where status = 'observed') as correct,
+        min(review_cost) filter (where status = 'observed') as review_cost,
+        min(error_cost) filter (where status = 'observed') as error_cost,
+        min(currency) filter (where status = 'observed') as currency,
+        min(outcome_version) filter (where status = 'observed') as outcome_version
     from {{ ref('stg_events') }}
     where event_kind = 'outcome'
     group by 1, 2, 3, 4
 )
-select *, (identity_conflict > 0 or status <> 'observed' or correct is null
-    or review_cost is null or error_cost is null
-    or statuses > 1 or correctness_versions > 1
-    or review_versions > 1 or error_versions > 1 or currencies > 1
-    or outcome_versions > 1) as incomplete
+select tenant_id, workflow_id, run_id, task_id,
+    case when observed_rows > 0 then observed_status else provisional_status end as status,
+    correct, review_cost, error_cost, currency, outcome_version,
+    (identity_conflict > 0 or observed_versions > 1 or observed_rows = 0
+        or correct is null or review_cost is null or error_cost is null) as incomplete
 from outcomes

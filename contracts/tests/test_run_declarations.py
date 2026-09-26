@@ -84,3 +84,28 @@ def test_tenant_identity_is_not_a_path():
     del event["tenant_id"]
     with pytest.raises(ValidationError):
         validate_event(event, "2026-09-26T10:00:00Z")
+
+
+def test_metric_expectations_are_optional_distinct_and_within_declared_tasks():
+    declaration = _declaration()
+    assert "metric_expectations" not in validate_declaration(declaration)
+    declaration["metric_expectations"] = [
+        {
+            "metric_id": "generic-rate",
+            "definition_version": "v1",
+            "unit": "count",
+            "expected_task_ids": ["a", "b"],
+        }
+    ]
+    assert validate_declaration(declaration)["metric_expectations"][0]["expected_task_ids"] == [
+        "a",
+        "b",
+    ]
+    duplicate = copy.deepcopy(declaration)
+    duplicate["metric_expectations"].append(copy.deepcopy(duplicate["metric_expectations"][0]))
+    with pytest.raises(ValidationError):
+        validate_declaration(duplicate)
+    unknown_task = copy.deepcopy(declaration)
+    unknown_task["metric_expectations"][0]["expected_task_ids"] = ["missing"]
+    with pytest.raises(ValidationError):
+        validate_declaration(unknown_task)

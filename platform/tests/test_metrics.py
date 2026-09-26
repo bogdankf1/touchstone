@@ -19,6 +19,7 @@ RECEIVED = "2026-09-26T12:00:00+00:00"
 def event(kind, task="a", event_id=None, **payload):
     document = json.loads((EXAMPLES / "measurement-v1.json").read_text())
     document.update(event_id=event_id or f"{kind}-{task}", task_id=task, event_kind=kind)
+    document["simulated"] = False
     values = {
         "execution": {
             "started_at": "2026-09-26T10:00:00Z",

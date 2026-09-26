@@ -115,6 +115,16 @@ def validate_declaration(document: dict) -> dict:
     suite_ids = [suite["suite_id"] for suite in document["evaluation_suites"]]
     if len(suite_ids) != len(set(suite_ids)):
         raise ValidationError("evaluation suite IDs must be distinct")
+    metric_keys = [
+        (item["metric_id"], item["definition_version"])
+        for item in document.get("metric_expectations", [])
+    ]
+    if len(metric_keys) != len(set(metric_keys)):
+        raise ValidationError("metric expectation IDs and definition versions must be distinct")
+    expected_tasks = set(document["expected_task_ids"])
+    for item in document.get("metric_expectations", []):
+        if not set(item["expected_task_ids"]) <= expected_tasks:
+            raise ValidationError("metric expectation tasks must be declared run tasks")
     return json.loads(_canonical_json(document))
 
 

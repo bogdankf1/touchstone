@@ -9,7 +9,7 @@ import os
 import subprocess
 import tempfile
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -37,9 +37,10 @@ class RefreshResult:
     accepted_declarations: int
     rejected_count: int
     runs: tuple[dict, ...]
+    status_warning: str | None = None
 
 
-def _write_json(path: Path, value: dict) -> None:
+def _write_json(path: Path, value: dict, *, after_replace=None) -> None:
     temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
     try:
         with temporary.open("w") as stream:
@@ -47,6 +48,8 @@ def _write_json(path: Path, value: dict) -> None:
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
+        if after_replace is not None:
+            after_replace()
         directory_fd = os.open(path.parent, os.O_RDONLY)
         try:
             os.fsync(directory_fd)
@@ -161,6 +164,7 @@ def _build_generation(
 
 def refresh(settings: Settings) -> RefreshResult:
     """Reject overlap; publish only after dbt, Elementary and MetricFlow succeed."""
+    settings = replace(settings, warehouse_dir=settings.warehouse_dir.resolve())
     settings.warehouse_dir.mkdir(parents=True, exist_ok=True)
     with (settings.warehouse_dir / "refresh.lock").open("a+") as lock:
         try:
@@ -171,43 +175,8 @@ def refresh(settings: Settings) -> RefreshResult:
         generation = f"generation-{uuid4().hex}.duckdb"
         working = settings.warehouse_dir / f"working_{uuid4().hex}.duckdb"
         receipt = None
-        try:
-            receipt, runs = _build_generation(settings, working, cutoff)
-            if Path(f"{working}.wal").exists():
-                raise RuntimeError("working warehouse still has an open WAL")
-            published = settings.warehouse_dir / generation
-            os.replace(working, published)
-            result = RefreshResult(
-                generation,
-                receipt.cutoff,
-                receipt.accepted_measurements,
-                receipt.accepted_declarations,
-                receipt.rejected_count,
-                runs,
-            )
-            _write_json(
-                settings.warehouse_dir / "current.json",
-                {
-                    **asdict(result),
-                    "published_at": datetime.now(UTC).isoformat(),
-                    "warehouse": "DuckDB local preview",
-                },
-            )
-            _write_json(
-                settings.warehouse_dir / "refresh-status.json",
-                {
-                    "state": "succeeded",
-                    "attempted_at": cutoff.isoformat(),
-                    "generation": generation,
-                    "cutoff": receipt.cutoff,
-                    "accepted_measurements": receipt.accepted_measurements,
-                    "accepted_declarations": receipt.accepted_declarations,
-                    "rejected_count": receipt.rejected_count,
-                },
-            )
-            return result
-        except Exception as error:
-            working.unlink(missing_ok=True)
+
+        def failed_status(error: Exception) -> None:
             accepted_measurements = receipt.accepted_measurements if receipt else None
             accepted_declarations = receipt.accepted_declarations if receipt else None
             _write_json(
@@ -222,9 +191,64 @@ def refresh(settings: Settings) -> RefreshResult:
                     "error": str(error),
                 },
             )
+
+        try:
+            receipt, runs = _build_generation(settings, working, cutoff)
+            if Path(f"{working}.wal").exists():
+                raise RuntimeError("working warehouse still has an open WAL")
+            published = settings.warehouse_dir / generation
+            os.replace(working, published)
+            result = RefreshResult(
+                generation,
+                receipt.cutoff,
+                receipt.accepted_measurements,
+                receipt.accepted_declarations,
+                receipt.rejected_count,
+                runs,
+            )
+        except Exception as error:
+            working.unlink(missing_ok=True)
+            failed_status(error)
             raise
-        finally:
-            fcntl.flock(lock, fcntl.LOCK_UN)
+        published_manifest = False
+
+        def mark_published() -> None:
+            nonlocal published_manifest
+            published_manifest = True
+
+        warning = None
+        try:
+            _write_json(
+                settings.warehouse_dir / "current.json",
+                {
+                    **asdict(result),
+                    "published_at": datetime.now(UTC).isoformat(),
+                    "warehouse": "DuckDB local preview",
+                },
+                after_replace=mark_published,
+            )
+        except Exception as error:
+            if not published_manifest:
+                failed_status(error)
+                raise
+            warning = str(error)
+        try:
+            _write_json(
+                settings.warehouse_dir / "refresh-status.json",
+                {
+                    "state": "published_with_warning" if warning else "succeeded",
+                    "attempted_at": cutoff.isoformat(),
+                    "generation": generation,
+                    "cutoff": receipt.cutoff,
+                    "accepted_measurements": receipt.accepted_measurements,
+                    "accepted_declarations": receipt.accepted_declarations,
+                    "rejected_count": receipt.rejected_count,
+                    "warning": warning,
+                },
+            )
+        except Exception as error:
+            warning = f"refresh status could not be written: {error}"
+        return replace(result, status_warning=warning)
 
 
 @contextmanager

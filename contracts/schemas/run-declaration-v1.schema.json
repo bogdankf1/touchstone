@@ -65,6 +65,22 @@
           }
         }
       }
+    },
+    "metric_expectations": {
+      "type": "array", "uniqueItems": true,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["metric_id", "definition_version", "unit", "expected_task_ids"],
+        "properties": {
+          "metric_id": { "$ref": "#/$defs/nonempty" },
+          "definition_version": { "$ref": "#/$defs/nonempty" },
+          "unit": { "$ref": "#/$defs/nonempty" },
+          "expected_task_ids": {
+            "type": "array", "minItems": 1, "uniqueItems": true,
+            "items": { "$ref": "#/$defs/nonempty" }
+          }
+        }
+      }
     }
   },
   "$defs": {
