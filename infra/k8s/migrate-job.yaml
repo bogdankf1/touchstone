@@ -1,0 +1,30 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: reckoner-migrate
+  namespace: touchstone-phase1-smoke
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+      containers:
+        - name: migrate
+          image: touchstone-reckoner:phase1
+          imagePullPolicy: Never
+          command: ["reckoner", "migrate", "--env-file", "-", "--provision-roles"]
+          envFrom:
+            - secretRef:
+                name: provision-env
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false

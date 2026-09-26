@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://touchstone.example/contracts/otlp-export-manifest-v1.schema.json",
+  "title": "OTLP export manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "otlp_protocol", "request_count", "requests"],
+  "properties": {
+    "schema_version": { "const": "otlp-export-manifest-v1" },
+    "otlp_protocol": { "const": "http/protobuf" },
+    "request_count": { "type": "integer", "minimum": 0 },
+    "requests": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["filename", "sha256", "event_id", "run_id", "tenant_id", "task_id"],
+        "properties": {
+          "filename": { "type": "string", "pattern": "^[0-9]{4}-[A-Za-z0-9_.:-]+\\.pb$" },
+          "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "event_id": { "type": "string", "minLength": 1 },
+          "run_id": { "type": "string", "minLength": 1 },
+          "tenant_id": { "type": "string", "minLength": 1 },
+          "task_id": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  }
+}

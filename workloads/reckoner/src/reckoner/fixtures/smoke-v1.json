@@ -1,0 +1,150 @@
+[
+  {
+    "transaction": {
+      "schema_version": "transaction-v1",
+      "event_id": "smoke-event-0",
+      "tenant_id": "tenant-a",
+      "transaction_id": "smoke-transaction-0",
+      "occurred_at": "2019-02-01T00:00:00Z",
+      "account_id": "smoke-account-0",
+      "card_id": "smoke-card-0",
+      "merchant_id": "merchant-fixture-1",
+      "amount_minor": 10000,
+      "currency": "USD",
+      "payment_channel": "swipe",
+      "merchant_category_code": "1234",
+      "merchant_location": {
+        "city": "Fixture City",
+        "region": "FS",
+        "postal_code": null,
+        "country": "US"
+      },
+      "processing_errors": [],
+      "device_id": null,
+      "ip_address": null,
+      "provenance": {
+        "dataset": "fabricated-contract-fixture",
+        "dataset_version": "v1",
+        "source_file_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "source_record": 1,
+        "adapter_version": "fixture-adapter-v1",
+        "simulated": true,
+        "normalization_assumptions": [
+          "fabricated fixture uses USD and UTC"
+        ]
+      }
+    },
+    "label": "legitimate"
+  },
+  {
+    "transaction": {
+      "schema_version": "transaction-v1",
+      "event_id": "smoke-event-1",
+      "tenant_id": "tenant-a",
+      "transaction_id": "smoke-transaction-1",
+      "occurred_at": "2019-02-01T00:00:00Z",
+      "account_id": "smoke-account-1",
+      "card_id": "smoke-card-1",
+      "merchant_id": "merchant-fixture-1",
+      "amount_minor": 10000,
+      "currency": "USD",
+      "payment_channel": "swipe",
+      "merchant_category_code": "1234",
+      "merchant_location": {
+        "city": "Fixture City",
+        "region": "FS",
+        "postal_code": null,
+        "country": "US"
+      },
+      "processing_errors": [],
+      "device_id": null,
+      "ip_address": null,
+      "provenance": {
+        "dataset": "fabricated-contract-fixture",
+        "dataset_version": "v1",
+        "source_file_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "source_record": 2,
+        "adapter_version": "fixture-adapter-v1",
+        "simulated": true,
+        "normalization_assumptions": [
+          "fabricated fixture uses USD and UTC"
+        ]
+      }
+    },
+    "label": "fraud"
+  },
+  {
+    "transaction": {
+      "schema_version": "transaction-v1",
+      "event_id": "smoke-event-2",
+      "tenant_id": "tenant-b",
+      "transaction_id": "smoke-transaction-2",
+      "occurred_at": "2019-02-01T00:00:00Z",
+      "account_id": "smoke-account-2",
+      "card_id": "smoke-card-2",
+      "merchant_id": "merchant-fixture-1",
+      "amount_minor": 10000,
+      "currency": "USD",
+      "payment_channel": "swipe",
+      "merchant_category_code": "1234",
+      "merchant_location": {
+        "city": "Fixture City",
+        "region": "FS",
+        "postal_code": null,
+        "country": "US"
+      },
+      "processing_errors": [],
+      "device_id": null,
+      "ip_address": null,
+      "provenance": {
+        "dataset": "fabricated-contract-fixture",
+        "dataset_version": "v1",
+        "source_file_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "source_record": 3,
+        "adapter_version": "fixture-adapter-v1",
+        "simulated": true,
+        "normalization_assumptions": [
+          "fabricated fixture uses USD and UTC"
+        ]
+      }
+    },
+    "label": "legitimate"
+  },
+  {
+    "transaction": {
+      "schema_version": "transaction-v1",
+      "event_id": "smoke-event-3",
+      "tenant_id": "tenant-b",
+      "transaction_id": "smoke-transaction-3",
+      "occurred_at": "2019-02-01T00:00:00Z",
+      "account_id": "smoke-account-3",
+      "card_id": "smoke-card-3",
+      "merchant_id": "merchant-fixture-1",
+      "amount_minor": 10000,
+      "currency": "USD",
+      "payment_channel": "swipe",
+      "merchant_category_code": "1234",
+      "merchant_location": {
+        "city": "Fixture City",
+        "region": "FS",
+        "postal_code": null,
+        "country": "US"
+      },
+      "processing_errors": [],
+      "device_id": null,
+      "ip_address": null,
+      "provenance": {
+        "dataset": "fabricated-contract-fixture",
+        "dataset_version": "v1",
+        "source_file_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "source_record": 4,
+        "adapter_version": "fixture-adapter-v1",
+        "simulated": true,
+        "normalization_assumptions": [
+          "fabricated fixture uses USD and UTC"
+        ]
+      }
+    },
+    "label": "fraud"
+  }
+]

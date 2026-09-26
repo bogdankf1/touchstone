@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://touchstone.example/contracts/tenant-assignment-v1.schema.json",
+  "title": "Deterministic simulated tenant assignment v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "assignment_id",
+    "simulated",
+    "seed",
+    "source_file_sha256",
+    "method",
+    "assignments"
+  ],
+  "properties": {
+    "schema_version": { "const": "tenant-assignment-v1" },
+    "assignment_id": { "$ref": "#/$defs/sha256" },
+    "simulated": { "const": true },
+    "seed": { "const": 20260925 },
+    "source_file_sha256": { "$ref": "#/$defs/sha256" },
+    "method": { "$ref": "#/$defs/nonempty" },
+    "assignments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "source_user_id",
+          "tenant_id",
+          "pre_holdout_transactions",
+          "pre_holdout_fraud"
+        ],
+        "properties": {
+          "source_user_id": { "$ref": "#/$defs/nonempty" },
+          "tenant_id": { "enum": ["tenant-a", "tenant-b"] },
+          "pre_holdout_transactions": { "$ref": "#/$defs/count" },
+          "pre_holdout_fraud": { "$ref": "#/$defs/count" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "nonempty": { "type": "string", "minLength": 1 },
+    "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "count": { "type": "integer", "minimum": 0 }
+  }
+}

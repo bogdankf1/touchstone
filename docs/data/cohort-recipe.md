@@ -4,39 +4,41 @@ This recipe defines how Phase 1 will construct the frozen 1,000-transaction eval
 from simulated CCTD data. It does not claim that the cohort has been extracted. The committed
 cohort manifest is a one-record fabricated contract fixture and is not measured evidence.
 
-## Ordered construction procedure
+## Frozen construction procedure
 
-1. Resolve the currency, timezone, and card/user reference questions recorded in
-   [`source-readiness.md`](source-readiness.md). The source currently establishes complete
-   transaction-to-card references, but it does not establish a currency, timezone, or a
-   row-position join to the users file. Record evidence for those decisions in the
-   dataset-normalization version. Do not attach unverified user attributes or treat dollar-sign
-   formatting as proof of currency.
-2. Freeze a pre-holdout calibration interval and a later holdout interval. Determine the actual
-   boundaries from the inventoried source coverage, document the rationale, and commit them before
-   any scoring. Require `history_end < evaluation_start <= evaluation_end`.
-3. Select the complete user and card histories required to retain every source fraud record. Add
-   legitimate entities only within measured storage and graph limits. Preserve every retained
-   history on disk; do not sample individual history rows.
-4. Using only pre-holdout activity, assign each complete user history to one tenant. Aim for the
-   agreed approximate 70/30 transaction split and different observed risk profiles, then report
-   the achieved distributions. Do not invent proportions when the corpus cannot support them.
-   Shared merchant identity does not transfer ownership of a transaction between tenants.
-5. From eligible positive-value purchases in the holdout, stratify by the oracle label and use the
-   declared seed plus stable source-record IDs to select 100 fraud and 900 legitimate transactions
-   without replacement. Store labels only in the oracle artifact; runtime transaction artifacts
-   must not contain them.
-6. Emit one immutable manifest per tenant. The manifests share a cohort ID and record source
-   checksums, seed, boundaries, inclusion method, counts, normalization version, selected stable
-   transaction IDs, complete-history coverage, entity counts, graph scope, and limitations. Their
-   union must contain exactly 1,000 unique IDs with class counts of 100 fraud and 900 legitimate.
-7. Build graph and retrieval inputs with a cutoff before each transaction timestamp. A static graph
-   containing a selected history's future edges, later fraud flags, or later resolved cases cannot
-   serve an earlier decision.
-8. Report source, retained, eligible, unsupported, and evaluation counts; selected user/card/
-   merchant counts; whether histories are complete; and every graph subset or omission. If the
-   complete required graph does not fit measured resources, stop for scope review rather than
-   silently truncating it.
+1. Checksum the four unchanged source files before selection. Treat source amounts as USD and
+   source wall-clock timestamps as UTC for this experiment. These are explicit assumptions, not
+   verified properties of the generator. Record `currency_assumed=USD` and
+   `source_timezone_assumed=UTC` in each canonical transaction and in the normalization artifact.
+   Do not join the users file by row position or attach its unverified demographic attributes.
+2. Use CSV data-record ordinals, excluding the header, with the transaction-file checksum to form
+   stable transaction IDs. This preserves duplicate-looking source rows as distinct records and
+   remains correct for quoted fields containing embedded newlines.
+3. Freeze 2019 as the baseline holdout. Select exactly 100 fraud and 900 legitimate positive-value
+   purchases using the lowest hashes of seed `20260925`, purpose, and transaction ID within each
+   label stratum. Select a separate pre-2019 pilot of 2 fraud and 18 legitimate purchases by the
+   same rule. The pilot and baseline are disjoint; 2020 and later remain reserved.
+4. Assign complete users to the two synthetic tenants from pre-2019 activity only. Rank users by
+   descending fraud fraction, break ties with a seeded user hash, and choose the prefix nearest
+   30% of pre-holdout transaction volume for tenant B. Assign users without pre-holdout activity
+   by a deterministic 70/30 hash bucket. Holdout and future labels never affect ownership.
+5. Retain every user with any source fraud and every selected pilot or baseline user. Complete
+   histories remain in the immutable original archive rather than being copied into the bundle.
+   The history manifest pins that backing file by checksum, lists retained user identities and
+   ownership, and counts complete records and entities. Every source fraud row, including
+   nonpositive unsupported amounts, must be covered.
+6. Emit separate runtime and oracle JSON Lines artifacts. Runtime documents contain only canonical
+   `transaction-v1` fields; labels exist only in `oracle-v1` documents. Emit tenant assignment,
+   history, normalization, and one tenant-scoped cohort manifest per purpose and tenant.
+7. Hash every artifact into a strict `dataset-bundle-v1` index. Recheck source checksums, validate
+   schemas and cross-artifact membership, then atomically rename a sibling staging directory into
+   place. A failed preparation publishes no partial bundle; a changed source or artifact fails
+   verification.
+8. Report mutually exclusive eligible, unsupported, and invalid source counts alongside retained
+   and selected counts. Rows without a valid user owner remain explicit unassigned source metadata;
+   they never become a third operational tenant or an evaluation case. Graph coverage is explicitly
+   `none` with zero included transactions in Reckoner v0. Later graph readers must apply
+   per-transaction time cutoffs to the source-backed histories.
 
 The enriched 100/900 class ratio describes this evaluation cohort only. Do not infer natural
 population rates or population totals from it, and do not apply one sampling ratio across metrics

@@ -1,40 +1,34 @@
 # Touchstone
 
-Touchstone is a measurement platform for instrumented decision workflows; Reckoner is its first
-simulated payments-risk workload. **All transaction data in this repository is simulated.** Phase
-0 provides contracts, source profiling, a minimal liveness API, and local deployment evidence. It
-does not provide transaction processing, model calls, databases, or a frontend.
+Touchstone measures instrumented decision workflows; Reckoner is its first simulated payments-risk
+workload. **All transaction data is simulated.** Phase 1 provides a sequential baseline CLI,
+Postgres persistence and spend reservations, read-only operational API, oracle evaluation,
+JSON/Markdown reports, and durable OTLP export. Paid measurement is tracked separately from
+software and fabricated deployment checks.
 
-## Foundation documents
+- [Approved foundation](docs/spec/000-foundation.md) and [Phase 1 specification](docs/spec/001-reckoner-v0.md)
+- [Architecture and current/planned boundaries](docs/architecture/foundation.md)
+- [Baseline operations, credential separation, recovery and budget gates](docs/operations/baseline-runbook.md)
+- [Runtime resources](docs/operations/local-runtime.md) and [Phase 1 evidence](docs/evidence/phase-1-baseline.md)
 
-- [Approved foundation specification](docs/spec/000-foundation.md)
-- [Approved Phase 0 implementation plan](docs/superpowers/plans/2026-09-25-phase-0-foundation.md)
-- [Simulated source-readiness report](docs/data/source-readiness.md)
-- [Foundation architecture](docs/architecture/foundation.md)
-- [Local runtime and measured resources](docs/operations/local-runtime.md)
-
-## Verified checks
-
-Install the locked Python environment and run its tests and formatting checks:
+Install the locked environment and run checks:
 
 ```bash
 uv sync --all-packages --frozen
-uv run --all-packages pytest -q
-uv run ruff check .
-uv run ruff format --check .
+uv run --frozen --all-packages pytest -m 'not integration' -q
+uv run --frozen ruff check .
+uv run --frozen ruff format --check .
 ```
 
-Build and exercise the minimal API with Docker Compose:
+Integration tests require a disposable Postgres 17 instance and `RECKONER_TEST_OWNER_DSN` with
+permission to create temporary databases/login roles. With that set, run the complete
+`uv run --frozen --all-packages pytest -q`. CI requires unit, real-Postgres integration, and a
+fabricated image smoke; no local CCTD archive or paid provider access is required.
 
-```bash
-docker compose -p touchstone-foundation -f infra/compose.yaml up --build -d --wait
-curl --fail http://127.0.0.1:8000/health/live
-docker compose -p touchstone-foundation -f infra/compose.yaml down
-```
+The [baseline runbook](docs/operations/baseline-runbook.md) gives the Compose and separate kind
+procedures. Both use the same non-root image, protected role credentials, persistent Postgres,
+explicit migrations, `/health/live`, and migration-aware `/health/ready`. Smoke uses four fixed
+fabricated purchases and the fake provider; missing credentials never activate it.
 
-The same image has also been verified under a disposable single-node kind cluster. The exact
-installation, deployment, evidence, and cleanup commands are in the
-[local runtime runbook](docs/operations/local-runtime.md). Compose and kind are run separately.
-
-The liveness endpoint returns `{"status":"ok"}`. It does not claim that future stores, model
-providers, or transaction workflows are ready.
+Touchstone's collector, ClickHouse, governed marts and dashboard, plus Reckoner's Jev/graph/cascade
+and reviewer interface, remain scheduled for later phases. The platform boundary is OTLP only.

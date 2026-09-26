@@ -1,6 +1,6 @@
 {
   "schema_version": "cohort-manifest-v1",
-  "manifest_id": "648c0b16deca7c314dd42410d845923f916eaa51a620b120e53fa834525b7bcb",
+  "manifest_id": "f6ae7b3d67bcddb3bf0302cab22c60cf1c522aef81a92dc862e05f8f94db463b",
   "tenant_id": "tenant-fixture-a",
   "cohort_id": "cohort-fixture-v1",
   "purpose": "fixture",
@@ -16,8 +16,10 @@
   "counts": {
     "source": 1,
     "retained": 1,
+    "interval_source": 1,
     "eligible": 1,
     "unsupported": 0,
+    "invalid": 0,
     "total": 1,
     "fraud": 0,
     "legitimate": 1

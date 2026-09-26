@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://touchstone.example/contracts/price-table-v1.schema.json",
+  "title": "Reckoner model price table v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "price_table_version",
+    "model",
+    "currency",
+    "input_per_million",
+    "output_per_million",
+    "retrieved_at",
+    "source_url"
+  ],
+  "properties": {
+    "schema_version": { "const": "price-table-v1" },
+    "price_table_version": { "$ref": "#/$defs/sha256" },
+    "model": { "$ref": "#/$defs/nonempty" },
+    "currency": { "const": "USD" },
+    "input_per_million": { "$ref": "#/$defs/nonnegative_decimal" },
+    "output_per_million": { "$ref": "#/$defs/nonnegative_decimal" },
+    "retrieved_at": { "type": "string", "format": "date-time" },
+    "source_url": { "type": "string", "format": "uri" }
+  },
+  "$defs": {
+    "nonempty": { "type": "string", "minLength": 1 },
+    "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "nonnegative_decimal": {
+      "type": "string",
+      "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$"
+    }
+  }
+}
