@@ -373,6 +373,42 @@ def test_declared_contribution_population_gates_rate_but_keeps_components(tmp_pa
         ).fetchone() == (2, 2, 3.0, 4.0, 0.75)
 
 
+def test_conflicting_metric_expectations_cannot_make_rate_eligible(tmp_path):
+    original = declaration(("a", "b"))
+    documents = []
+    for expected_ids in (["a"], ["a", "b"]):
+        document = original.document
+        document["metric_expectations"] = [
+            {
+                "metric_id": "fixture-rate",
+                "definition_version": "v1",
+                "unit": "count",
+                "expected_task_ids": expected_ids,
+            }
+        ]
+        documents.append(
+            replace(
+                original,
+                _document_json=json.dumps(document),
+                content_sha256=canonical_sha256(document),
+            )
+        )
+    warehouse = build_marts(
+        tmp_path,
+        [
+            event("metric_contribution", "a", numerator=1, denominator=2),
+            event("metric_contribution", "b", numerator=2, denominator=2),
+        ],
+        documents,
+    )
+    with duckdb.connect(str(warehouse), read_only=True) as connection:
+        assert connection.execute(
+            "select task_contributions, numerator_sum, denominator_sum, "
+            "rate, eligible_numerator, eligible_denominator "
+            "from mart_contribution_rates"
+        ).fetchone() == (2, 3.0, 4.0, None, None, None)
+
+
 def test_nearest_rank_p99_uses_only_selected_tenant(tmp_path):
     events = []
     tasks = [f"task-{i}" for i in range(1, 101)]

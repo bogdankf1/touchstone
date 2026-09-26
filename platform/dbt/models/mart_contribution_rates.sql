@@ -1,5 +1,6 @@
 with declarations as (
-    select tenant_id, workflow_id, run_id, min(document_json) as document_json
+    select tenant_id, workflow_id, run_id, min(document_json) as document_json,
+        count(distinct content_sha256) as declaration_versions
     from {{ source('staging', 'raw_declarations') }}
     group by 1, 2, 3
 ), expected_members as (
@@ -7,12 +8,14 @@ with declarations as (
         json_extract_string(m.value, '$.metric_id') as metric_id,
         json_extract_string(m.value, '$.definition_version') as definition_version,
         json_extract_string(m.value, '$.unit') as unit,
-        json_extract_string(t.value, '$') as task_id
+        json_extract_string(t.value, '$') as task_id,
+        d.declaration_versions
     from declarations d, json_each(d.document_json, '$.metric_expectations') m,
         json_each(m.value, '$.expected_task_ids') t
 ), expected as (
     select tenant_id, workflow_id, run_id, metric_id, definition_version, unit,
-        count(distinct task_id) as expected_tasks
+        count(distinct task_id) as expected_tasks,
+        max(declaration_versions) as declaration_versions
     from expected_members
     group by 1, 2, 3, 4, 5, 6
 ), totals as (
@@ -39,9 +42,12 @@ with declarations as (
         coalesce(t.metric_id, e.metric_id) as metric_id,
         coalesce(t.definition_version, e.definition_version) as definition_version,
         coalesce(t.unit, e.unit) as unit,
-        e.expected_tasks, coalesce(t.task_contributions, 0) as task_contributions,
+        case when e.declaration_versions = 1 then e.expected_tasks end as expected_tasks,
+        e.declaration_versions,
+        coalesce(t.task_contributions, 0) as task_contributions,
         coalesce(t.incomplete_contributions, 0) as incomplete_contributions,
-        coalesce(u.unexpected_tasks, 0) as unexpected_tasks,
+        case when e.declaration_versions = 1
+            then coalesce(u.unexpected_tasks, 0) end as unexpected_tasks,
         t.numerator_sum, t.denominator_sum
     from totals t
     full outer join expected e using (
