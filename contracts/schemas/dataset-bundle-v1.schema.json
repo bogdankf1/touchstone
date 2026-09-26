@@ -1,0 +1,172 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://touchstone.example/contracts/dataset-bundle-v1.schema.json",
+  "title": "Immutable simulated dataset bundle v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "bundle_id",
+    "simulated",
+    "seed",
+    "source_files",
+    "files",
+    "cohorts",
+    "history",
+    "tenant_assignment",
+    "normalization",
+    "source_counts"
+  ],
+  "properties": {
+    "schema_version": { "const": "dataset-bundle-v1" },
+    "bundle_id": { "$ref": "#/$defs/sha256" },
+    "simulated": { "const": true },
+    "seed": { "const": 20260925 },
+    "source_files": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": { "$ref": "#/$defs/nonempty" },
+      "additionalProperties": { "$ref": "#/$defs/source_file" }
+    },
+    "files": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": { "$ref": "#/$defs/nonempty" },
+      "additionalProperties": { "$ref": "#/$defs/artifact_file" }
+    },
+    "cohorts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pilot", "baseline"],
+      "properties": {
+        "pilot": { "$ref": "#/$defs/cohort" },
+        "baseline": { "$ref": "#/$defs/cohort" }
+      }
+    },
+    "history": { "$ref": "#/$defs/history" },
+    "tenant_assignment": { "$ref": "#/$defs/tenant_assignment" },
+    "normalization": { "$ref": "#/$defs/normalization" },
+    "source_counts": { "$ref": "#/$defs/source_counts" }
+  },
+  "$defs": {
+    "nonempty": { "type": "string", "minLength": 1 },
+    "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "count": { "type": "integer", "minimum": 0 },
+    "source_file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sha256", "byte_size"],
+      "properties": {
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "byte_size": { "$ref": "#/$defs/count" }
+      }
+    },
+    "artifact_file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "records"],
+      "properties": {
+        "path": { "$ref": "#/$defs/nonempty" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "records": { "$ref": "#/$defs/count" }
+      }
+    },
+    "class_counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["total", "fraud", "legitimate"],
+      "properties": {
+        "total": { "$ref": "#/$defs/count" },
+        "fraud": { "$ref": "#/$defs/count" },
+        "legitimate": { "$ref": "#/$defs/count" }
+      }
+    },
+    "cohort": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cohort_id", "runtime_file", "oracle_file", "manifest_files", "counts"],
+      "properties": {
+        "cohort_id": { "$ref": "#/$defs/sha256" },
+        "runtime_file": { "$ref": "#/$defs/nonempty" },
+        "oracle_file": { "$ref": "#/$defs/nonempty" },
+        "manifest_files": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/nonempty" }
+        },
+        "counts": { "$ref": "#/$defs/class_counts" }
+      }
+    },
+    "history": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["manifest_file", "source_fraud", "covered_fraud", "retained_users", "retained_records"],
+      "properties": {
+        "manifest_file": { "$ref": "#/$defs/nonempty" },
+        "source_fraud": { "$ref": "#/$defs/count" },
+        "covered_fraud": { "$ref": "#/$defs/count" },
+        "retained_users": { "$ref": "#/$defs/count" },
+        "retained_records": { "$ref": "#/$defs/count" }
+      }
+    },
+    "tenant_assignment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["manifest_file", "tenant_count", "assigned_users"],
+      "properties": {
+        "manifest_file": { "$ref": "#/$defs/nonempty" },
+        "tenant_count": { "const": 2 },
+        "assigned_users": { "$ref": "#/$defs/count" }
+      }
+    },
+    "normalization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["manifest_file", "normalization_id"],
+      "properties": {
+        "manifest_file": { "$ref": "#/$defs/nonempty" },
+        "normalization_id": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "source_counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["total", "eligible", "unsupported", "invalid", "fraud", "legitimate", "periods", "unassigned"],
+      "properties": {
+        "total": { "$ref": "#/$defs/count" },
+        "eligible": { "$ref": "#/$defs/count" },
+        "unsupported": { "$ref": "#/$defs/count" },
+        "invalid": { "$ref": "#/$defs/count" },
+        "fraud": { "$ref": "#/$defs/count" },
+        "legitimate": { "$ref": "#/$defs/count" },
+        "periods": { "$ref": "#/$defs/period_counts" },
+        "unassigned": { "$ref": "#/$defs/status_counts" }
+      }
+    },
+    "period_counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pre_2019", "holdout_2019", "future_2020_plus", "invalid_timestamp"],
+      "properties": {
+        "pre_2019": { "$ref": "#/$defs/count" },
+        "holdout_2019": { "$ref": "#/$defs/count" },
+        "future_2020_plus": { "$ref": "#/$defs/count" },
+        "invalid_timestamp": { "$ref": "#/$defs/count" }
+      }
+    },
+    "status_counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["total", "eligible", "unsupported", "invalid", "periods"],
+      "properties": {
+        "total": { "$ref": "#/$defs/count" },
+        "eligible": { "$ref": "#/$defs/count" },
+        "unsupported": { "$ref": "#/$defs/count" },
+        "invalid": { "$ref": "#/$defs/count" },
+        "periods": { "$ref": "#/$defs/period_counts" }
+      }
+    }
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://touchstone.example/contracts/decision-v1.schema.json",
+  "title": "Reckoner baseline decision response v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["outcome"],
+  "properties": {
+    "outcome": {
+      "enum": ["auto-approve", "auto-decline", "escalate"]
+    }
+  }
+}

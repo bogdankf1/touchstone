@@ -1,0 +1,14 @@
+{
+  "config_id": "73706a2c45d7f2602ee7584587d4dfb56e6127bd2836184216821fc6a65155cd",
+  "currency": "USD",
+  "parameters": {
+    "amount_aware": true,
+    "margin_rate": "0.30",
+    "review_cost": "4.00",
+    "t_high": "0.90",
+    "t_low_ceiling": "0.05",
+    "t_low_floor": "0.005"
+  },
+  "schema_version": "threshold-config-v1",
+  "tenant_id": "tenant-a"
+}

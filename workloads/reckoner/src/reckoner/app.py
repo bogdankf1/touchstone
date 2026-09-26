@@ -1,8 +1,9 @@
-from fastapi import FastAPI
+"""Uvicorn module entry point for the read-only Reckoner API."""
 
-app = FastAPI(title="Reckoner", docs_url=None, redoc_url=None, openapi_url=None)
+import os
 
+from reckoner.api import create_app
 
-@app.get("/health/live")
-def live() -> dict[str, str]:
-    return {"status": "ok"}
+app = create_app(os.environ.get("RECKONER_API_DSN"))
+
+__all__ = ["app", "create_app"]

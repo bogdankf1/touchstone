@@ -1,0 +1,83 @@
+{
+  "artifact_files": {
+    "cohort_baseline_tenant_a": {
+      "path": "cohort_baseline_tenant_a.json",
+      "records": 1,
+      "sha256": "3ee21b03d9d19ebf01d0d9c4faf9002f4a45112fdb46e7744b34d5cb54f3e554"
+    },
+    "cohort_baseline_tenant_b": {
+      "path": "cohort_baseline_tenant_b.json",
+      "records": 1,
+      "sha256": "695d18639d491748f8c70e2c461bce5c0244df389d3d0c5b1c528c0376b7c02b"
+    },
+    "cohort_pilot_tenant_a": {
+      "path": "cohort_pilot_tenant_a.json",
+      "records": 1,
+      "sha256": "9200d9aa8859a1eda3d3f02ae8cf6467d05d36720a8d63778ecea18524b5536e"
+    },
+    "cohort_pilot_tenant_b": {
+      "path": "cohort_pilot_tenant_b.json",
+      "records": 1,
+      "sha256": "e9854adb6371f27c5703b8b7f92784ef5b81ee33453a687a94504ddbac3374e9"
+    },
+    "history_entities": {
+      "path": "history_entities.json",
+      "records": 1,
+      "sha256": "2d0c942a6a8b148320300783208d0ca15a1f8c44369902895346a33cc9eaaa0c"
+    },
+    "normalization": {
+      "path": "normalization.json",
+      "records": 1,
+      "sha256": "e2b3753679016b77fd03b80994ff0c82f8a5978fd66eef3fcdc526469de41f76"
+    },
+    "oracle_baseline": {
+      "path": "oracle_baseline.jsonl",
+      "records": 1000,
+      "sha256": "d96dc17f8c3e6bd8fe77fc0031762521e39a7a718a532adf6a01b23b8eaa1623"
+    },
+    "oracle_pilot": {
+      "path": "oracle_pilot.jsonl",
+      "records": 20,
+      "sha256": "256a0cd1e09d27e99d8f6635957f4a2bbc86fd66ba632cb9c18096aa44365a1f"
+    },
+    "runtime_baseline": {
+      "path": "runtime_baseline.jsonl",
+      "records": 1000,
+      "sha256": "18854f8ca8dd37b520db0aeabb42c7d438c2abe358330918f1984f5490607075"
+    },
+    "runtime_pilot": {
+      "path": "runtime_pilot.jsonl",
+      "records": 20,
+      "sha256": "5c1edff3ce16b03b7aef5e14fe2c7304bc5ec6d5e3995685ea037fb043420d40"
+    },
+    "tenant_assignments": {
+      "path": "tenant_assignments.json",
+      "records": 1,
+      "sha256": "8fd9aac435616843d99fa4dffc8508ba09b6c5e9df39317a849c55f0a2258d8e"
+    }
+  },
+  "bundle_file_sha256": "75b2bbda73dd89e75f1a5ca09944c0c05efe4933e8ac63b56eebf2ab2da7246e",
+  "bundle_id": "2dcc4a9838db77552872ea489ff8a8e3b13a84b37a5806b2b02291c9f23848e0",
+  "cohort_ids": {
+    "baseline": "25948cd9136bfbfd01781b87e86258538ea8d7948911112c8003ff02f0fef8e1",
+    "pilot": "873993e3aa7f49a9deef79ef2f5a3795c859f0ee93e553dbeba87c873d01db50"
+  },
+  "source_files": {
+    "User0_credit_card_transactions.csv": {
+      "byte_size": 1899258,
+      "sha256": "61c4ed49a98bf924c5df0a740e1c415b91624c83821f8415bd8db34c2d6a0d3c"
+    },
+    "credit_card_transactions-ibm_v2.csv": {
+      "byte_size": 2350744057,
+      "sha256": "b01fa323c98522f8c710c7f7242581860c97c50183f1c5fa9e772e5c674a7f15"
+    },
+    "sd254_cards.csv": {
+      "byte_size": 487120,
+      "sha256": "85af46a5789cf5ac9674cee4184c828688fcf2c00566549f752393112ed14a7b"
+    },
+    "sd254_users.csv": {
+      "byte_size": 224394,
+      "sha256": "99eff71679d5dcf3f49e537fd65ba848271faa4e8ba8e4d9ab368c26034a3d03"
+    }
+  }
+}

@@ -43,49 +43,30 @@ workflow runtime, warehouse tooling, and web application fit together within the
 allocation. Each later phase must measure only the services it introduces and revisit concurrency
 before running more of the stack.
 
-## Compose procedure
+## Phase 1 procedure and limits
 
-```bash
-docker compose -p touchstone-foundation -f infra/compose.yaml config --quiet
-docker compose -p touchstone-foundation -f infra/compose.yaml up --build -d --wait
-curl --fail http://127.0.0.1:8000/health/live
-docker stats --no-stream touchstone-foundation-reckoner-1
-docker compose -p touchstone-foundation -f infra/compose.yaml down
-```
+The preceding image/resource table is historical Phase 0 evidence. Current Phase 1 commands are
+in [baseline-runbook.md](baseline-runbook.md); the old credential-free Compose command is no
+longer sufficient because readiness now verifies Postgres migration history.
 
-`down` intentionally omits volume deletion and applies only to the named project.
+Phase 1 keeps API/CLI/Postgres limits at 512 MiB each, PostgreSQL `shared_buffers=128MB` and
+`max_connections=40`. Only active operations run alongside Postgres and the API. The deployment
+image contains its own contracts, prompt, default config, migrations and provenance, and runs as
+UID/GID 10001. Postgres 17.11 uses the verified multiarchitecture OCI index:
 
-## kind procedure
+`postgres:17@sha256:d74eeac9a635390a49bc21bd49fccd973de707e2a53a76ac49b552b8712ec46f`
 
-Download the official Darwin arm64 kind v0.33.0 binary to ignored artifacts and verify it before
-execution:
+Original Phase 1 deployment, preparation and failed-pilot evidence remains in
+[phase-1-baseline.md](../evidence/phase-1-baseline.md). The subsequent native structured-output
+revision and completed 1,000-case measured baseline are recorded separately in
+[phase-1-completion.md](../evidence/phase-1-completion.md), including the current installed image,
+resource samples, budget ledger and backup identities. Fabricated smoke remains separate from
+measured provider results. The unchanged original preparation took 926.11 seconds at one CPU,
+with observed process peak RSS 347,520 KiB under a 512 MiB limit. Measured services were stopped
+after backup verification; their persistent ledger volume remains intact.
 
-```bash
-mkdir -p artifacts/tools
-curl -fL https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-darwin-arm64 -o artifacts/tools/kind
-curl -fL https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-darwin-arm64.sha256sum -o artifacts/tools/kind.sha256sum
-shasum -a 256 artifacts/tools/kind
-cat artifacts/tools/kind.sha256sum
-chmod +x artifacts/tools/kind
-```
-
-Both checksum values must be
-`0c8c7dbe5e23594a198b786c4bc13dacc101fa6196b0cb0b23a1ca44e61f4b4f`.
-Use the dedicated ignored kubeconfig so the user's default configuration is untouched:
-
-```bash
-artifacts/tools/kind create cluster --name touchstone-foundation --config infra/kind.yaml --kubeconfig artifacts/kind-kubeconfig --wait 60s
-artifacts/tools/kind load docker-image touchstone-reckoner:phase0 --name touchstone-foundation
-kubectl --kubeconfig artifacts/kind-kubeconfig apply -f infra/k8s/namespace.yaml
-kubectl --kubeconfig artifacts/kind-kubeconfig apply -f infra/k8s/reckoner.yaml
-kubectl --kubeconfig artifacts/kind-kubeconfig -n touchstone-foundation rollout status deployment/reckoner --timeout=60s
-kubectl --kubeconfig artifacts/kind-kubeconfig -n touchstone-foundation port-forward service/reckoner 8000:8000 --address 127.0.0.1
-```
-
-While the controlled port-forward is active, call
-`curl --fail http://127.0.0.1:8000/health/live`. Then terminate only that port-forward, confirm the
-exact cluster name with `artifacts/tools/kind get clusters`, and remove it with:
-
-```bash
-artifacts/tools/kind delete cluster --name touchstone-foundation --kubeconfig artifacts/kind-kubeconfig
-```
+The task reused the existing verified kind v0.33.0 binary at
+`.worktrees/phase-0-foundation/artifacts/tools/kind` from the root checkout. Its original official
+Darwin arm64 checksum is `0c8c7dbe5e23594a198b786c4bc13dacc101fa6196b0cb0b23a1ca44e61f4b4f`.
+The task-owned cluster/kubeconfig were separate from the user's configuration. Compose was
+stopped before kind. Evidence was copied out before deleting only the smoke cluster.

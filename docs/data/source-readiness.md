@@ -42,15 +42,19 @@ credit-card data as synthetic and describes a 24-million-record dataset. The aut
 virtual-world generator and long simulated histories. Neither source establishes the timezone,
 currency, or a row-position mapping between this users CSV and the transaction/card `User` key.
 
-The following items remain blocked:
+The following source facts remain unverified:
 
-- Timezone is unverified, so timestamps remain naive source values.
-- Currency is unverified; the dollar-sign formatting alone is insufficient to assign a currency.
+- The source timezone is unverified. Reckoner v0 explicitly assumes the wall-clock values are UTC
+  for its controlled experiment and records `source_timezone_assumed=UTC` in provenance.
+- The source currency is unverified. Reckoner v0 explicitly assumes USD for its controlled
+  experiment and records `currency_assumed=USD` in provenance; the dollar sign is not presented as
+  proof.
 - `sd254_users.csv` contains names and attributes but no explicit user ID. Demographic enrichment
   must not join it by row position without authoritative evidence.
 - Historical availability of current-age, FICO, and dark-web attributes is unverified. Those
   attributes must not enter time-correct features until their availability is established.
 
-Transaction and card references are ready for later contract work subject to the stated amount
-and timestamp exclusions. These blockers prevent demographic enrichment and final normalized
-currency/timezone claims; they do not invalidate the aggregate inventory.
+Transaction and card references are ready for canonical adaptation. The approved USD/UTC choices
+are experimental normalization assumptions, not newly discovered source facts. The unresolved
+user join still prevents demographic enrichment and any historical use of those attributes; it
+does not invalidate the aggregate inventory or the checksum-pinned source backing.

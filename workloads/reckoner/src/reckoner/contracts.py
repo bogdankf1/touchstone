@@ -58,6 +58,8 @@ def validate_cohort_manifest(document: dict, schema_path: Path) -> None:
         raise ValueError("invalid temporal boundary")
 
     counts = document["counts"]
+    if counts["eligible"] + counts["unsupported"] + counts["invalid"] != counts["interval_source"]:
+        raise ValueError("interval counts do not sum to interval source")
     if counts["fraud"] + counts["legitimate"] != counts["total"]:
         raise ValueError("class counts do not sum to total")
     if len(document["selected_transaction_ids"]) != counts["total"]:

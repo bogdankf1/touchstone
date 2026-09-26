@@ -1,0 +1,47 @@
+{
+  "schema_version": "cohort-manifest-v1",
+  "tenant_id": "tenant-a",
+  "cohort_id": "fabricated-smoke-v1",
+  "purpose": "baseline",
+  "simulated": true,
+  "source_hashes": {
+    "fabricated-smoke-v1": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "seed": 20260925,
+  "history_end": "2018-12-31T23:59:59Z",
+  "evaluation_start": "2019-01-01T00:00:00Z",
+  "evaluation_end": "2019-12-31T23:59:59Z",
+  "inclusion_method": "fixed fabricated deployment fixture; not a measured baseline",
+  "counts": {
+    "source": 2,
+    "retained": 2,
+    "interval_source": 2,
+    "eligible": 2,
+    "unsupported": 0,
+    "invalid": 0,
+    "total": 2,
+    "fraud": 1,
+    "legitimate": 1
+  },
+  "history_coverage": {
+    "complete_selected_histories": true,
+    "users": 2,
+    "cards": 2,
+    "merchants": 1,
+    "limitations": [
+      "complete one-purchase fabricated histories only; no CCTD history claim"
+    ]
+  },
+  "graph_coverage": {
+    "scope": "none",
+    "included_transactions": 0,
+    "limitations": [
+      "no graph is constructed for the contract fixture"
+    ]
+  },
+  "dataset_normalization_version": "fabricated-normalization-v1",
+  "selected_transaction_ids": [
+    "smoke-transaction-0",
+    "smoke-transaction-1"
+  ]
+}
