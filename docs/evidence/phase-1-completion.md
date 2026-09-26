@@ -36,8 +36,9 @@ entries were preserved. See [the original evidence](phase-1-baseline.md).
 Source/bundle checksums were verified again using the installed image with network
 disabled and read-only mounts; the source was not re-extracted. Runtime mounts
 contain only the bundle, selected unlabeled runtime cohort and two tenant manifests,
-byte-identical to the prepared artifacts. The evaluator alone uses oracle access.
-Amounts use the approved USD and UTC assumptions.
+byte-identical to the prepared artifacts. The runner has no oracle access;
+evaluation uses the isolated evaluator role. Owner import retains its separate
+oracle-loading permission. Amounts use the approved USD and UTC assumptions.
 
 [Official pricing](https://platform.claude.com/docs/en/about-claude/pricing) and the
 [model list](https://platform.claude.com/docs/en/models/overview) were rechecked on
