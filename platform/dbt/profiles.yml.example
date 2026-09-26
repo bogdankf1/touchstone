@@ -1,0 +1,8 @@
+touchstone:
+  target: local
+  outputs:
+    local:
+      type: duckdb
+      path: /absolute/path/to/working.duckdb
+      schema: main
+      threads: 2

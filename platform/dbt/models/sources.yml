@@ -1,0 +1,23 @@
+version: 2
+sources:
+  - name: staging
+    schema: main
+    tables:
+      - name: raw_measurements
+      - name: raw_declarations
+      - name: raw_rejections
+models:
+  - name: stg_events
+    columns:
+      - name: tenant_id
+        data_tests: [not_null]
+      - name: event_id
+        data_tests: [not_null]
+  - name: mart_runs
+    columns:
+      - name: tenant_id
+        data_tests: [not_null]
+      - name: run_id
+        data_tests: [not_null]
+    data_tests:
+      - elementary.schema_changes

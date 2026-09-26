@@ -1,0 +1,132 @@
+version: 2
+models:
+  - name: time_spine_daily
+    time_spine:
+      standard_granularity_column: date_day
+    columns:
+      - name: date_day
+        granularity: day
+semantic_models:
+  - name: touchstone_runs
+    model: ref('mart_runs')
+    defaults:
+      agg_time_dimension: declared_at
+    entities:
+      - name: run
+        type: primary
+        expr: "tenant_id || ':' || workflow_id || ':' || run_id"
+    dimensions:
+      - name: declared_at
+        type: time
+        type_params:
+          time_granularity: day
+      - name: tenant_id
+        type: categorical
+      - name: workflow_id
+        type: categorical
+      - name: run_id
+        type: categorical
+      - name: currency
+        type: categorical
+      - name: measurement_mode
+        type: categorical
+    measures:
+      - name: model_cost
+        agg: sum
+      - name: review_cost
+        agg: sum
+      - name: error_cost
+        agg: sum
+      - name: correct_tasks
+        agg: sum
+      - name: expected_tasks
+        agg: sum
+      - name: completed_tasks
+        agg: sum
+      - name: passed_cases
+        agg: sum
+      - name: expected_cases
+        agg: sum
+  - name: touchstone_contributions
+    model: ref('mart_contribution_rates')
+    defaults:
+      agg_time_dimension: declared_at
+    entities:
+      - name: contribution
+        type: primary
+        expr: "tenant_id || ':' || workflow_id || ':' || run_id || ':' || metric_id || ':' || definition_version"
+    dimensions:
+      - name: declared_at
+        type: time
+        type_params:
+          time_granularity: day
+      - name: tenant_id
+        type: categorical
+      - name: workflow_id
+        type: categorical
+      - name: run_id
+        type: categorical
+      - name: metric_id
+        type: categorical
+      - name: definition_version
+        type: categorical
+      - name: unit
+        type: categorical
+    measures:
+      - name: contribution_numerator
+        agg: sum
+        expr: numerator_sum
+      - name: contribution_denominator
+        agg: sum
+        expr: denominator_sum
+metrics:
+  - name: model_cost
+    type: simple
+    type_params: {measure: model_cost}
+  - name: review_cost
+    type: simple
+    type_params: {measure: review_cost}
+  - name: error_cost
+    type: simple
+    type_params: {measure: error_cost}
+  - name: correct_tasks
+    type: simple
+    type_params: {measure: correct_tasks}
+  - name: expected_tasks
+    type: simple
+    type_params: {measure: expected_tasks}
+  - name: completed_tasks
+    type: simple
+    type_params: {measure: completed_tasks}
+  - name: passed_cases
+    type: simple
+    type_params: {measure: passed_cases}
+  - name: expected_cases
+    type: simple
+    type_params: {measure: expected_cases}
+  - name: correctness
+    type: ratio
+    type_params:
+      numerator: correct_tasks
+      denominator: expected_tasks
+  - name: completion
+    type: ratio
+    type_params:
+      numerator: completed_tasks
+      denominator: expected_tasks
+  - name: evaluation_pass_rate
+    type: ratio
+    type_params:
+      numerator: passed_cases
+      denominator: expected_cases
+  - name: contribution_numerator
+    type: simple
+    type_params: {measure: contribution_numerator}
+  - name: contribution_denominator
+    type: simple
+    type_params: {measure: contribution_denominator}
+  - name: contribution_rate
+    type: ratio
+    type_params:
+      numerator: contribution_numerator
+      denominator: contribution_denominator
