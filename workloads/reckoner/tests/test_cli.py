@@ -38,35 +38,29 @@ def installed_cli(tmp_path_factory):
         ],
         cwd=ROOT,
         check=True,
-        capture_output=True,
-        text=True,
     )
     environment = directory / "venv"
     subprocess.run(
         ["uv", "venv", "--python", "3.12", str(environment)],
         check=True,
-        capture_output=True,
-        text=True,
     )
     python = environment / "bin/python"
-    requirements = directory / "requirements.txt"
+    # Sync consumes locked artifact URLs directly. An offline name/version install
+    # also needs registry metadata, which a clean CI cache has never fetched.
     subprocess.run(
         [
             "uv",
-            "export",
+            "sync",
+            "--offline",
             "--package",
             "reckoner",
             "--frozen",
             "--no-dev",
-            "--no-emit-workspace",
-            "--no-hashes",
-            "--output-file",
-            str(requirements),
+            "--no-install-workspace",
         ],
         cwd=ROOT,
+        env={**os.environ, "UV_PROJECT_ENVIRONMENT": str(environment)},
         check=True,
-        capture_output=True,
-        text=True,
     )
     subprocess.run(
         [
@@ -77,13 +71,9 @@ def installed_cli(tmp_path_factory):
             str(python),
             "--offline",
             "--no-deps",
-            "-r",
-            str(requirements),
             str(next(wheel_dir.glob("*.whl"))),
         ],
         check=True,
-        capture_output=True,
-        text=True,
     )
     # A socket interceptor catches accidental SDK/provider HTTP even during imports.
     (directory / "sitecustomize.py").write_text(
