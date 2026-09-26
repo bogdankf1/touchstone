@@ -8,6 +8,7 @@ from typing import Any
 
 from jsonschema import ValidationError
 
+from reckoner.baseline.prompt import NATIVE_OUTPUT_CONFIG, NATIVE_PROMPT_VERSION
 from reckoner.contracts import content_id, validate_document
 from reckoner.resources import SCHEMAS
 
@@ -80,4 +81,9 @@ def load_config(path: Path, price_path: Path) -> dict:
         raise ValueError("price table identity does not match config")
     if prices["currency"] != "USD":
         raise ValueError("price currency must be USD")
+    if "output_config" in config and (
+        config["output_config"] != NATIVE_OUTPUT_CONFIG
+        or config["prompt_version"] != NATIVE_PROMPT_VERSION
+    ):
+        raise ValueError("invalid native output config")
     return _freeze(config)

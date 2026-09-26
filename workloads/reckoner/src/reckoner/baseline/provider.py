@@ -145,7 +145,7 @@ class AnthropicProvider:
 
     @staticmethod
     def _validate_request(request: dict) -> None:
-        if set(request) != _REQUEST_FIELDS:
+        if set(request) not in (_REQUEST_FIELDS, _REQUEST_FIELDS | {"output_config"}):
             raise ValueError("invalid provider request fields")
         model = request.get("model")
         if not isinstance(model, str) or not model.startswith("anthropic/"):
@@ -154,17 +154,21 @@ class AnthropicProvider:
             raise ValueError("invalid output-token limit")
         if request.get("temperature") != 0:
             raise ValueError("invalid generation temperature")
+        native_request_document(request)
 
     def count_input(self, request: dict) -> int:
         """Ask Anthropic to estimate input tokens for the exact model prompt."""
         self._validate_request(request)
         native = native_request_document(request)
         try:
-            response = self._anthropic.messages.count_tokens(
-                model=native["model"],
-                system=native["system"],
-                messages=native["messages"],
-            )
+            count_request = {
+                "model": native["model"],
+                "system": native["system"],
+                "messages": native["messages"],
+            }
+            if "output_config" in native:
+                count_request["output_config"] = native["output_config"]
+            response = self._anthropic.messages.count_tokens(**count_request)
         except Exception:
             raise ProviderError("token count failed") from None
         count = _field(response, "input_tokens")

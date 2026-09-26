@@ -9,6 +9,7 @@ from reckoner.contracts import content_id, validate_document
 
 ROOT = Path(__file__).resolve().parents[3]
 CONFIG = ROOT / "workloads/reckoner/config/baseline-v1.json"
+NATIVE_CONFIG = ROOT / "workloads/reckoner/config/baseline-v2.json"
 PRICES = ROOT / "workloads/reckoner/config/anthropic-prices-v1.json"
 SCHEMAS = ROOT / "contracts/schemas"
 
@@ -112,3 +113,23 @@ def test_config_and_decision_documents_obey_strict_contracts():
     invalid["threshold_config_ids"] = {}
     with pytest.raises(ValidationError):
         validate_document(invalid, SCHEMAS / "run-config-v1.schema.json")
+
+
+def test_native_config_loads_with_immutable_schema_and_historical_config_still_loads():
+    native = load_config(NATIVE_CONFIG, PRICES)
+    historical = load_config(CONFIG, PRICES)
+    assert native["config_id"] != historical["config_id"]
+    assert native["output_config"]["format"]["schema"]["required"] == ("outcome",)
+    with pytest.raises(TypeError):
+        native["output_config"]["format"]["schema"]["additionalProperties"] = True
+
+
+def test_native_config_rejects_reidentified_schema_change(tmp_path):
+    native = json.loads(NATIVE_CONFIG.read_text(encoding="utf-8"))
+    native["output_config"]["format"]["schema"]["additionalProperties"] = True
+    _identify(native, "config_id")
+    path = tmp_path / "baseline-v2.json"
+    path.write_text(json.dumps(native))
+
+    with pytest.raises(ValueError, match="config"):
+        load_config(path, PRICES)

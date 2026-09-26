@@ -7,6 +7,7 @@ from reckoner.baseline.prompt import PROMPT_VERSION, build_request
 
 ROOT = Path(__file__).resolve().parents[3]
 CONFIG = ROOT / "workloads/reckoner/config/baseline-v1.json"
+NATIVE_CONFIG = ROOT / "workloads/reckoner/config/baseline-v2.json"
 
 
 def transaction():
@@ -127,3 +128,38 @@ def test_committed_config_references_the_template_and_construction_hash():
     committed = json.loads(CONFIG.read_text(encoding="utf-8"))
 
     assert committed["prompt_version"] == PROMPT_VERSION
+
+
+def test_native_config_changes_prompt_identity_and_places_exact_schema_in_request():
+    historical = json.loads(CONFIG.read_text(encoding="utf-8"))
+    native = json.loads(NATIVE_CONFIG.read_text(encoding="utf-8"))
+
+    assert native["prompt_version"] != historical["prompt_version"]
+    assert native["config_id"] != historical["config_id"]
+    generated = build_request(transaction(), native, thresholds())
+    assert generated["output_config"] == {
+        "format": {
+            "type": "json_schema",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "outcome": {
+                        "type": "string",
+                        "enum": ["auto-approve", "auto-decline", "escalate"],
+                    }
+                },
+                "required": ["outcome"],
+                "additionalProperties": False,
+            },
+        }
+    }
+    assert "output_config" not in build_request(transaction(), historical, thresholds())
+
+
+def test_changing_one_native_request_cannot_change_later_requests():
+    native = json.loads(NATIVE_CONFIG.read_text(encoding="utf-8"))
+    first = build_request(transaction(), native, thresholds())
+    first["output_config"]["format"]["schema"]["additionalProperties"] = True
+
+    later = build_request(transaction(), native, thresholds())
+    assert later["output_config"]["format"]["schema"]["additionalProperties"] is False

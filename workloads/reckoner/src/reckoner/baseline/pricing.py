@@ -6,6 +6,8 @@ import json
 from decimal import ROUND_CEILING, Decimal, InvalidOperation
 from typing import Any
 
+from reckoner.baseline.prompt import NATIVE_OUTPUT_CONFIG
+
 RESERVATION_FORMULA_VERSION = "anthropic-input-reservation-v1"
 INPUT_RESERVATION_CEILING = 8192
 MAX_OUTPUT_TOKENS = 256
@@ -40,6 +42,10 @@ def native_request_document(request: dict) -> dict[str, Any]:
             "max_tokens": request["max_tokens"],
             "temperature": request["temperature"],
         }
+        if "output_config" in request:
+            if request["output_config"] != NATIVE_OUTPUT_CONFIG:
+                raise ValueError("invalid native output config")
+            document["output_config"] = request["output_config"]
     except KeyError as error:
         raise ValueError(f"missing request field: {error.args[0]}") from error
     return document

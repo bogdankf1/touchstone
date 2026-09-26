@@ -32,6 +32,29 @@ _CONSTRUCTION_RULES = {
 PROMPT_VERSION = content_id(
     {"system_template": _SYSTEM_TEMPLATE, "construction_rules": _CONSTRUCTION_RULES}
 )
+NATIVE_OUTPUT_CONFIG = {
+    "format": {
+        "type": "json_schema",
+        "schema": {
+            "type": "object",
+            "properties": {
+                "outcome": {"type": "string", "enum": ["auto-approve", "auto-decline", "escalate"]}
+            },
+            "required": ["outcome"],
+            "additionalProperties": False,
+        },
+    }
+}
+NATIVE_PROMPT_VERSION = content_id(
+    {
+        "system_template": _SYSTEM_TEMPLATE,
+        "construction_rules": {
+            **_CONSTRUCTION_RULES,
+            "schema_version": "baseline-prompt-construction-v2",
+            "output_config": NATIVE_OUTPUT_CONFIG,
+        },
+    }
+)
 
 
 def _decimal_parameter(thresholds: dict, name: str) -> Decimal:
@@ -51,7 +74,15 @@ def _percentage(value: Decimal) -> str:
 
 def build_request(transaction: dict, config: dict, thresholds: dict) -> dict[str, Any]:
     """Return the only model-facing fields for one simulated purchase."""
-    if config.get("prompt_version") != PROMPT_VERSION:
+    native_output = config.get("output_config")
+    if native_output is not None:
+        native_output = json.loads(json.dumps(native_output))
+        if native_output != NATIVE_OUTPUT_CONFIG:
+            raise ValueError("invalid native output config")
+        expected_version = NATIVE_PROMPT_VERSION
+    else:
+        expected_version = PROMPT_VERSION
+    if config.get("prompt_version") != expected_version:
         raise ValueError("prompt version does not match construction")
 
     try:
@@ -77,10 +108,13 @@ def build_request(transaction: dict, config: dict, thresholds: dict) -> dict[str
         "${margin_rate_percent}", _percentage(margin_rate)
     )
 
-    return {
+    request = {
         "model": config["model"],
         "system": system,
         "messages": [{"role": "user", "content": content}],
         "max_tokens": config["max_output_tokens"],
         "temperature": config["temperature"],
     }
+    if native_output is not None:
+        request["output_config"] = native_output
+    return request

@@ -65,6 +65,38 @@ def test_reservation_counts_compact_native_utf8_bytes_not_escaped_characters():
     assert reservation_input_bound(non_ascii, 0) == len(expected_payload) + 1024
 
 
+def test_native_schema_bytes_raise_the_reservation_bound():
+    schema = {
+        "format": {
+            "type": "json_schema",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "outcome": {
+                        "type": "string",
+                        "enum": ["auto-approve", "auto-decline", "escalate"],
+                    }
+                },
+                "required": ["outcome"],
+                "additionalProperties": False,
+            },
+        }
+    }
+    native = request(output_config=schema)
+    expected = {
+        **request(),
+        "messages": [{"role": "user", "content": [{"type": "text", "text": "{}"}]}],
+        "output_config": schema,
+    }
+    expected_bytes = json.dumps(
+        expected, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
+
+    assert native_request_bytes(native) == expected_bytes
+    assert reservation_input_bound(native, 0) == len(expected_bytes) + 1024
+    assert reservation_input_bound(native, 0) > reservation_input_bound(request(), 0)
+
+
 def test_reservation_rejects_an_input_bound_above_the_fixed_ceiling():
     with pytest.raises(ValueError, match="input reservation ceiling exceeded"):
         reservation_cost(request(system="x" * 8000), 0, prices())
