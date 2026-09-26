@@ -8,6 +8,7 @@ from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
     ExportTraceServiceRequest,
     ExportTraceServiceResponse,
 )
+from touchstone_platform import replay as replay_module
 from touchstone_platform.replay import replay_exports
 
 
@@ -99,6 +100,25 @@ def test_replay_checks_all_checksums_before_network(tmp_path, receiver):
     with pytest.raises(ValueError, match="checksum"):
         replay_exports(tmp_path, endpoint)
     assert received == []
+
+
+def test_replay_posts_preflight_validated_bytes_if_file_changes_after_validation(
+    tmp_path, receiver, monkeypatch
+):
+    endpoint, received, _ = receiver
+    original = _payload("original")
+    manifest = _manifest(tmp_path, [original])
+    path = tmp_path / manifest["requests"][0]["filename"]
+    validate = replay_module._validated_payloads
+
+    def mutate_after_preflight(directory):
+        validated = validate(directory)
+        path.write_bytes(_payload("changed"))
+        return validated
+
+    monkeypatch.setattr(replay_module, "_validated_payloads", mutate_after_preflight)
+    assert replay_exports(tmp_path, endpoint).sent == 1
+    assert received == [("/v1/traces", "application/x-protobuf", original)]
 
 
 @pytest.mark.parametrize(

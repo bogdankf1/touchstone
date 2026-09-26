@@ -28,7 +28,7 @@ class ReplayResult:
     rejected_spans: int
 
 
-def _validated_paths(manifest_dir: Path) -> list[Path]:
+def _validated_payloads(manifest_dir: Path) -> list[bytes]:
     root = manifest_dir.resolve()
     try:
         manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
@@ -38,7 +38,7 @@ def _validated_paths(manifest_dir: Path) -> list[Path]:
     requests = manifest["requests"]
     if not requests or manifest["request_count"] != len(requests):
         raise ValueError("empty or inconsistent OTLP export manifest")
-    paths = []
+    payloads = []
     for item in requests:
         path = (root / item["filename"]).resolve()
         if path.parent != root:
@@ -56,21 +56,21 @@ def _validated_paths(manifest_dir: Path) -> list[Path]:
             raise ValueError("malformed OTLP request") from error
         if not message.resource_spans:
             raise ValueError("empty OTLP request")
-        paths.append(path)
-    return paths
+        payloads.append(payload)
+    return payloads
 
 
 def replay_exports(manifest_dir: Path, endpoint: str) -> ReplayResult:
     """Validate the entire manifest before posting any original request bytes."""
-    paths = _validated_paths(Path(manifest_dir))
+    payloads = _validated_payloads(Path(manifest_dir))
     url = endpoint.rstrip("/")
     if not url.endswith("/v1/traces"):
         url += "/v1/traces"
     sent = 0
-    for path in paths:
+    for payload in payloads:
         request = urllib.request.Request(
             url,
-            data=path.read_bytes(),
+            data=payload,
             headers={"Content-Type": "application/x-protobuf"},
             method="POST",
         )
@@ -89,6 +89,6 @@ def replay_exports(manifest_dir: Path, endpoint: str) -> ReplayResult:
         if decoded.HasField("partial_success"):
             rejected = int(decoded.partial_success.rejected_spans)
             if rejected or decoded.partial_success.error_message:
-                return ReplayResult(sent, len(paths) - sent, rejected)
+                return ReplayResult(sent, len(payloads) - sent, rejected)
         sent += 1
-    return ReplayResult(sent, len(paths) - sent, 0)
+    return ReplayResult(sent, len(payloads) - sent, 0)
