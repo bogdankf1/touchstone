@@ -1,0 +1,22 @@
+[project]
+name = "touchstone-synthetic"
+version = "0.1.0"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "jsonschema[format]>=4,<5",
+    "opentelemetry-proto==1.37.0",
+]
+
+[project.scripts]
+touchstone-synthetic = "touchstone_synthetic.cli:main"
+
+[build-system]
+requires = ["hatchling>=1.26,<2"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/touchstone_synthetic"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"../../contracts/schemas/measurement-v1.schema.json" = "touchstone_synthetic/_resources/measurement-v1.schema.json"
+"../../contracts/schemas/run-declaration-v1.schema.json" = "touchstone_synthetic/_resources/run-declaration-v1.schema.json"

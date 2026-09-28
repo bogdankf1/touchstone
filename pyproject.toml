@@ -8,13 +8,13 @@ dependencies = []
 package = false
 
 [tool.uv.workspace]
-members = ["workloads/reckoner", "platform"]
+members = ["workloads/reckoner", "workloads/synthetic", "platform"]
 
 [dependency-groups]
 dev = ["pytest>=8,<10", "ruff>=0.11,<1", "jsonschema[format]>=4,<5", "httpx2>=2,<3"]
 
 [tool.pytest.ini_options]
-testpaths = ["workloads/reckoner/tests", "contracts/tests", "platform/tests"]
+testpaths = ["workloads/reckoner/tests", "workloads/synthetic/tests", "contracts/tests", "platform/tests"]
 markers = ["integration: requires an isolated PostgreSQL test database"]
 
 [tool.ruff]
