@@ -15,7 +15,7 @@ dev = ["pytest>=8,<10", "ruff>=0.11,<1", "jsonschema[format]>=4,<5", "httpx2>=2,
 
 [tool.pytest.ini_options]
 testpaths = ["workloads/reckoner/tests", "workloads/synthetic/tests", "contracts/tests", "platform/tests"]
-markers = ["integration: requires an isolated PostgreSQL test database"]
+markers = ["integration: requires an isolated PostgreSQL test database", "clickhouse_integration: requires an isolated ClickHouse and collector"]
 
 [tool.ruff]
 target-version = "py312"

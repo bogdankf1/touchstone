@@ -1,0 +1,20 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: synthetic-smoke
+  namespace: touchstone-phase2-smoke
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      securityContext: {runAsNonRoot: true, runAsUser: 10001}
+      containers:
+        - name: synthetic
+          image: touchstone-synthetic:phase2
+          imagePullPolicy: Never
+          command: [touchstone-synthetic, emit]
+          args: [--endpoint, 'http://collector:4318', --run-id, phase2-kind-fabricated]
+          resources:
+            requests: {cpu: 50m, memory: 32Mi}
+            limits: {cpu: 500m, memory: 256Mi}

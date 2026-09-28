@@ -1,15 +1,15 @@
 # Inputs and access needed from the owner
 
-Updated: 2026-09-26. This checklist records dependencies, not authorization to
+Updated: 2026-09-28. This checklist records dependencies, not authorization to
 provision paid services. Keep secret values outside Git and chat.
 
 | Dependency | Current status | Needed from the owner | Gate affected |
 |---|---|---|---|
-| Snowflake | Deferred explicitly; use DuckDB for Phase 2 | Account identifier, authentication configured privately, approved role/database/schema/warehouse, confirmation of credits and spending limit | Snowflake integration and demonstrated warehouse-backed dashboard; does not block local Phase 2 |
+| Snowflake | Local DuckDB Phase 2 verified; Snowflake remains configuration-only and untested | Account identifier, authentication configured privately, approved role/database/schema/warehouse, confirmation of credits and spending limit | Live Snowflake staging, semantic, dashboard and cost parity; does not block local Phase 2 |
 | Jev | Waiting for access; no development stub or substitute scorer approved | API access, credentials configured privately, available API documentation, model/version, rate limits and pricing/budget confirmation | Phase 3 scoring integration and calibration |
 | Anthropic | Phase 1 measured access worked; current credentials are not revalidated | Renew access only if it stops working; approve a concrete paid evaluation or generation run before additional spending | Later case-note generation and DeepEval/Ragas judge runs; no new calls needed for Phase 2 baseline replay |
 | GitHub publishing | Owner has handled pushes and merges | Push reviewed branches and merge after checks pass, unless publishing responsibility is explicitly changed | Publishing completed phases; local implementation is independent |
-| Phase 2 design and plan | Specification approved on 2026-09-26; plan prepared for review | Review the concrete implementation plan | Phase 2 implementation |
+| Phase 2 design and plan | Approved on 2026-09-26; local DuckDB implementation and deployment verified on 2026-09-28 | No further planning input needed; owner handles branch publication | Approval gate satisfied |
 
 ## Details to settle when access becomes available
 
@@ -32,9 +32,13 @@ existing traces.
 
 No further dataset download, currency/timezone decision, tenant definition or
 baseline size decision is currently needed from the owner. The existing choices
-remain in force. If local resource measurements reveal a capacity problem, record
-the measured limit and proposed adjustment here rather than silently changing
-scope.
+remain in force. The measured Compose refresh peaked at 2,719.06 MiB in sampled
+service totals under the 8 GB Docker budget. Real 2 GB DuckDB query pressure led
+to a scalar-declaration mart query fix and a 2.5 GiB standalone refresh limit.
+Dagster's run worker executes in its daemon container: a 384 MiB run exited 137;
+a 2 GiB limit then materialized successfully, with 673.17 MiB highest sampled
+daemon use. See [Phase 2 evidence](../evidence/phase-2-touchstone.md). No owner
+capacity change or paid service is required for the local demonstration.
 
 Update this checklist at each phase handoff. Close an access item only after its
 integration is verified, not merely after credentials are supplied.

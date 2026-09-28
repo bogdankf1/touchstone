@@ -1,0 +1,132 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: warehouse-data
+  namespace: touchstone-phase2-smoke
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: refresh
+  namespace: touchstone-phase2-smoke
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: refresh}
+  template:
+    metadata:
+      labels: {app: refresh}
+    spec:
+      securityContext: {runAsNonRoot: true, runAsUser: 10001, fsGroup: 10001}
+      containers:
+        - name: refresh
+          image: touchstone-platform:phase2
+          imagePullPolicy: Never
+          command: [sleep, infinity]
+          env:
+            - {name: TOUCHSTONE_CLICKHOUSE_HOST, value: clickhouse}
+            - {name: TOUCHSTONE_CLICKHOUSE_USERNAME, value: touchstone}
+            - name: TOUCHSTONE_CLICKHOUSE_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: platform-db, key: password}
+            - {name: TOUCHSTONE_WAREHOUSE_DIR, value: /warehouse}
+            - {name: TOUCHSTONE_DUCKDB_MEMORY_LIMIT, value: 2GB}
+            - {name: TOUCHSTONE_DBT_THREADS, value: "1"}
+            - {name: DBT_LOG_PATH, value: /warehouse/dbt-logs}
+            - {name: DBT_TARGET_PATH, value: /app/platform/dbt/target}
+          volumeMounts:
+            - {name: warehouse, mountPath: /warehouse}
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {cpu: "2", memory: 2560Mi}
+      volumes:
+        - name: warehouse
+          persistentVolumeClaim: {claimName: warehouse-data}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dagster
+  namespace: touchstone-phase2-smoke
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: dagster}
+  template:
+    metadata:
+      labels: {app: dagster}
+    spec:
+      securityContext: {runAsNonRoot: true, runAsUser: 10001, fsGroup: 10001}
+      containers:
+        - name: dagster
+          image: touchstone-platform:phase2
+          imagePullPolicy: Never
+          command: [sh, -c, 'mkdir -p /warehouse/dagster && exec dagster-webserver -h 0.0.0.0 -p 3001 -m touchstone_platform.orchestration.definitions']
+          env:
+            - {name: TOUCHSTONE_CLICKHOUSE_HOST, value: clickhouse}
+            - {name: TOUCHSTONE_CLICKHOUSE_USERNAME, value: touchstone}
+            - name: TOUCHSTONE_CLICKHOUSE_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: platform-db, key: password}
+            - {name: TOUCHSTONE_WAREHOUSE_DIR, value: /warehouse}
+            - {name: DAGSTER_HOME, value: /warehouse/dagster}
+            - {name: TOUCHSTONE_SCHEDULE_ENABLED, value: "false"}
+            - {name: DBT_LOG_PATH, value: /warehouse/dbt-logs}
+            - {name: DBT_TARGET_PATH, value: /app/platform/dbt/target}
+          ports:
+            - {name: http, containerPort: 3001}
+          volumeMounts:
+            - {name: warehouse, mountPath: /warehouse}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: "1", memory: 384Mi}
+          readinessProbe:
+            tcpSocket: {port: http}
+            periodSeconds: 5
+      volumes:
+        - name: warehouse
+          persistentVolumeClaim: {claimName: warehouse-data}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dagster-daemon
+  namespace: touchstone-phase2-smoke
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: dagster-daemon}
+  template:
+    metadata:
+      labels: {app: dagster-daemon}
+    spec:
+      securityContext: {runAsNonRoot: true, runAsUser: 10001, fsGroup: 10001}
+      containers:
+        - name: dagster-daemon
+          image: touchstone-platform:phase2
+          imagePullPolicy: Never
+          command: [sh, -c, 'mkdir -p /warehouse/dagster && exec dagster-daemon run -m touchstone_platform.orchestration.definitions']
+          env:
+            - {name: TOUCHSTONE_CLICKHOUSE_HOST, value: clickhouse}
+            - {name: TOUCHSTONE_CLICKHOUSE_USERNAME, value: touchstone}
+            - name: TOUCHSTONE_CLICKHOUSE_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: platform-db, key: password}
+            - {name: TOUCHSTONE_WAREHOUSE_DIR, value: /warehouse}
+            - {name: DAGSTER_HOME, value: /warehouse/dagster}
+            - {name: TOUCHSTONE_SCHEDULE_ENABLED, value: "false"}
+            - {name: DBT_LOG_PATH, value: /warehouse/dbt-logs}
+            - {name: DBT_TARGET_PATH, value: /app/platform/dbt/target}
+          volumeMounts:
+            - {name: warehouse, mountPath: /warehouse}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: "2", memory: 2048Mi}
+      volumes:
+        - name: warehouse
+          persistentVolumeClaim: {claimName: warehouse-data}

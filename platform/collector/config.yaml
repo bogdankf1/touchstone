@@ -12,8 +12,8 @@ receivers:
 processors:
   memory_limiter:
     check_interval: 1s
-    limit_mib: 256
-    spike_limit_mib: 64
+    limit_mib: 192
+    spike_limit_mib: 48
   batch:
     timeout: 1s
     send_batch_size: 100

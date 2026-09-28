@@ -14,3 +14,6 @@ node_modules
 .next
 .idea
 .superpowers
+platform/dbt/target
+platform/dbt/logs
+platform/dbt/dbt_packages

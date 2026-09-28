@@ -7,6 +7,7 @@ from pathlib import Path
 
 import duckdb
 import pytest
+from touchstone_platform import refresh as refresh_module
 from touchstone_platform.refresh import (
     RefreshBusy,
     open_published_snapshot,
@@ -268,3 +269,8 @@ def test_status_write_failure_cannot_relabel_published_generation_failed(tmp_pat
     assert result.status_warning is not None
     assert json.loads((tmp_path / "current.json").read_text())["generation"] == result.generation
     assert not (tmp_path / "refresh-status.json").exists()
+
+
+def test_container_dbt_project_can_be_selected_by_environment(monkeypatch, tmp_path):
+    monkeypatch.setenv("TOUCHSTONE_DBT_PROJECT", str(tmp_path))
+    assert refresh_module.dbt_project() == tmp_path

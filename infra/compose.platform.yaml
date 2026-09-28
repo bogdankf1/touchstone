@@ -10,7 +10,7 @@ services:
     volumes:
       - clickhouse-data:/var/lib/clickhouse
       - ../platform/clickhouse/init.sql:/docker-entrypoint-initdb.d/01-traces.sql:ro
-    mem_limit: 1536m
+    mem_limit: 2048m
     healthcheck:
       test: ["CMD-SHELL", "clickhouse-client --user touchstone --password \"$${CLICKHOUSE_PASSWORD}\" --query 'SELECT 1'"]
       interval: 2s
@@ -24,6 +24,14 @@ services:
     network_mode: none
     volumes:
       - collector-queue:/queue
+
+  warehouse-init:
+    image: clickhouse/clickhouse-server:25.8@sha256:0152dd511befe6a2c2ef53e930726179669b08116da78500b37c51c96ff5ee77
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-c", "chown -R 10001:10001 /warehouse"]
+    network_mode: none
+    volumes:
+      - warehouse-data:/warehouse
 
   collector:
     image: otel/opentelemetry-collector-contrib:0.136.0@sha256:45392d534c1edcc809c2d112394029246bc679d2ae5ea7081414a1fc74f2c621
@@ -42,6 +50,118 @@ services:
       queue-init:
         condition: service_completed_successfully
 
+  api:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.platform
+    image: touchstone-platform:phase2
+    user: "10001:10001"
+    environment: &platform-env
+      TOUCHSTONE_CH_PASSWORD: ${TOUCHSTONE_CH_PASSWORD}
+      TOUCHSTONE_CLICKHOUSE_HOST: clickhouse
+      TOUCHSTONE_CLICKHOUSE_USERNAME: touchstone
+      TOUCHSTONE_CLICKHOUSE_PASSWORD: ${TOUCHSTONE_CH_PASSWORD}
+      TOUCHSTONE_WAREHOUSE_DIR: /warehouse
+      TOUCHSTONE_DUCKDB_MEMORY_LIMIT: 2GB
+      TOUCHSTONE_DBT_THREADS: "1"
+      DBT_LOG_PATH: /warehouse/dbt-logs
+      DBT_TARGET_PATH: /app/platform/dbt/target
+    ports:
+      - "127.0.0.1::8000"
+    volumes:
+      - warehouse-data:/warehouse
+    mem_limit: 512m
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      warehouse-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz')"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  refresh:
+    image: touchstone-platform:phase2
+    user: "10001:10001"
+    command: ["sleep", "infinity"]
+    environment: *platform-env
+    volumes:
+      - warehouse-data:/warehouse
+    mem_limit: 2560m
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      warehouse-init:
+        condition: service_completed_successfully
+
+  replay:
+    image: touchstone-platform:phase2
+    user: "10001:10001"
+    command: ["sleep", "infinity"]
+    environment: *platform-env
+    volumes:
+      - ${TOUCHSTONE_PHASE1_ARTIFACTS:-/private/tmp/touchstone-no-phase1}:/phase1:ro
+      - warehouse-data:/warehouse
+    mem_limit: 512m
+    depends_on:
+      collector:
+        condition: service_started
+      warehouse-init:
+        condition: service_completed_successfully
+
+  dagster:
+    image: touchstone-platform:phase2
+    user: "10001:10001"
+    command: ["sh", "-c", "mkdir -p /warehouse/dagster && exec dagster-webserver -h 0.0.0.0 -p 3001 -m touchstone_platform.orchestration.definitions"]
+    environment:
+      <<: *platform-env
+      DAGSTER_HOME: /warehouse/dagster
+      TOUCHSTONE_SCHEDULE_ENABLED: "false"
+    volumes:
+      - warehouse-data:/warehouse
+    ports:
+      - "127.0.0.1::3001"
+    mem_limit: 384m
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      warehouse-init:
+        condition: service_completed_successfully
+
+  dagster-daemon:
+    image: touchstone-platform:phase2
+    user: "10001:10001"
+    command: ["sh", "-c", "mkdir -p /warehouse/dagster && exec dagster-daemon run -m touchstone_platform.orchestration.definitions"]
+    environment:
+      <<: *platform-env
+      DAGSTER_HOME: /warehouse/dagster
+      TOUCHSTONE_SCHEDULE_ENABLED: "false"
+    volumes:
+      - warehouse-data:/warehouse
+    mem_limit: 2048m
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      warehouse-init:
+        condition: service_completed_successfully
+
+  web:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.web
+    image: touchstone-web:phase2
+    environment:
+      TOUCHSTONE_API_URL: http://api:8000
+    ports:
+      - "127.0.0.1::3000"
+    mem_limit: 512m
+    depends_on:
+      api:
+        condition: service_healthy
+
 volumes:
   clickhouse-data:
   collector-queue:
+  warehouse-data:

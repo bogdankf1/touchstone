@@ -25,6 +25,10 @@ from touchstone_platform.staging import StagingReceipt, build_snapshot
 DBT_PROJECT = Path(__file__).resolve().parents[2] / "dbt"
 
 
+def dbt_project() -> Path:
+    return Path(os.getenv("TOUCHSTONE_DBT_PROJECT", str(DBT_PROJECT)))
+
+
 class RefreshBusy(RuntimeError):
     """Another refresh holds the exclusive publication lock."""
 
@@ -61,7 +65,7 @@ def _write_json(path: Path, value: dict, *, after_replace=None) -> None:
 
 def _run(command: list[str], *, env: dict[str, str] | None = None) -> None:
     result = subprocess.run(
-        command, cwd=DBT_PROJECT, env=env, capture_output=True, text=True, check=False
+        command, cwd=dbt_project(), env=env, capture_output=True, text=True, check=False
     )
     if result.returncode:
         details = f"{result.stdout[-3000:]} {result.stderr[-1000:]}"
@@ -99,7 +103,7 @@ def _build_generation(
         env = os.environ.copy()
         env["DBT_PROFILES_DIR"] = temporary
         _run(
-            ["dbt", "build", "--project-dir", str(DBT_PROJECT), "--profiles-dir", temporary],
+            ["dbt", "build", "--project-dir", str(dbt_project()), "--profiles-dir", temporary],
             env=env,
         )
         semantic_csv = Path(temporary) / "semantic-components.csv"

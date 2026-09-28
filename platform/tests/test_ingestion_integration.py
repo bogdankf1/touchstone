@@ -145,7 +145,7 @@ def _wait(client, count):
     pytest.fail(f"ClickHouse never reached {count} raw spans: {last_error}")
 
 
-@pytest.mark.integration
+@pytest.mark.clickhouse_integration
 def test_actual_collector_queue_restart_and_logical_replay(tmp_path):
     project = os.environ.get("TOUCHSTONE_COMPOSE_PROJECT")
     if not project:

@@ -14,6 +14,16 @@ with declared as (
             and d.workflow_id = e.workflow_id and d.run_id = e.run_id
     )
     group by 1, 2, 3
+), declaration_attributes as materialized (
+    select tenant_id, workflow_id, run_id,
+        json_extract_string(document_json, '$.workflow_version') as workflow_version,
+        json_extract_string(document_json, '$.experiment_version') as experiment_version,
+        json_extract_string(document_json, '$.cohort_version') as cohort_version,
+        json_extract_string(document_json, '$.config_version') as config_version,
+        json_extract_string(document_json, '$.code_revision') as code_revision,
+        json_extract_string(document_json, '$.dataset_version') as dataset_version,
+        json_extract_string(document_json, '$.measurement_mode') as measurement_mode
+    from declaration
 ), task_costs as (
     select tenant_id, workflow_id, run_id, task_id,
         count(*) as call_count, sum(cost_amount) as model_cost,
@@ -38,17 +48,16 @@ with declared as (
 ), event_compat as (
     select e.tenant_id, e.workflow_id, e.run_id, e.task_id,
         max(cast(e.identity_conflict as integer)) as identity_conflict,
-        max(cast(e.workflow_version is distinct from json_extract_string(d.document_json, '$.workflow_version')
-            or e.experiment_version is distinct from json_extract_string(d.document_json, '$.experiment_version')
-            or e.cohort_version is distinct from json_extract_string(d.document_json, '$.cohort_version')
-            or e.config_version is distinct from json_extract_string(d.document_json, '$.config_version')
-            or e.code_revision is distinct from json_extract_string(d.document_json, '$.code_revision')
-            or e.dataset_version is distinct from json_extract_string(d.document_json, '$.dataset_version')
-            or e.simulated is distinct from
-                (json_extract_string(d.document_json, '$.measurement_mode') = 'fabricated')
+        max(cast(e.workflow_version is distinct from d.workflow_version
+            or e.experiment_version is distinct from d.experiment_version
+            or e.cohort_version is distinct from d.cohort_version
+            or e.config_version is distinct from d.config_version
+            or e.code_revision is distinct from d.code_revision
+            or e.dataset_version is distinct from d.dataset_version
+            or e.simulated is distinct from (d.measurement_mode = 'fabricated')
             as integer)) as version_mismatch
     from {{ ref('stg_events') }} e
-    join declaration d using (tenant_id, workflow_id, run_id)
+    join declaration_attributes d using (tenant_id, workflow_id, run_id)
     group by 1, 2, 3, 4
 ), task_rows as (
     select t.tenant_id, t.workflow_id, t.run_id, t.task_id,

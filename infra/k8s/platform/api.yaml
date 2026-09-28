@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: touchstone-phase2-smoke
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: api}
+  template:
+    metadata:
+      labels: {app: api}
+    spec:
+      securityContext: {runAsNonRoot: true, runAsUser: 10001, fsGroup: 10001}
+      containers:
+        - name: api
+          image: touchstone-platform:phase2
+          imagePullPolicy: Never
+          command: [touchstone, serve, --host, 0.0.0.0, --port, "8000"]
+          env:
+            - {name: TOUCHSTONE_WAREHOUSE_DIR, value: /warehouse}
+          ports:
+            - {name: http, containerPort: 8000}
+          volumeMounts:
+            - {name: warehouse, mountPath: /warehouse, readOnly: true}
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: "1", memory: 512Mi}
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+      volumes:
+        - name: warehouse
+          persistentVolumeClaim: {claimName: warehouse-data}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api
+  namespace: touchstone-phase2-smoke
+spec:
+  selector: {app: api}
+  ports:
+    - {name: http, port: 8000, targetPort: http}
