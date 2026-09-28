@@ -3,7 +3,7 @@ import './globals.css';
 
 export const metadata: Metadata = {
   title: 'Touchstone | Runs',
-  description: 'Local measurement preview for simulated workflows',
+  description: 'Local workflow measurement preview',
 };
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (

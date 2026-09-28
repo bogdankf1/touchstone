@@ -3,6 +3,18 @@ import { money, percent, sumMoney } from '../lib/types';
 
 export function MetricSummary({ run }: { run: Run }) {
   const total = sumMoney([run.model_cost, run.review_cost, run.error_cost]);
+  const costBasis =
+    run.measurement_mode === 'measured'
+      ? 'Measured provider calls'
+      : run.measurement_mode === 'fabricated'
+        ? 'Fabricated provider cost'
+        : 'Measurement basis unknown';
+  const sourceBasis =
+    run.dataset_simulated === true
+      ? 'simulated source'
+      : run.dataset_simulated === false
+        ? 'source origin unverified'
+        : 'source simulation unknown';
   return (
     <section aria-labelledby="summary-title">
       <div className="section-heading">
@@ -23,9 +35,17 @@ export function MetricSummary({ run }: { run: Run }) {
           <small>{run.cpst === null ? 'Incomplete metric' : `Exact: ${run.currency} ${run.cpst}`}</small>
         </div>
         <div>
-          <span className="metric-label">Provider usage cost</span>
+          <span className="metric-label">
+            {run.measurement_mode === 'measured'
+              ? 'Provider usage cost'
+              : run.measurement_mode === 'fabricated'
+                ? 'Fabricated provider cost'
+                : 'Provider cost · mode unknown'}
+          </span>
           <strong>{money(run.model_cost, run.currency)}</strong>
-          <small>Measured calls on simulated data</small>
+          <small>
+            {costBasis} · {sourceBasis}
+          </small>
         </div>
         <div>
           <span className="metric-label">Total modeled cost</span>

@@ -125,9 +125,10 @@ const task = {
     },
   ],
 };
-const wrap = (data) => ({
+const wrap = (data, route = '') => ({
   metadata: {
     ...metadata,
+    generation: scenario === `generation-${route}` ? 'preview-002.duckdb' : metadata.generation,
     latest_refresh:
       scenario === 'stale'
         ? { state: 'failed', attempted_at: '2026-09-27T10:00:00Z', reason: 'latest refresh failed' }
@@ -174,6 +175,11 @@ const server = createServer((request, response) => {
   }
   if (url.pathname === '/v1/runs') {
     const tenant = url.searchParams.get('tenant_id');
+    if (scenario === 'runs-error' && tenant === 'tenant-b') {
+      response.statusCode = 503;
+      response.end('{"detail":"published snapshot unavailable"}');
+      return;
+    }
     response.end(
       JSON.stringify(
         wrap(
@@ -189,6 +195,7 @@ const server = createServer((request, response) => {
                   measurement_mode: 'fabricated',
                 },
               ],
+          'runs',
         ),
       ),
     );
@@ -236,7 +243,12 @@ const server = createServer((request, response) => {
       data.tenants = [];
       data.contribution_rates = [];
     }
-    response.end(JSON.stringify(wrap(data)));
+    if (scenario === 'unknown-provenance') {
+      data.measurement_mode = null;
+      data.dataset_simulated = null;
+    }
+    if (scenario === 'nonsimulated-provenance') data.dataset_simulated = false;
+    response.end(JSON.stringify(wrap(data, 'summary')));
     return;
   }
   if (url.pathname.endsWith('/tasks')) {
@@ -250,33 +262,36 @@ const server = createServer((request, response) => {
           nodes: [],
         }
       : task;
-    response.end(JSON.stringify(wrap({ items: [item], page: 1, page_size: 25, total: 1 })));
+    response.end(JSON.stringify(wrap({ items: [item], page: 1, page_size: 25, total: 1 }, 'tasks')));
     return;
   }
   if (url.pathname.startsWith('/v1/traces/')) {
     response.end(
       JSON.stringify(
-        wrap({
-          trace_id: 'trace-001',
-          events: [
-            {
-              tenant_id: 'tenant-a',
-              workflow_id: 'reckoner',
-              run_id: 'reckoner-baseline',
-              task_id: 'task-001',
-              event_id: 'event-001',
-              event_kind: 'provider_call',
-              node_name: 'provider_call',
-              trace_id: 'trace-001',
-              span_id: 'span-001',
-              received_at: '2026-09-26T09:00:00Z',
-              identity_conflict: false,
-            },
-          ],
-          page: 1,
-          page_size: 50,
-          total: 1,
-        }),
+        wrap(
+          {
+            trace_id: 'trace-001',
+            events: [
+              {
+                tenant_id: 'tenant-a',
+                workflow_id: 'reckoner',
+                run_id: 'reckoner-baseline',
+                task_id: 'task-001',
+                event_id: 'event-001',
+                event_kind: 'provider_call',
+                node_name: 'provider_call',
+                trace_id: 'trace-001',
+                span_id: 'span-001',
+                received_at: '2026-09-26T09:00:00Z',
+                identity_conflict: false,
+              },
+            ],
+            page: 1,
+            page_size: 50,
+            total: 1,
+          },
+          'trace',
+        ),
       ),
     );
     return;

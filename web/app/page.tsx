@@ -1,5 +1,5 @@
 import { ApiError, getRunSummary, getRuns, getTasks, getTrace, getWorkflows } from '../lib/api';
-import type { Filters, Run } from '../lib/types';
+import type { Envelope, Filters, Run } from '../lib/types';
 import { RunFilters } from '../components/run-filters';
 import { MetricSummary } from '../components/metric-summary';
 import { CostTable } from '../components/cost-table';
@@ -53,19 +53,32 @@ export default async function Home({ searchParams }: { searchParams: Promise<Par
         </div>
       </Shell>
     );
-  const allRuns = (
-    await Promise.all(
-      workflows.flatMap((workflow) =>
-        workflow.tenant_ids.map(async (tenant) => {
-          try {
-            return (await getRuns(workflow.workflow_id, tenant)).data;
-          } catch {
-            return [];
-          }
-        }),
-      ),
-    )
-  ).flat();
+  const runReads = await Promise.allSettled(
+    workflows.flatMap((workflow) =>
+      workflow.tenant_ids.map((tenant) => getRuns(workflow.workflow_id, tenant)),
+    ),
+  );
+  if (runReads.some((read) => read.status === 'rejected'))
+    return (
+      <Shell>
+        <RefreshState metadata={discovery.metadata} />
+        <div className="empty">
+          <h2>Run discovery incomplete</h2>
+          <p>One or more tenant run lists could not be read. Reload after the API is available.</p>
+        </div>
+      </Shell>
+    );
+  const runResponses = runReads
+    .filter((read): read is PromiseFulfilledResult<Envelope<Run[]>> => read.status === 'fulfilled')
+    .map((read) => read.value);
+  if (runResponses.some((response) => response.metadata.generation !== discovery.metadata.generation))
+    return (
+      <Shell>
+        <RefreshState metadata={discovery.metadata} />
+        <SnapshotChanged />
+      </Shell>
+    );
+  const allRuns = runResponses.flatMap((response) => response.data);
   const wantedWorkflow = param(params, 'workflow');
   const defaultRun = chooseRun(allRuns);
   const workflow =
@@ -92,6 +105,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<Par
       {selectedRun ? (
         <RunContent
           filters={filters}
+          generation={discovery.metadata.generation}
           traceId={param(params, 'trace')}
           traceTenant={param(params, 'trace_tenant')}
         />
@@ -107,26 +121,33 @@ export default async function Home({ searchParams }: { searchParams: Promise<Par
 
 async function RunContent({
   filters,
+  generation,
   traceId,
   traceTenant,
 }: {
   filters: Filters;
+  generation: string;
   traceId: string;
   traceTenant: string;
 }) {
   let summary;
   let tasks;
   let trace = null;
+  let changed = false;
   try {
     [summary, tasks] = await Promise.all([getRunSummary(filters), getTasks(filters)]);
+    changed = summary.metadata.generation !== generation || tasks.metadata.generation !== generation;
     if (
+      !changed &&
       traceId &&
       traceTenant &&
       (filters.tenant === 'all' || filters.tenant === traceTenant) &&
       summary.data.tenant_ids?.includes(traceTenant)
     ) {
       try {
-        trace = (await getTrace(filters, traceId, traceTenant)).data;
+        const traceResponse = await getTrace(filters, traceId, traceTenant);
+        changed = traceResponse.metadata.generation !== generation;
+        if (!changed) trace = traceResponse.data;
       } catch {
         trace = null;
       }
@@ -139,6 +160,7 @@ async function RunContent({
       </div>
     );
   }
+  if (changed) return <SnapshotChanged />;
   const run = summary.data;
   return (
     <>
@@ -154,9 +176,19 @@ async function RunContent({
           </p>
         </div>
         <div className="badges">
-          <span>Simulated source data</span>
           <span>
-            {run.measurement_mode === 'fabricated' ? 'Fabricated measurements' : 'Measured provider calls'}
+            {run.dataset_simulated === true
+              ? 'Simulated source data'
+              : run.dataset_simulated === false
+                ? 'Source origin unverified'
+                : 'Source simulation unknown'}
+          </span>
+          <span>
+            {run.measurement_mode === 'fabricated'
+              ? 'Fabricated measurements'
+              : run.measurement_mode === 'measured'
+                ? 'Measured provider calls'
+                : 'Measurement mode unknown'}
           </span>
           <span>Local preview</span>
         </div>
@@ -171,6 +203,15 @@ async function RunContent({
       </div>
       <TaskTable tasks={tasks.data} filters={filters} trace={trace} />
     </>
+  );
+}
+
+function SnapshotChanged() {
+  return (
+    <div className="empty">
+      <h2>Snapshot changed during read</h2>
+      <p>The published generation changed while loading this page. Reload to read one consistent snapshot.</p>
+    </div>
   );
 }
 
@@ -189,11 +230,7 @@ function Shell({ children }: { children: React.ReactNode }) {
           <span>Evaluations</span>
           <span>Data health</span>
         </nav>
-        <div className="sidebar-foot">
-          LOCAL PREVIEW
-          <br />
-          Simulated source data
-        </div>
+        <div className="sidebar-foot">LOCAL PREVIEW</div>
       </aside>
       <main id="main">
         <header className="topbar">

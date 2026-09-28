@@ -21,8 +21,20 @@ export function CostTable({ run, tasks }: { run: Run; tasks: Task[] }) {
           </thead>
           <tbody>
             <tr>
-              <th scope="row">Provider calls</th>
-              <td>Usage priced</td>
+              <th scope="row">
+                {run.measurement_mode === 'measured'
+                  ? 'Provider calls'
+                  : run.measurement_mode === 'fabricated'
+                    ? 'Fabricated call costs'
+                    : 'Provider cost (mode unknown)'}
+              </th>
+              <td>
+                {run.measurement_mode === 'measured'
+                  ? 'Usage priced'
+                  : run.measurement_mode === 'fabricated'
+                    ? 'Fixture amount'
+                    : 'Basis unavailable'}
+              </td>
               <td className="number">{money(run.model_cost, run.currency)}</td>
             </tr>
             <tr>
@@ -47,7 +59,7 @@ export function CostTable({ run, tasks }: { run: Run; tasks: Task[] }) {
               <th scope="col">Task</th>
               <th scope="col">Calls</th>
               <th scope="col" className="number">
-                Provider cost
+                Attributed cost
               </th>
             </tr>
           </thead>
