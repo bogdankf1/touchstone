@@ -14,18 +14,8 @@ with declared as (
             and d.workflow_id = e.workflow_id and d.run_id = e.run_id
     )
     group by 1, 2, 3
-), declaration_attributes as materialized (
-    select tenant_id, workflow_id, run_id,
-        json_extract_string(document_json, '$.workflow_version') as workflow_version,
-        json_extract_string(document_json, '$.experiment_version') as experiment_version,
-        json_extract_string(document_json, '$.cohort_version') as cohort_version,
-        json_extract_string(document_json, '$.config_version') as config_version,
-        json_extract_string(document_json, '$.code_revision') as code_revision,
-        json_extract_string(document_json, '$.dataset_version') as dataset_version,
-        json_extract_string(document_json, '$.measurement_mode') as measurement_mode
-    from declaration
 ), task_costs as (
-    select tenant_id, workflow_id, run_id, task_id,
+    select tenant_id, workflow_id, run_id, root_task_id as task_id,
         count(*) as call_count, sum(cost_amount) as model_cost,
         max(cast(incomplete as integer)) as incomplete_calls,
         count(distinct currency) as currencies,
@@ -33,6 +23,7 @@ with declared as (
         min(currency) as currency,
         count(distinct config_version) as config_versions
     from {{ ref('int_calls') }}
+    join {{ ref('int_task_membership') }} using (tenant_id, workflow_id, run_id, task_id)
     group by 1, 2, 3, 4
 ), rejected_costs as (
     select tenant_id, workflow_id, run_id, task_id, count(*) as rejected_calls
@@ -48,17 +39,23 @@ with declared as (
 ), event_compat as (
     select e.tenant_id, e.workflow_id, e.run_id, e.task_id,
         max(cast(e.identity_conflict as integer)) as identity_conflict,
-        max(cast(e.workflow_version is distinct from d.workflow_version
-            or e.experiment_version is distinct from d.experiment_version
-            or e.cohort_version is distinct from d.cohort_version
-            or e.config_version is distinct from d.config_version
-            or e.code_revision is distinct from d.code_revision
-            or e.dataset_version is distinct from d.dataset_version
-            or e.simulated is distinct from (d.measurement_mode = 'fabricated')
-            as integer)) as version_mismatch
+        max(cast(v.version_mismatch as integer)) as version_mismatch
     from {{ ref('stg_events') }} e
-    join declaration_attributes d using (tenant_id, workflow_id, run_id)
+    join {{ ref('int_event_compat') }} v using (tenant_id, workflow_id, run_id, event_id)
     group by 1, 2, 3, 4
+), run_evidence as (
+    select e.tenant_id, e.workflow_id, e.run_id,
+        count(distinct e.task_id) filter (where m.task_id is null) as unexpected_tasks,
+        max(cast(e.identity_conflict or v.version_mismatch as integer)) as incomplete
+    from {{ ref('stg_events') }} e
+    join {{ ref('int_event_compat') }} v using (tenant_id, workflow_id, run_id, event_id)
+    left join {{ ref('int_task_membership') }} m using (tenant_id, workflow_id, run_id, task_id)
+    group by 1, 2, 3
+), run_rejections as (
+    select tenant_id, workflow_id, run_id, count(*) as rejected_calls
+    from {{ source('staging', 'raw_rejections') }}
+    where event_name = 'provider_usage'
+    group by 1, 2, 3
 ), task_rows as (
     select t.tenant_id, t.workflow_id, t.run_id, t.task_id,
         t.first_started_at, t.terminal_at, t.terminal_status, t.latency_ms,
@@ -90,8 +87,9 @@ with declared as (
         count(*) filter (where first_started_at is not null) as received_tasks,
         count(*) filter (where terminal_status = 'completed') as completed_tasks,
         count(*) filter (where terminal_status = 'failed') as failed_tasks,
-        count(*) filter (where outcome_status = 'observed' and correct = true
-            and not incomplete) as correct_tasks,
+        case when count(*) filter (where outcome_status is null or outcome_incomplete) = 0
+            then count(*) filter (where outcome_status = 'observed' and correct = true)
+            end as correct_tasks,
         count(*) filter (where outcome_status is null) as missing_outcomes,
         count(*) filter (where outcome_status is null or outcome_incomplete)
             as incomplete_outcomes,
@@ -149,9 +147,11 @@ select d.tenant_id, d.workflow_id, d.run_id,
     d.versions > 0 as completeness_known,
     r.expected_tasks, r.received_tasks, r.completed_tasks, r.failed_tasks,
     r.expected_tasks - r.received_tasks as missing_tasks, r.correct_tasks,
-    r.missing_outcomes,
+    r.missing_outcomes, coalesce(re.unexpected_tasks, 0) as unexpected_tasks,
     case when r.incomplete_calls > 0 or r.call_currencies > 1
         or coalesce(cv.price_versions, 0) > 1 or r.any_incomplete > 0
+        or coalesce(re.unexpected_tasks, 0) > 0 or coalesce(re.incomplete, 0) > 0
+        or coalesce(rj.rejected_calls, 0) > 0
         then null else r.model_cost end as model_cost,
     case when r.incomplete_outcomes > 0 or r.outcome_currencies > 1
         then null else r.review_cost end as review_cost,
@@ -165,7 +165,9 @@ select d.tenant_id, d.workflow_id, d.run_id,
     coalesce(e.missing_checks, 0) as missing_checks,
     coalesce(e.error_checks, 0) as error_checks,
     coalesce(e.conflicting_checks, 0) as conflicting_checks,
-    (d.versions = 1 and r.received_tasks = r.expected_tasks
+    (d.versions = 1 and coalesce(re.unexpected_tasks, 0) = 0
+        and coalesce(re.incomplete, 0) = 0 and coalesce(rj.rejected_calls, 0) = 0
+        and r.received_tasks = r.expected_tasks
         and r.completed_tasks + r.failed_tasks = r.expected_tasks
         and r.missing_outcomes = 0 and r.any_incomplete = 0
         and r.call_currencies <= 1 and r.outcome_currencies <= 1
@@ -183,3 +185,5 @@ from declaration d
 left join run_rollup r using (tenant_id, workflow_id, run_id)
 left join evaluation_rollup e using (tenant_id, workflow_id, run_id)
 left join run_call_versions cv using (tenant_id, workflow_id, run_id)
+left join run_evidence re using (tenant_id, workflow_id, run_id)
+left join run_rejections rj using (tenant_id, workflow_id, run_id)

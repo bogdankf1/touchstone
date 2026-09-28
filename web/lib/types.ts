@@ -33,6 +33,7 @@ export type Run = {
   received_tasks: number | null;
   completed_tasks: number | null;
   failed_tasks: number | null;
+  unexpected_tasks?: number | null;
   missing_tasks: number | null;
   correct_tasks: number | null;
   missing_outcomes: number | null;

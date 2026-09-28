@@ -18,6 +18,7 @@ Install the locked environment and run checks:
 
 ```bash
 uv sync --all-packages --frozen
+uv run --frozen --all-packages dbt deps --project-dir platform/dbt
 uv run --frozen --all-packages pytest -m 'not integration and not clickhouse_integration' -q
 uv run --frozen ruff check .
 uv run --frozen ruff format --check .
@@ -39,3 +40,11 @@ The platform boundary is OTLP only. The independent synthetic workflow exercises
 Reckoner imports or provider credentials. DuckDB is the verified local warehouse; the Snowflake
 example awaits owner access and live validation. Reckoner's Jev/graph/cascade and reviewer
 interface remain later-phase work.
+
+Platform and synthetic-workflow packaging currently supports direct wheels:
+`uv build --wheel --package touchstone-platform` and
+`uv build --wheel --package touchstone-synthetic`. Their shared schemas are included
+from `contracts/` at wheel-build time. The default source-distribution-to-wheel
+flow is unsupported because those external schema paths are absent from the
+source distribution. Docker uses the supported direct-wheel path; publishing
+source distributions requires a separate packaging change.

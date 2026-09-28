@@ -57,7 +57,7 @@ def create_app(settings: Settings) -> FastAPI:
         with _snapshot(settings) as snapshot:
             return {"metadata": snapshot.metadata(), "data": snapshot.runs(workflow_id, tenant_id)}
 
-    @app.get("/v1/runs/{run_id}/summary")
+    @app.get("/v1/runs/{run_id:path}/summary")
     def summary(
         run_id: str,
         workflow_id: str = Query(min_length=1),
@@ -71,7 +71,7 @@ def create_app(settings: Settings) -> FastAPI:
                 raise HTTPException(status_code=404, detail="run not found")
             return {"metadata": snapshot.metadata(), "data": result}
 
-    @app.get("/v1/runs/{run_id}/tasks")
+    @app.get("/v1/runs/{run_id:path}/tasks")
     def tasks(
         run_id: str,
         workflow_id: str = Query(min_length=1),

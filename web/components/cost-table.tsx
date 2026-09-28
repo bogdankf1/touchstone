@@ -32,7 +32,7 @@ export function CostTable({ run, tasks }: { run: Run; tasks: Task[] }) {
                 {run.measurement_mode === 'measured'
                   ? 'Usage priced'
                   : run.measurement_mode === 'fabricated'
-                    ? 'Fixture amount'
+                    ? 'Fabricated amount'
                     : 'Basis unavailable'}
               </td>
               <td className="number">{money(run.model_cost, run.currency)}</td>

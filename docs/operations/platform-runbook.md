@@ -22,6 +22,15 @@ For measured replay, validate each frozen manifest's SHA-256 entries, mount the 
 
 The read API exposes `/readyz`, `/v1/workflows`, and per-run summaries; the web service listens on port 3000. `touchstone refresh` publishes a new immutable DuckDB generation and a manifest only after dbt, MetricFlow and Elementary validation succeed. A failed refresh leaves the previous generation readable and exposes failure metadata. Restart the owned normal services with `docker compose -p touchstone-phase2 -f infra/compose.platform.yaml restart clickhouse collector api dagster dagster-daemon web`. To shut down while preserving Phase 2 data, use `docker compose -p touchstone-phase2 -f infra/compose.platform.yaml stop`. Do not use `down --volumes` on the measured project.
 
+For an existing development snapshot predating the final Phase 2 fixes, refresh
+with the updated platform models **before** starting the updated API/web. The new
+`unexpected_tasks` mart column is required; an older snapshot produces a safe
+503 on data reads until refresh succeeds. Preserve the original generation and
+manifest for rollback. New installations already refresh before serving data.
+This is a first-release development schema change, not a migration of the saved
+historical evidence. A failed refresh preserves the old generation for the old
+application version; it does not make that schema compatible with the new API.
+
 Back up the `warehouse-data` volume and its manifest together while no refresh is publishing. Restoring those bytes into a disposable volume and rerunning `touchstone verify` checks the published warehouse snapshot. It does not verify raw ClickHouse or collector-queue disaster recovery; those require a separate procedure and replay plan.
 
 ## Separate kind smoke

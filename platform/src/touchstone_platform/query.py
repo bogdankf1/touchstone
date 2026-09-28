@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from contextlib import contextmanager
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import Decimal, localcontext
 
 from touchstone_platform.refresh import open_published_snapshot
 from touchstone_platform.settings import Settings
@@ -16,6 +16,7 @@ RUN_COLUMNS = (
     "cohort_version, config_version, measurement_mode, dataset_simulated, "
     "declared_at, completeness_known, expected_tasks, received_tasks, "
     "completed_tasks, failed_tasks, missing_tasks, correct_tasks, missing_outcomes, "
+    "unexpected_tasks, "
     "model_cost, review_cost, error_cost, currency, latency_population, "
     "latency_p99_ms, expected_cases, passed_cases, missing_checks, error_checks, "
     "conflicting_checks, metrics_complete, code_revision, dataset_version, "
@@ -40,6 +41,7 @@ COUNTS = (
     "completed_tasks",
     "failed_tasks",
     "missing_tasks",
+    "unexpected_tasks",
     "correct_tasks",
     "missing_outcomes",
     "latency_population",
@@ -251,12 +253,15 @@ class SnapshotReader:
             result[key] = (
                 sum(row[key] for row in rows) if all(row[key] is not None for row in rows) else None
             )
-        for key in MONEY:
-            result[key] = (
-                sum((row[key] for row in rows), Decimal(0))
-                if all(row[key] is not None for row in rows)
-                else None
-            )
+        with localcontext() as context:
+            # A component can use all 38 warehouse digits; summing tenants needs headroom.
+            context.prec = 38 + len(str(len(rows)))
+            for key in MONEY:
+                result[key] = (
+                    sum((row[key] for row in rows), Decimal(0))
+                    if all(row[key] is not None for row in rows)
+                    else None
+                )
         result["latency_p99_ms"] = self._pooled_p99(
             workflow_id, run_id, [row["tenant_id"] for row in rows]
         )

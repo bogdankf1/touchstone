@@ -70,7 +70,7 @@ export function MetricSummary({ run }: { run: Run }) {
       <div className="status-line">
         {run.metrics_complete ? 'Metrics complete' : 'Metrics incomplete'} · {run.missing_tasks ?? 'Unknown'}{' '}
         missing tasks · {run.failed_tasks ?? 'Unknown'} failed tasks · {run.missing_outcomes ?? 'Unknown'}{' '}
-        outcomes missing
+        outcomes missing · {run.unexpected_tasks ?? 'Unknown'} unexpected tasks
       </div>
       <div className="status-line muted">No compatible comparison run</div>
     </section>

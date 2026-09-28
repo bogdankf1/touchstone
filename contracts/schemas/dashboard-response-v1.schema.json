@@ -39,6 +39,7 @@
         "metrics_complete": {"type": "boolean"},
         "expected_tasks": {"type": ["integer", "null"]},
         "received_tasks": {"type": ["integer", "null"]},
+        "unexpected_tasks": {"type": ["integer", "null"]},
         "missing_tasks": {"type": ["integer", "null"]},
         "correct_tasks": {"type": ["integer", "null"]},
         "model_cost": {"$ref": "#/$defs/money"},

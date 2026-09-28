@@ -134,6 +134,7 @@ def published(tmp_path):
                 ),
             ],
         )
+        db.execute("alter table mart_runs add column unexpected_tasks integer default 0")
         db.execute("""
             create table int_tasks (
                 tenant_id varchar, workflow_id varchar, run_id varchar, task_id varchar,

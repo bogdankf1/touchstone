@@ -69,14 +69,14 @@ def test_cost_components_cpst_population_and_duplicate_calls(tmp_path):
         assert connection.execute("select count(*) from int_calls").fetchone()[0] == 2
 
 
-def test_missing_expected_task_is_incomplete_and_zero_correct_is_undefined(tmp_path):
+def test_missing_expected_task_is_incomplete_and_correctness_is_unknown(tmp_path):
     events = [event("execution", "a"), event("outcome", "a", correct=False)]
     warehouse = build_marts(tmp_path, events, [declaration()])
     with duckdb.connect(str(warehouse), read_only=True) as connection:
         row = connection.execute(
             "select expected_tasks, missing_tasks, correct_tasks, metrics_complete from mart_runs"
         ).fetchone()
-        assert row == (2, 1, 0, False)
+        assert row == (2, 1, None, False)
 
 
 def test_retries_are_one_task_with_all_distinct_call_costs_and_root_latency(tmp_path):

@@ -64,3 +64,41 @@ Dagster's non-root UI and daemon load the `warehouse_refresh` asset with zero en
 The real webserver GraphQL `launchRun` mutation then queued run `d369dc8b-1e79-4b13-b131-7825528a3ace`. The daemon's `QueuedRunCoordinatorDaemon` launched it, and a step worker in the daemon pod materialized `warehouse_refresh` in 11.17 seconds. GraphQL `runOrError` returned `SUCCESS`. This establishes the default UI submission and execution host without turning on the schedule. The run response, daemon logs, memory samples, failed-refresh logs and final Compose/kind receipts are retained locally in ignored `artifacts/phase2/receipts/`; the frozen manifest checksum and API receipts are in the neighboring ignored files. Actual scheduled timing/trigger execution remains disabled by design; enabling it requires an operator decision.
 
 Snowflake remains configuration-only. The example profile uses environment references and no credentials. A live Snowflake staging, dbt/MetricFlow, dashboard and cost demonstration depends on owner access and budget approval; local DuckDB evidence does not establish Snowflake parity. The [owner dependency checklist](../operations/user-dependencies.md) tracks that gate.
+
+## Final review fixes and verification
+
+The final review fixed fresh-checkout dbt dependency installation, descendant
+call-cost attribution, correctness eligibility, contribution compatibility and
+slash-containing run IDs. Unambiguous descendant calls now roll up once to their
+declared root within the same tenant, workflow and run. Orphaned, cyclic or
+ambiguous ancestry is visible as unexpected task membership and withholds the
+run's model-cost total; observed call/node evidence remains stored. Unknown
+outcomes yield unavailable correctness, while a valid known outcome retains its
+correctness when only pricing is unavailable. Contributions check their own
+versions and measurement mode independently of unrelated execution/outcome gaps.
+Aggregate money retains supported decimal digits; CPST still uses 28-digit
+division. Fabricated costs now use the caption “Fabricated amount”. The README
+records direct-wheel support and the unsupported source-distribution build path.
+
+Focused verification covered 62 affected Python cases: the first run passed 61
+and exposed an obsolete zero-correctness expectation for a missing outcome; after
+updating that expectation, all six final regression cases passed. Three focused
+Chromium dashboard tests passed, as did frontend type/lint/format checks and Ruff.
+A separate temporary project without `dbt_packages` reproduced the fresh-checkout
+failure, then passed the affected dbt-backed test after `dbt deps` installed the
+unchanged lock's Elementary 0.25.1 and dbt_utils 1.4.1. Existing package directories
+were preserved.
+
+The stopped measured warehouse volume was mounted read-only to copy its current
+manifest and `generation-3bc2bc238c834d8a9489e773087f3ac7.duckdb`. Source and initial
+copy SHA-256 both matched
+`dc765562260bddc6ccbacbb1b160f72fdc77526eba8b8b2179751b86f7b59486`.
+Only the temporary copy was rebuilt with the new models, using one thread and a
+2 GB DuckDB memory limit: dbt reported `PASS=51 WARN=0 ERROR=0`. The frozen receipt
+verifier returned `mismatches=[]` for the baseline aggregate and both tenants,
+including costs, CPST, rates and p99. The copied filename remains the historical
+name; these rebuilt bytes were **not published** to the preserved measured volume.
+The runbook requires refresh before serving the updated API against older
+development snapshots. This fix wave did not replay exports, restart deployments,
+call providers or rerun the full project suite. Detailed logs are retained under
+ignored `artifacts/phase2/receipts/final-fixes/`.
