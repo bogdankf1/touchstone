@@ -1,0 +1,68 @@
+{
+  "schema_version": "phase1-replay-expectations-v1",
+  "workflow_id": "reckoner",
+  "workflow_version": "baseline-v0",
+  "evaluation_suites": [
+    {
+      "suite_id": "required-quality-v1",
+      "suite_version": "v1",
+      "required_checks": ["decision_correctness"],
+      "case_membership": "all_runner_tasks"
+    },
+    {
+      "suite_id": "response-schema-v1",
+      "suite_version": "v1",
+      "required_checks": ["response_schema_validity"],
+      "case_membership": "all_runner_tasks"
+    }
+  ],
+  "metric_expectations": [
+    {
+      "metric_id": "completion",
+      "definition_version": "reckoner-metrics-v1",
+      "unit": "decision",
+      "task_membership": "all_runner_tasks"
+    },
+    {
+      "metric_id": "correctness",
+      "definition_version": "reckoner-metrics-v1",
+      "unit": "decision",
+      "task_membership": "all_runner_tasks"
+    },
+    {
+      "metric_id": "escalation",
+      "definition_version": "reckoner-metrics-v1",
+      "unit": "decision",
+      "task_membership": "all_runner_tasks"
+    },
+    {
+      "metric_id": "false_positive",
+      "definition_version": "reckoner-metrics-v1",
+      "unit": "decision",
+      "task_membership": "all_runner_tasks"
+    },
+    {
+      "metric_id": "missed_fraud",
+      "definition_version": "reckoner-metrics-v1",
+      "unit": "decision",
+      "task_membership": "all_runner_tasks"
+    }
+  ],
+  "sources": [
+    {
+      "run_id": "phase1-pilot-001",
+      "runner_manifest_sha256": "40e10ed86cd0017d0f8f07ae69a36274bfcbcd236c5d06a0fe3702be21b07d41",
+      "evaluator_manifest_sha256": "fd8b445b93693963e015cf7e9861cef5495dc40fdc982d61d10306b52d83c9ca"
+    },
+    {
+      "run_id": "phase1-pilot-002",
+      "runner_manifest_sha256": "a47c2c3c4b8b14945c3cc3d9e08cd14e681eeb351fc45e573a0776dda5b414ef",
+      "evaluator_manifest_sha256": "5064f9665e5daa801e29ba5bc00db18a47eafe8de8fd17c290c107eee98f354f"
+    },
+    {
+      "run_id": "phase1-baseline-001",
+      "runner_manifest_sha256": "56778c8b73e9f087068e544cf6c42c09cd3c3f188b24698a8866ce8579611d8b",
+      "evaluator_manifest_sha256": "e809a254c5112d12fa7a00a309a08e431b174d7e79afea603c51297c16438dda"
+    }
+  ]
+}

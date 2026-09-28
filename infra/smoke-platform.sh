@@ -3,7 +3,19 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 export TOUCHSTONE_CH_PASSWORD="${TOUCHSTONE_CH_PASSWORD:-phase2-smoke-disposable}"
-export TOUCHSTONE_COMPOSE_PROJECT="${TOUCHSTONE_COMPOSE_PROJECT:-touchstone-phase2-smoke-$$}"
+project="${TOUCHSTONE_COMPOSE_PROJECT:-touchstone-phase2-smoke-$$}"
+if [[ ! "$project" =~ ^touchstone-phase2-smoke-[a-zA-Z0-9-]+$ ]]; then
+  printf 'Refusing non-disposable Compose project: %s\n' "$project" >&2
+  exit 2
+fi
+existing_containers="$(docker ps -aq --filter "label=com.docker.compose.project=$project")"
+existing_volumes="$(docker volume ls -q --filter "label=com.docker.compose.project=$project")"
+existing_networks="$(docker network ls -q --filter "label=com.docker.compose.project=$project")"
+if [[ -n "$existing_containers$existing_volumes$existing_networks" ]]; then
+  printf 'Refusing existing Compose project resources: %s\n' "$project" >&2
+  exit 2
+fi
+export TOUCHSTONE_COMPOSE_PROJECT="$project"
 compose=(docker compose -p "$TOUCHSTONE_COMPOSE_PROJECT" -f infra/compose.platform.yaml)
 cleanup() {
   "${compose[@]}" down --volumes >/dev/null 2>&1 || true

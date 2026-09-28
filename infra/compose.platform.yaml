@@ -84,6 +84,7 @@ services:
 
   refresh:
     image: touchstone-platform:phase2
+    profiles: [tools]
     user: "10001:10001"
     command: ["sleep", "infinity"]
     environment: *platform-env
@@ -98,11 +99,13 @@ services:
 
   replay:
     image: touchstone-platform:phase2
+    profiles: [tools]
     user: "10001:10001"
     command: ["sleep", "infinity"]
     environment: *platform-env
     volumes:
       - ${TOUCHSTONE_PHASE1_ARTIFACTS:-/private/tmp/touchstone-no-phase1}:/phase1:ro
+      - ../workloads/reckoner/expectations/phase1-replay-v1.json:/expectations/phase1-replay-v1.json:ro
       - warehouse-data:/warehouse
     mem_limit: 512m
     depends_on:

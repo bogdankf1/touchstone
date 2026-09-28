@@ -9,8 +9,8 @@ COPY contracts/schemas/ contracts/schemas/
 COPY workloads/reckoner/pyproject.toml workloads/reckoner/pyproject.toml
 COPY workloads/synthetic/pyproject.toml workloads/synthetic/pyproject.toml
 RUN uv build --wheel --package touchstone-platform --out-dir /tmp/wheels && \
-    uv venv /opt/venv && \
-    uv pip install --python /opt/venv/bin/python /tmp/wheels/touchstone_platform-*.whl && \
+    UV_PROJECT_ENVIRONMENT=/opt/venv uv sync --frozen --no-dev --package touchstone-platform --no-install-workspace && \
+    uv pip install --python /opt/venv/bin/python --no-deps /tmp/wheels/touchstone_platform-*.whl && \
     /opt/venv/bin/dbt deps --project-dir /app/platform/dbt
 
 FROM python:3.12-slim@sha256:2f17fc044b579bab302c2e8054d3a686e2cb9a83de48e70534b94cd8ebbe06a9

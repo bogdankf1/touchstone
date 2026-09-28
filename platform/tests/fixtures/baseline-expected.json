@@ -1,0 +1,72 @@
+{
+  "run_id": "phase1-baseline-001",
+  "aggregate": {
+    "expected": 1000,
+    "completed": 1000,
+    "correct": 892,
+    "model_cost": "0.458940",
+    "review_cost": "96",
+    "error_cost": "7225.337",
+    "p99_ms": "1315.1606670003275",
+    "false_positive": [
+      14,
+      900
+    ],
+    "missed_fraud": [
+      94,
+      100
+    ],
+    "escalation": [
+      24,
+      1000
+    ],
+    "total_cost": "7321.795940",
+    "cpst": "8.208291412556053811659192825"
+  },
+  "tenant-a": {
+    "expected": 712,
+    "completed": 712,
+    "correct": 644,
+    "model_cost": "0.326795",
+    "review_cost": "64",
+    "error_cost": "4759.089",
+    "p99_ms": "1404.1769589998694",
+    "false_positive": [
+      10,
+      651
+    ],
+    "missed_fraud": [
+      58,
+      61
+    ],
+    "escalation": [
+      16,
+      712
+    ],
+    "total_cost": "4823.415795",
+    "cpst": "7.489776079192546583850931677"
+  },
+  "tenant-b": {
+    "expected": 288,
+    "completed": 288,
+    "correct": 248,
+    "model_cost": "0.132145",
+    "review_cost": "32",
+    "error_cost": "2466.248",
+    "p99_ms": "1210.6954579999183",
+    "false_positive": [
+      4,
+      249
+    ],
+    "missed_fraud": [
+      36,
+      39
+    ],
+    "escalation": [
+      8,
+      288
+    ],
+    "total_cost": "2498.380145",
+    "cpst": "10.07411348790322580645161290"
+  }
+}

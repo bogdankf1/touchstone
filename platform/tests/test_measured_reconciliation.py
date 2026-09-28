@@ -6,10 +6,7 @@ from pathlib import Path
 from touchstone_platform.verify import compare_summary
 
 EXPECTED = json.loads(
-    (
-        Path(__file__).resolve().parents[2]
-        / ".superpowers/sdd/2026-09-26-touchstone-v1/baseline-expected.json"
-    ).read_text()
+    (Path(__file__).resolve().parent / "fixtures/baseline-expected.json").read_text()
 )
 
 

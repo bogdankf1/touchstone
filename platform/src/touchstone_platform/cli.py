@@ -30,6 +30,7 @@ def main() -> int:
     declare = commands.add_parser("declare", help="prepare and emit Phase 1 replay declarations")
     declare.add_argument("--runner-dir", type=Path, required=True)
     declare.add_argument("--evaluator-dir", type=Path, required=True)
+    declare.add_argument("--expectations", type=Path, required=True)
     declare.add_argument("--output-dir", type=Path, required=True)
     declare.add_argument("--endpoint", required=True)
     commands.add_parser("refresh", help="build and publish a verified local warehouse snapshot")
@@ -56,7 +57,7 @@ def main() -> int:
         )
         return 1 if mismatches else 0
     if args.command == "declare":
-        documents = build_declarations(args.runner_dir, args.evaluator_dir)
+        documents = build_declarations(args.runner_dir, args.evaluator_dir, args.expectations)
         args.output_dir.mkdir(parents=True, exist_ok=True)
         endpoint = args.endpoint.rstrip("/")
         if not endpoint.endswith("/v1/traces"):

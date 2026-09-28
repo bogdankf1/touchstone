@@ -43,15 +43,20 @@ def _documents(request):
                             yield json.loads(attribute.value.string_value)
 
 
-def build_declarations(runner_dir: Path, evaluator_dir: Path) -> list[dict]:
-    """Read only membership, version identities and required check names."""
+def build_declarations(
+    runner_dir: Path, evaluator_dir: Path, expectations_path: Path
+) -> list[dict]:
+    """Expand independently pinned expectations over frozen runner task IDs."""
+    expectations = json.loads(expectations_path.read_text())
+    if expectations.get("schema_version") != "phase1-replay-expectations-v1":
+        raise ValueError("unsupported replay expectations")
     tasks = defaultdict(set)
     metadata = {}
-    suites = defaultdict(lambda: defaultdict(lambda: {"cases": set(), "checks": set()}))
-    metrics = defaultdict(lambda: defaultdict(set))
-    source_hash = None
+    source_hash = hashlib.sha256((runner_dir / "manifest.json").read_bytes()).hexdigest()
+    evaluator_hash = hashlib.sha256((evaluator_dir / "manifest.json").read_bytes()).hexdigest()
     for item, request, digest in _source(runner_dir):
-        source_hash = digest
+        if digest != source_hash:
+            raise ValueError("runner manifest changed during preflight")
         key = (item["run_id"], item["tenant_id"])
         tasks[key].add(item["task_id"])
         for document in _documents(request):
@@ -59,25 +64,32 @@ def build_declarations(runner_dir: Path, evaluator_dir: Path) -> list[dict]:
     if not tasks:
         raise ValueError("empty runner export")
     evaluator_tasks = defaultdict(set)
-    for item, request, _ in _source(evaluator_dir):
+    for item, _, digest in _source(evaluator_dir):
+        if digest != evaluator_hash:
+            raise ValueError("evaluator manifest changed during preflight")
         key = (item["run_id"], item["tenant_id"])
         evaluator_tasks[key].add(item["task_id"])
-        for document in _documents(request):
-            if document["event_kind"] == "evaluation":
-                payload = document["payload"]
-                suite = suites[key][payload["suite_id"]]
-                suite["cases"].add(payload["case_id"])
-                suite["checks"].add(payload["metric_id"])
-            elif document["event_kind"] == "metric_contribution":
-                payload = document["payload"]
-                metrics[key][
-                    (payload["metric_id"], payload["definition_version"], payload["unit"])
-                ].add(item["task_id"])
-    if dict(tasks) != dict(evaluator_tasks):
-        raise ValueError("runner and evaluator task membership differ")
+    if any(
+        key not in tasks or not members <= tasks[key] for key, members in evaluator_tasks.items()
+    ):
+        raise ValueError("evaluator has unexpected task membership")
+    run_ids = {run_id for run_id, _ in tasks}
+    source_pins = [
+        item
+        for item in expectations["sources"]
+        if item["runner_manifest_sha256"] == source_hash
+        and item["evaluator_manifest_sha256"] == evaluator_hash
+    ]
+    if len(source_pins) != 1 or run_ids != {source_pins[0]["run_id"]}:
+        raise ValueError("expectation source pin does not match frozen exports")
     declarations = []
     for (run_id, tenant_id), members in sorted(tasks.items()):
         source = metadata[(run_id, tenant_id)]
+        if (
+            source["workflow_id"] != expectations["workflow_id"]
+            or source["workflow_version"] != expectations["workflow_version"]
+        ):
+            raise ValueError("expectation workflow does not match frozen exports")
         versions = source["reproducibility"]
         event_id = hashlib.sha256(f"{source_hash}:{run_id}:{tenant_id}".encode()).hexdigest()
         document = {
@@ -98,27 +110,31 @@ def build_declarations(runner_dir: Path, evaluator_dir: Path) -> list[dict]:
             "measurement_mode": "measured",
             "dataset_simulated": True,
             "replay": {"is_replay": True, "source_manifest_sha256": source_hash},
-            "evaluation_suites": [
-                {
-                    "suite_id": suite_id,
-                    "suite_version": "v1",
-                    "expected_case_ids": sorted(details["cases"]),
-                    "required_checks": sorted(details["checks"]),
-                }
-                for suite_id, details in sorted(suites[(run_id, tenant_id)].items())
-            ],
-            "metric_expectations": [
-                {
-                    "metric_id": metric_id,
-                    "definition_version": version,
-                    "unit": unit,
-                    "expected_task_ids": sorted(metric_tasks),
-                }
-                for (metric_id, version, unit), metric_tasks in sorted(
-                    metrics[(run_id, tenant_id)].items()
-                )
-            ],
+            "evaluation_suites": [],
+            "metric_expectations": [],
         }
+        for suite in expectations["evaluation_suites"]:
+            if suite["case_membership"] != "all_runner_tasks":
+                raise ValueError("unsupported evaluation case membership")
+            document["evaluation_suites"].append(
+                {
+                    "suite_id": suite["suite_id"],
+                    "suite_version": suite["suite_version"],
+                    "expected_case_ids": sorted(members),
+                    "required_checks": suite["required_checks"],
+                }
+            )
+        for metric in expectations["metric_expectations"]:
+            if metric["task_membership"] != "all_runner_tasks":
+                raise ValueError("unsupported metric task membership")
+            document["metric_expectations"].append(
+                {
+                    "metric_id": metric["metric_id"],
+                    "definition_version": metric["definition_version"],
+                    "unit": metric["unit"],
+                    "expected_task_ids": sorted(members),
+                }
+            )
         validate_declaration(document)
         declarations.append(document)
     return declarations

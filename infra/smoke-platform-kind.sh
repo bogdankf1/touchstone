@@ -2,13 +2,24 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
-kind_bin=/Users/bohdanburukhin/Projects/personal/touchstone/.worktrees/phase-0-foundation/artifacts/tools/kind
+kind_bin="${KIND_BIN:-$(command -v kind || true)}"
+if [[ -z "$kind_bin" || ! -x "$kind_bin" ]]; then
+  printf 'kind executable unavailable; install kind or set KIND_BIN to an executable path\n' >&2
+  exit 2
+fi
 cluster="${TOUCHSTONE_KIND_CLUSTER:-touchstone-phase2-smoke-$$}"
 kubeconfig="${TOUCHSTONE_KIND_KUBECONFIG:-/private/tmp/$cluster.kubeconfig}"
 namespace=touchstone-phase2-smoke
 password="${TOUCHSTONE_CH_PASSWORD:-phase2-kind-disposable}"
 image_platform="${TOUCHSTONE_KIND_IMAGE_PLATFORM:-linux/arm64}"
 kubectl=(kubectl --kubeconfig "$kubeconfig")
+
+for image in touchstone-platform:phase2 touchstone-web:phase2 touchstone-synthetic:phase2; do
+  if ! docker image inspect "$image" >/dev/null 2>&1; then
+    printf 'Missing local image %s; build it before running the kind smoke\n' "$image" >&2
+    exit 2
+  fi
+done
 
 docker tag clickhouse/clickhouse-server:25.8@sha256:0152dd511befe6a2c2ef53e930726179669b08116da78500b37c51c96ff5ee77 touchstone-clickhouse:phase2
 docker tag otel/opentelemetry-collector-contrib:0.136.0@sha256:45392d534c1edcc809c2d112394029246bc679d2ae5ea7081414a1fc74f2c621 touchstone-collector:phase2
@@ -33,7 +44,7 @@ done
 for manifest in clickhouse collector warehouse api web; do
   "${kubectl[@]}" apply -f "infra/k8s/platform/$manifest.yaml"
 done
-for deployment in clickhouse collector refresh dagster dagster-daemon api web; do
+for deployment in clickhouse collector dagster dagster-daemon api web; do
   "${kubectl[@]}" -n "$namespace" rollout status "deployment/$deployment" --timeout=240s
 done
 
@@ -42,7 +53,7 @@ done
 "${kubectl[@]}" -n "$namespace" logs job/synthetic-smoke
 "${kubectl[@]}" -n "$namespace" exec deployment/dagster-daemon -- dagster job execute \
   -m touchstone_platform.orchestration.definitions -j touchstone_refresh
-"${kubectl[@]}" -n "$namespace" exec -i deployment/refresh -- python - <<'PY'
+"${kubectl[@]}" -n "$namespace" exec -i deployment/dagster-daemon -- python - <<'PY'
 import json
 from urllib.parse import urlencode
 from urllib.request import urlopen

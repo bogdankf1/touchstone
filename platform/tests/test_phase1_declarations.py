@@ -2,7 +2,9 @@
 
 import hashlib
 import json
+from pathlib import Path
 
+import pytest
 from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import ExportTraceServiceRequest
 from touchstone_platform.declarations import build_declarations
 
@@ -75,11 +77,52 @@ def _source(path, name, *, evaluation=False):
     )
 
 
+def _expectations(path: Path, runner: Path, evaluator: Path) -> Path:
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "phase1-replay-expectations-v1",
+                "workflow_id": "reckoner",
+                "workflow_version": "baseline-v0",
+                "evaluation_suites": [
+                    {
+                        "suite_id": "required-quality-v1",
+                        "suite_version": "v1",
+                        "required_checks": ["decision_correctness"],
+                        "case_membership": "all_runner_tasks",
+                    }
+                ],
+                "metric_expectations": [
+                    {
+                        "metric_id": "correctness",
+                        "definition_version": "reckoner-metrics-v1",
+                        "unit": "decision",
+                        "task_membership": "all_runner_tasks",
+                    }
+                ],
+                "sources": [
+                    {
+                        "run_id": "run-1",
+                        "runner_manifest_sha256": hashlib.sha256(
+                            (runner / "manifest.json").read_bytes()
+                        ).hexdigest(),
+                        "evaluator_manifest_sha256": hashlib.sha256(
+                            (evaluator / "manifest.json").read_bytes()
+                        ).hexdigest(),
+                    }
+                ],
+            }
+        )
+    )
+    return path
+
+
 def test_sidecar_uses_membership_and_required_checks_without_outcome_values(tmp_path):
     runner, evaluator = tmp_path / "runner", tmp_path / "evaluator"
     _source(runner, "runner")
     _source(evaluator, "evaluator", evaluation=True)
-    declarations = build_declarations(runner, evaluator)
+    expectations = _expectations(tmp_path / "expectations.json", runner, evaluator)
+    declarations = build_declarations(runner, evaluator, expectations)
     assert len(declarations) == 1
     document = declarations[0]
     assert document["expected_task_ids"] == ["task-1"]
@@ -94,3 +137,30 @@ def test_sidecar_uses_membership_and_required_checks_without_outcome_values(tmp_
     assert document["measurement_mode"] == "measured"
     assert "status" not in json.dumps(document)
     assert "score" not in json.dumps(document)
+
+
+def test_omitted_evaluation_and_contribution_remain_expected(tmp_path):
+    runner, evaluator = tmp_path / "runner", tmp_path / "evaluator"
+    _source(runner, "runner")
+    _source(evaluator, "evaluator")  # no evaluation or contribution event
+    expectations = _expectations(tmp_path / "expectations.json", runner, evaluator)
+
+    document = build_declarations(runner, evaluator, expectations)[0]
+
+    assert document["evaluation_suites"][0]["required_checks"] == ["decision_correctness"]
+    assert document["evaluation_suites"][0]["expected_case_ids"] == ["task-1"]
+    assert document["metric_expectations"][0]["metric_id"] == "correctness"
+    assert document["metric_expectations"][0]["expected_task_ids"] == ["task-1"]
+
+
+def test_wrong_independent_manifest_pin_is_rejected(tmp_path):
+    runner, evaluator = tmp_path / "runner", tmp_path / "evaluator"
+    _source(runner, "runner")
+    _source(evaluator, "evaluator", evaluation=True)
+    expectations = _expectations(tmp_path / "expectations.json", runner, evaluator)
+    document = json.loads(expectations.read_text())
+    document["sources"][0]["runner_manifest_sha256"] = "0" * 64
+    expectations.write_text(json.dumps(document))
+
+    with pytest.raises(ValueError, match="expectation source pin"):
+        build_declarations(runner, evaluator, expectations)
