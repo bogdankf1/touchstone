@@ -1,18 +1,20 @@
 # Local dbt lineage
 
-Generated on 2026-09-28 from the final non-root platform image with `dbt parse` (dbt 1.12.5, DuckDB adapter 1.11.0, pinned packages). The generated manifest is retained locally as ignored `artifacts/phase2/dbt-lineage-manifest.json` with SHA-256 `087923ee1c5e338b3b5f29e361f512c75d8a2a3348015a8f9649c179b380c879`. This table is extracted from its `depends_on.nodes`, not inferred from filenames. The manifest contains ten Touchstone models, seven Touchstone tests and two semantic models (`touchstone_runs`, `touchstone_contributions`).
+Generated on 2026-09-28 from the final-review dbt build against a copy of the measured warehouse (dbt 1.12.5, DuckDB adapter 1.11.0, pinned packages, 2 GB and one thread). The generated manifest is retained locally as ignored `artifacts/phase2/dbt-lineage-final-manifest.json` with SHA-256 `79180dc58670e8246c4c70d266551231da1da666d062c04b966bafaede394809`. This table is extracted from its `depends_on.nodes`, not inferred from filenames. The manifest contains 12 Touchstone models, 7 Touchstone tests and 2 semantic models (`touchstone_runs`, `touchstone_contributions`).
 
 | Model | Direct model/source dependencies |
 |---|---|
 | `stg_events` | `raw_measurements` |
 | `int_calls` | `stg_events` |
 | `int_evaluations` | `stg_events` |
-| `int_outcomes` | `stg_events` |
 | `int_tasks` | `raw_declarations`, `stg_events` |
-| `mart_contributions` | `stg_events` |
-| `mart_nodes` | `int_calls` |
-| `mart_runs` | `raw_declarations`, `raw_rejections`, `stg_events`, `int_calls`, `int_tasks`, `int_outcomes`, `int_evaluations` |
+| `int_event_compat` | `raw_declarations`, `stg_events` |
+| `int_task_membership` | `stg_events`, `int_tasks` |
+| `int_outcomes` | `stg_events`, `int_event_compat` |
+| `mart_contributions` | `stg_events`, `int_event_compat` |
+| `mart_nodes` | `int_calls`, `int_task_membership` |
+| `mart_runs` | `raw_rejections`, `raw_declarations`, `stg_events`, `int_calls`, `int_task_membership`, `int_event_compat`, `int_tasks`, `int_outcomes`, `int_evaluations` |
 | `mart_contribution_rates` | `raw_declarations`, `mart_contributions`, `mart_runs` |
 | `time_spine_daily` | no direct dependency |
 
-`mart_runs` is the completeness and cost publication boundary; `mart_contribution_rates` attaches versioned workload-supplied numerators and denominators to its complete runs. The API reads published marts from the immutable DuckDB generation. This lineage is a parse-time dependency graph; the live refresh and reconciliation evidence separately verifies materialization, tests and values. No Snowflake execution is implied.
+`mart_runs` is the completeness and cost publication boundary. `int_task_membership` maps valid descendants to declared roots, while `int_event_compat` checks event versions against declarations. `mart_contribution_rates` publishes eligible rates from independently complete, compatible contribution populations; unrelated missing outcomes do not erase their observed components. The API reads published marts from the immutable DuckDB generation. This graph records build-time dependencies; the reconciliation evidence separately verifies values. No Snowflake execution is implied.
