@@ -128,6 +128,7 @@ def _population(rows):
     cluster_sums = np.zeros((len(clusters), contributions.shape[1]))
     for row, values in zip(rows, contributions, strict=True):
         cluster_sums[indexes[(row["tenant_id"], row["user_id"])]] += values
+    bucket_cluster_counts = np.count_nonzero(cluster_sums[:, 6::4], axis=0)
     rng = np.random.default_rng(SEED)
     estimates, bucket_estimates = [], [[] for _ in EDGES[:-1]]
     empty, one_class = 0, 0
@@ -148,7 +149,7 @@ def _population(rows):
                 bucket_empty[i] += 1
             elif obs == 0 or obs == weight:
                 bucket_one_class[i] += 1
-            elif len(clusters) >= 2:
+            elif bucket_cluster_counts[i] >= 2:
                 bucket_estimates[i].append(bucket)
     buckets = []
     for i, values in enumerate(bucket_values):
@@ -172,7 +173,7 @@ def _population(rows):
                     bucket_estimates[i],
                     METRICS[3:],
                     "insufficient_user_clusters"
-                    if len(clusters) < 2
+                    if bucket_cluster_counts[i] < 2
                     else "empty_or_one_class_bucket",
                 ),
                 "bootstrap": {

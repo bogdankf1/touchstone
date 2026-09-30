@@ -39,7 +39,8 @@ def _markdown(report):
         "Selection requires strictly lower validation Brier and no higher log loss.",
         "Small numerical gains do not establish meaningful or population calibration.",
         "Weights correct class enrichment only within the declared retained-user population.",
-        "Bootstrap uses 1,000 tenant/user clusters, seed 20260930, percentile 2.5/97.5.",
+        "Bootstrap uses 1,000 replicates resampling tenant/user clusters, "
+        "seed 20260930, percentile 2.5/97.5.",
         "Empty and one-class replicates are counted and excluded from interval estimates.",
         "Fewer than two user clusters leaves intervals unavailable.",
         f"Fit status: {report['candidate']['fit_status']}; "

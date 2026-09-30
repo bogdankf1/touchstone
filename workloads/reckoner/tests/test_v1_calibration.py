@@ -394,3 +394,38 @@ def test_standalone_plot_uses_standard_producer_and_is_reproducible(tmp_path):
     assert "Matplotlib" in " ".join(root.itertext())
     assert "fabricated" in " ".join(root.itertext())
     assert svg == (second / "reliability.svg").read_text()
+
+
+@pytest.mark.parametrize("population", ["overall", "per_tenant"])
+def test_bucket_uncertainty_requires_two_users_contributing_to_that_bucket(population):
+    from reckoner.v1.calibration import calibration_metrics
+
+    rows = [
+        row(0.15, 0, case="a-legit", user="user-a"),
+        row(0.20, 1, case="a-fraud", user="user-a"),
+        row(0.60, 0, case="b-legit", user="user-b"),
+        row(0.70, 1, case="b-fraud", user="user-b"),
+    ]
+    metrics = calibration_metrics(rows)
+    scoped = metrics if population == "overall" else metrics["per_tenant"]["tenant-a"]
+    assert scoped["counts"]["users"] == 2
+    bucket = scoped["buckets"][5]  # [.10, .25): both classes, only user-a.
+    assert bucket["status"] == "available"
+    assert bucket["observed_rate"] == 0.5
+    assert bucket["intervals"]["status"] == "unavailable"
+    assert bucket["intervals"]["reason"] == "insufficient_user_clusters"
+    assert bucket["bootstrap"]["estimable_replicates"] == 0
+    assert all(
+        bound == {"lower": None, "upper": None}
+        for name, bound in bucket["intervals"].items()
+        if name not in {"status", "reason"}
+    )
+
+    # Bringing another independent user into the bucket permits its intervals.
+    rows[2]["probability"] = ".15"
+    rows[3]["probability"] = ".20"
+    metrics = calibration_metrics(rows)
+    scoped = metrics if population == "overall" else metrics["per_tenant"]["tenant-a"]
+    bucket = scoped["buckets"][5]
+    assert bucket["intervals"]["status"] == "available"
+    assert bucket["bootstrap"]["estimable_replicates"] == 1000
