@@ -139,3 +139,26 @@ source identity changes.
   No synthetic HTTP results in these tests constitute calibrated or live results.
 
 Independent review is required before dependent implementation proceeds.
+
+## Review fix round 1 — base 6632f12
+
+Addressed only the two Important review findings. Failed half-open probes
+(timeout, invalid response, 401, 422, 500) retain the failure threshold and reopen
+for 60 seconds; a valid response closes the circuit. Nonfinite Retry-After values
+are invalid hints and use bounded normal backoff. Excessive finite waits persist
+as deferral at the maximum representable UTC deadline, preserving response and
+settlement and releasing the active dispatch instead of raising OverflowError.
+
+Exact focused commands, with the same workdir/UV variables and disposable
+Postgres DSN documented above:
+
+- RED: `uv run --all-packages pytest workloads/reckoner/tests/test_v1_jev.py -k nonfinite_retry_after -q --tb=short` — **4 failed, 22 deselected**.
+- RED: `uv run --all-packages pytest workloads/reckoner/tests/test_v1_budget.py -k 'only_successful_half_open or excessive_retry_after' -q --tb=short` — **7 failed, 1 passed, 18 deselected**. Both reviewed failures reproduced directly: failed probes cleared the circuit; Infinity/1e300 hints raised inside response persistence.
+- GREEN: `uv run --all-packages pytest workloads/reckoner/tests/test_v1_jev.py -k 'retry_after or error_response' -q --tb=short` — **8 passed, 18 deselected**.
+- GREEN: `uv run --all-packages pytest workloads/reckoner/tests/test_v1_budget.py -k 'only_successful_half_open or excessive_retry_after or five_transient or expired_circuit or retry_after_over_60' -q --tb=short` — **11 passed, 15 deselected in 19.65s**.
+- `uv run ruff check workloads/reckoner/src/reckoner/v1/providers/jev.py workloads/reckoner/src/reckoner/v1/storage/attempts.py workloads/reckoner/tests/test_v1_jev.py workloads/reckoner/tests/test_v1_budget.py` — **All checks passed!** `git diff --check` exited zero.
+
+Only the two implementation files and their two existing test files changed.
+No broad regression rerun, provider-key read, paid inference, or preserved-store
+changes occurred. The existing disposable Task 4 container alone was restarted
+for the transactional checks. Task13 approval-record work remains out of scope.
