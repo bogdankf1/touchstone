@@ -30,6 +30,7 @@ def _configuration(repo, task):
 
 
 def _preflight(repo, task, evidence, protocol):
+    """Read-only request/configuration validation shared by binding, CLI and dispatch."""
     validate_protocol(protocol)
     evidence = validate_v1("evidence", evidence)
     if (evidence["tenant_id"], evidence["transaction_id"]) != (

@@ -363,3 +363,66 @@ def test_unavailable_evidence_does_not_require_a_paid_protocol_or_client(pg):
         assert decision["outcome"] == "escalate"
         assert decision["call_id"] is None
         assert calls == []
+
+
+@pytest.mark.parametrize(
+    "mismatch",
+    [
+        "tenant",
+        "run",
+        "task",
+        "transaction",
+        "request_hash",
+        "scorer",
+        "attempt_limit",
+        "input_limit",
+        "output_limit",
+    ],
+)
+def test_invalid_protocol_preflight_leaves_task_unbound_for_corrected_retry(pg, mismatch):
+    from reckoner.v1.storage.budget import validate_protocol
+
+    repo, task, _, settings, calls = prepared(pg)
+    invalid = deepcopy(settings)
+    protocol = invalid["protocol"]
+    if mismatch in {"tenant", "run"}:
+        protocol[mismatch + "_id"] = "different-" + mismatch
+    elif mismatch in {"task", "transaction"}:
+        protocol["tasks"][0][mismatch + "_id"] = "different-" + mismatch
+    elif mismatch == "request_hash":
+        protocol["tasks"][0]["request_sha256"] = "f" * 64
+    elif mismatch == "scorer":
+        # Structurally supported, but incompatible with this run's pinned Jev scorer.
+        protocol.update(provider="anthropic", model="anthropic/claude-haiku-4-5-20251001")
+    else:
+        key = {
+            "attempt_limit": "maximum_attempts",
+            "input_limit": "input_token_ceiling",
+            "output_limit": "max_output_tokens",
+        }[mismatch]
+        protocol[key] += 1
+    identified(protocol, "protocol_id")
+    validate_protocol(protocol)
+    identity = {k: task[k] for k in ("tenant_id", "run_id", "task_id")}
+    with repo:
+        with pytest.raises(ValueError, match="protocol"):
+            execute(repo, task, invalid)
+        assert (
+            repo.workflow_document(
+                "v1_workflow_runs", {"tenant_id": task["tenant_id"], "run_id": task["run_id"]}
+            )
+            is None
+        )
+        assert repo.workflow_document("v1_workflow_tasks", identity) is None
+        assert repo.workflow_document("v1_decisions", identity) is None
+        assert (
+            repo._connection.execute(
+                "SELECT count(*) AS n FROM reckoner.v1_provider_calls"
+            ).fetchone()["n"]
+            == 0
+        )
+        assert calls == []
+        decision, snapshot = execute(repo, task, settings)
+        assert decision["scorer_status"] == "succeeded"
+        assert snapshot.values["protocol_id"] == settings["protocol"]["protocol_id"]
+        assert len(calls) == 1

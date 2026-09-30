@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from reckoner.contracts import content_id
 from reckoner.v1.calibration import validate_calibration_context
 from reckoner.v1.contracts import validate_v1
+from reckoner.v1.storage.attempts import _preflight
 from reckoner.v1.storage.budget import validate_protocol
 from reckoner.v1.storage.checkpoints import task_config
 
@@ -76,12 +77,13 @@ def _bind(repo, task, settings):
         task["transaction"]["occurred_at"]
     ):
         raise ValueError("evidence query time mismatch")
-    if (
-        settings["protocol"] is None
-        and evidence["coverage"]["status"] == "available"
-        and (settings["evidence_mode"] == "relational" or evidence.get("graph_projection"))
+    if evidence["coverage"]["status"] == "available" and (
+        settings["evidence_mode"] == "relational" or evidence.get("graph_projection")
     ):
-        raise ValueError("available evidence requires an explicit approved protocol")
+        if settings["protocol"] is None:
+            raise ValueError("available evidence requires an explicit approved protocol")
+        # Share the scorer's read-only checks before pinning irreversible inputs.
+        _preflight(repo, task, evidence, settings["protocol"])
     identity = {key: task[key] for key in IDENTITY}
     previous = repo.workflow_document("v1_workflow_tasks", identity)
     binding = {
