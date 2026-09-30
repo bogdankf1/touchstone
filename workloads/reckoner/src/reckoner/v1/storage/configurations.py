@@ -15,9 +15,11 @@ from reckoner.v1.workflow.nodes import route
 from reckoner.v1.workflow.runner import calibration_context
 
 
-def models(repo):
+def models(repo, tenant_id):
     return repo._connection.execute(
-        "SELECT * FROM reckoner.api_v1_models ORDER BY purpose,model"
+        "SELECT provider,model,purpose,price_table FROM reckoner.api_v1_models "
+        "WHERE tenant_id=%s ORDER BY purpose,model",
+        (tenant_id,),
     ).fetchall()
 
 
@@ -51,7 +53,7 @@ def create_configuration(repo, document: dict) -> dict:
     config["threshold_config_id"] = threshold["config_id"]
     config["config_id"] = content_id(config)
     config = validate_v1("run-config", config)
-    registry = models(repo)
+    registry = models(repo, config["tenant_id"])
     for part in ("scorer", "note_model", "judge_model"):
         selected = config[part]
         if not any(
@@ -63,11 +65,14 @@ def create_configuration(repo, document: dict) -> dict:
         ):
             raise ValueError("unsupported or unpriced model")
     artifact = request.calibration
-    if config["score_mode"] == "calibrated" and artifact is None:
-        artifact = repo._connection.execute(
+    if config["score_mode"] == "calibrated":
+        registered = repo._connection.execute(
             "SELECT reckoner.v1_configuration_calibration(%s,%s) AS artifact",
             (config["tenant_id"], config["calibration_id"]),
         ).fetchone()["artifact"]
+        if registered is None or (artifact is not None and artifact != registered):
+            raise ValueError("registered selected calibration required")
+        artifact = registered
     qualification = {
         "evidence_mode": request.evidence_mode,
         "data_kind": request.data_kind,
@@ -108,7 +113,7 @@ def list_configurations(repo, *, tenant_id: str) -> dict:
     return {
         "items": items,
         "activation": activation or {"tenant_id": tenant_id, "config_id": None, "version": 0},
-        "models": models(repo),
+        "models": models(repo, tenant_id),
     }
 
 
@@ -183,3 +188,14 @@ def preview_configuration(repo, *, tenant_id: str, run_id: str, config_id: str) 
         "note_cost": "not_estimated",
         "provider_calls": 0,
     }
+
+
+def register_calibration(repo, *, tenant_id: str, artifact: dict, context: dict) -> str:
+    """Owner/offline path only: validate selected evidence before making it reusable."""
+    TypeAdapter(OpaqueID).validate_python(tenant_id)
+    validate_calibration_context(artifact, context)
+    identity = {"tenant_id": tenant_id, "calibration_id": artifact["calibration_id"]}
+    document = {**identity, "artifact": artifact}
+    with repo._connection.transaction():
+        repo._insert("v1_selected_calibrations", {**identity, "document": document}, identity)
+    return artifact["calibration_id"]

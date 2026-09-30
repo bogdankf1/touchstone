@@ -294,3 +294,26 @@ def test_available_degraded_note_recommendation_is_captured(pg):
         result = client.post("/v1/reviews", json=action(decision["decision_id"]))
         assert result.status_code == 200
         assert result.json()["recommendation"] == "approve"
+
+
+def test_direct_api_sql_rejects_null_simulation_flag(pg):
+    decision = case_setup(pg)
+    with psycopg.connect(pg.api_dsn, autocommit=True) as api:
+        with pytest.raises(psycopg.errors.CheckViolation):
+            api.execute(
+                "SELECT reckoner.v1_review(%s,%s,%s,%s,%s,%s,NULL)",
+                (
+                    "tenant-a",
+                    decision["decision_id"],
+                    "simulated-reviewer",
+                    "approve",
+                    "null-flag",
+                    1,
+                ),
+            )
+    with psycopg.connect(pg.owner_dsn) as owner:
+        assert owner.execute("SELECT count(*) FROM reckoner.v1_reviews").fetchone()[0] == 0
+        assert owner.execute("SELECT status,version FROM reckoner.v1_cases").fetchone() == (
+            "pending",
+            1,
+        )

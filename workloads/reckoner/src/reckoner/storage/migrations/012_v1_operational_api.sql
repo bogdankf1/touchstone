@@ -1,8 +1,8 @@
 -- Local simulated workload operational capabilities. Identity is attribution, not auth.
 CREATE TABLE reckoner.v1_model_registry (
- provider text NOT NULL, model text NOT NULL, purpose text NOT NULL,
+ tenant_id text NOT NULL, provider text NOT NULL, model text NOT NULL, purpose text NOT NULL,
  contract_supported boolean NOT NULL, price_table jsonb NOT NULL,
- PRIMARY KEY(provider,model,purpose)
+ PRIMARY KEY(tenant_id,provider,model,purpose)
 );
 CREATE TABLE reckoner.v1_configuration_details (
  tenant_id text NOT NULL, config_id text NOT NULL, document jsonb NOT NULL,
@@ -95,7 +95,7 @@ CREATE VIEW reckoner.api_v1_configurations AS
  JOIN reckoner.threshold_configs t ON (t.tenant_id,t.config_id)=(c.tenant_id,c.threshold_config_id)
  LEFT JOIN reckoner.v1_configuration_details x ON (x.tenant_id,x.config_id)=(c.tenant_id,c.config_id);
 CREATE VIEW reckoner.api_v1_activation AS SELECT * FROM reckoner.v1_active_configuration;
-CREATE VIEW reckoner.api_v1_models AS SELECT provider,model,purpose,price_table
+CREATE VIEW reckoner.api_v1_models AS SELECT tenant_id,provider,model,purpose,price_table
  FROM reckoner.v1_model_registry WHERE contract_supported;
 CREATE VIEW reckoner.api_v1_preview AS
  SELECT d.tenant_id,d.run_id,d.task_id,d.config_id,d.document->>'effective_probability' AS probability,
@@ -111,7 +111,7 @@ DECLARE c reckoner.v1_cases; d reckoner.v1_decisions; previous jsonb; doc jsonb;
 BEGIN
  IF p_simulated AND NOT pg_has_role(session_user,'reckoner_evaluator','member') THEN
   RAISE EXCEPTION 'simulation requires evaluator' USING ERRCODE='insufficient_privilege'; END IF;
- IF p_tenant IS NULL OR p_case IS NULL OR p_key IS NULL OR length(p_key) NOT BETWEEN 1 AND 256
+ IF p_simulated IS NULL OR p_tenant IS NULL OR p_case IS NULL OR p_key IS NULL OR length(p_key) NOT BETWEEN 1 AND 256
  OR p_version IS NULL OR p_version<1 OR p_actor IS NULL OR length(p_actor) NOT BETWEEN 1 AND 256
  OR p_verdict IS NULL OR p_verdict NOT IN ('approve','decline')
  OR (NOT p_simulated AND lower(p_actor) LIKE 'simulat%%') THEN
@@ -164,38 +164,142 @@ BEGIN
  RETURN doc;
 END $$;
 
--- Reuse selected immutable artifacts from saved settings or already-bound runs.
--- No HTTP route returns this internal artifact; each use revalidates its context.
-CREATE FUNCTION reckoner.v1_configuration_calibration(p_tenant text,p_calibration text)
- RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,reckoner AS $$
-DECLARE artifact jsonb;
+-- Settings can reference only artifacts registered by trusted offline/owner code.
+CREATE TABLE reckoner.v1_selected_calibrations (
+ tenant_id text NOT NULL, calibration_id text NOT NULL, document jsonb NOT NULL,
+ PRIMARY KEY(tenant_id,calibration_id),
+ CHECK ((document->>'tenant_id'=tenant_id AND document->>'calibration_id'=calibration_id
+  AND document#>>'{artifact,calibration_id}'=calibration_id) IS TRUE)
+);
+CREATE TRIGGER calibration_immutable BEFORE UPDATE OR DELETE ON reckoner.v1_selected_calibrations
+ FOR EACH ROW EXECUTE FUNCTION reckoner.v1_provider_immutable();
+REVOKE ALL ON reckoner.v1_selected_calibrations FROM PUBLIC,reckoner_api,reckoner_runner,reckoner_evaluator;
+
+-- This serialization is only for the strictly typed configuration/threshold records:
+-- objects, strings, booleans, null and integer execution limits; never float artifacts.
+CREATE FUNCTION reckoner.v1_configuration_json(value jsonb) RETURNS text
+ LANGUAGE plpgsql IMMUTABLE SET search_path=pg_catalog,reckoner AS $$
+DECLARE result text;
 BEGIN
- SELECT DISTINCT source.document->'calibration' INTO STRICT artifact FROM (
-  SELECT document FROM reckoner.v1_configuration_details WHERE tenant_id=p_tenant
-  UNION ALL
-  SELECT document FROM reckoner.v1_workflow_runs WHERE tenant_id=p_tenant
- ) source
- WHERE source.document#>>'{calibration,calibration_id}'=p_calibration
- AND source.document#>>'{calibration,qualification,status}'='selected';
- RETURN artifact;
- EXCEPTION WHEN no_data_found THEN RETURN NULL;
+ IF jsonb_typeof(value)='object' THEN
+  SELECT '{'||COALESCE(string_agg(to_jsonb(key)::text||':'||reckoner.v1_configuration_json(val),
+   ',' ORDER BY key COLLATE "C"),'')||'}' INTO result FROM jsonb_each(value) AS fields(key,val);
+  RETURN result;
+ END IF;
+ RETURN value::text;
 END $$;
+CREATE FUNCTION reckoner.v1_configuration_keys(value jsonb,keys text[]) RETURNS boolean
+ LANGUAGE plpgsql IMMUTABLE SET search_path=pg_catalog AS $$
+BEGIN
+ IF jsonb_typeof(value) IS DISTINCT FROM 'object' THEN RETURN false; END IF;
+ RETURN value ?& keys AND (value-keys)='{}'::jsonb;
+END $$;
+CREATE FUNCTION reckoner.v1_validate_configuration(c jsonb,t jsonb,q jsonb) RETURNS jsonb
+ LANGUAGE plpgsql SET search_path=pg_catalog,reckoner AS $$
+DECLARE field text; part text; selected_model jsonb; params jsonb; artifact jsonb;
+ expected_context jsonb; floor numeric; ceiling numeric; high numeric;
+BEGIN
+ IF NOT reckoner.v1_configuration_keys(c,ARRAY['schema_version','tenant_id','config_id',
+ 'workflow_version','scorer','note_model','judge_model','threshold_config_id','feature_version',
+ 'scaler_id','calibration_id','score_mode','graph_version','retrieval_version',
+ 'resolution_policy_version','limits'])
+ OR NOT reckoner.v1_configuration_keys(t,ARRAY['schema_version','tenant_id','config_id','currency','parameters'])
+ OR NOT reckoner.v1_configuration_keys(q,ARRAY['evidence_mode','data_kind','calibration']) THEN
+  RAISE EXCEPTION 'invalid configuration fields' USING ERRCODE='check_violation'; END IF;
+ IF c->'schema_version' IS DISTINCT FROM '"reckoner-run-config-v1"'::jsonb
+ OR c->'workflow_version' IS DISTINCT FROM '"reckoner-v1"'::jsonb
+ OR t->'schema_version' IS DISTINCT FROM '"threshold-config-v1"'::jsonb
+ OR t->'currency' IS DISTINCT FROM '"USD"'::jsonb
+ OR (c->'score_mode' IN ('"raw"'::jsonb,'"calibrated"'::jsonb)) IS NOT TRUE
+ OR (q->'evidence_mode' IN ('"relational"'::jsonb,'"gds-augmented"'::jsonb)) IS NOT TRUE
+ OR (q->'data_kind' IN ('"fabricated"'::jsonb,'"simulated-cctd"'::jsonb)) IS NOT TRUE THEN
+  RAISE EXCEPTION 'invalid configuration versions or policy' USING ERRCODE='check_violation'; END IF;
+ FOREACH field IN ARRAY ARRAY['tenant_id','feature_version','graph_version','retrieval_version','resolution_policy_version'] LOOP
+  IF (jsonb_typeof(c->field)='string' AND length(c->>field)>0) IS NOT TRUE THEN
+   RAISE EXCEPTION 'invalid configuration string' USING ERRCODE='check_violation'; END IF;
+ END LOOP;
+ IF length(c->>'tenant_id')>256 OR c->>'tenant_id' ~ '[[:cntrl:]]'
+ OR c->'tenant_id' IS DISTINCT FROM t->'tenant_id'
+ OR c->'threshold_config_id' IS DISTINCT FROM t->'config_id' THEN
+  RAISE EXCEPTION 'configuration ownership mismatch' USING ERRCODE='check_violation'; END IF;
+ FOREACH field IN ARRAY ARRAY['config_id','threshold_config_id'] LOOP
+  IF (jsonb_typeof(c->field)='string' AND c->>field ~ '^[a-f0-9]{64}$') IS NOT TRUE THEN
+   RAISE EXCEPTION 'invalid configuration identity' USING ERRCODE='check_violation'; END IF;
+ END LOOP;
+ FOREACH field IN ARRAY ARRAY['scaler_id','calibration_id'] LOOP
+  IF c->field <> 'null'::jsonb AND
+   (jsonb_typeof(c->field)='string' AND c->>field ~ '^[a-f0-9]{64}$') IS NOT TRUE THEN
+   RAISE EXCEPTION 'invalid optional identity' USING ERRCODE='check_violation'; END IF;
+ END LOOP;
+ IF NOT reckoner.v1_configuration_keys(c->'limits',ARRAY['timeout_seconds','input_token_ceiling','max_output_tokens','maximum_attempts']) THEN
+  RAISE EXCEPTION 'invalid execution limits' USING ERRCODE='check_violation'; END IF;
+ FOREACH field IN ARRAY ARRAY['timeout_seconds','input_token_ceiling','max_output_tokens','maximum_attempts'] LOOP
+  IF (jsonb_typeof(c#>ARRAY['limits',field])='number' AND c#>>ARRAY['limits',field] ~ '^[1-9][0-9]*$') IS NOT TRUE THEN
+   RAISE EXCEPTION 'positive integer limit required' USING ERRCODE='check_violation'; END IF;
+ END LOOP;
+ FOREACH part IN ARRAY ARRAY['scorer','note_model','judge_model'] LOOP
+  selected_model:=c->part;
+  field:=CASE WHEN part='scorer' THEN 'question_version' ELSE 'prompt_version' END;
+  IF NOT reckoner.v1_configuration_keys(selected_model,ARRAY['provider','model','price_table',field])
+   OR (jsonb_typeof(selected_model->field)='string' AND length(selected_model->>field)>0) IS NOT TRUE
+   OR selected_model->>'provider' IS DISTINCT FROM (CASE WHEN part='scorer' THEN 'typesafe' ELSE 'anthropic' END)
+   OR selected_model->>'model' IS DISTINCT FROM (CASE WHEN part='scorer' THEN 'jev-1.13.0' ELSE 'anthropic/claude-haiku-4-5-20251001' END)
+   OR NOT EXISTS (SELECT FROM reckoner.v1_model_registry r
+     WHERE r.tenant_id=c->>'tenant_id' AND r.provider=selected_model->>'provider'
+     AND r.model=selected_model->>'model'
+     AND r.purpose=CASE WHEN part='scorer' THEN 'scorer' ELSE 'note' END
+     AND r.contract_supported AND r.price_table=selected_model->'price_table') THEN
+   RAISE EXCEPTION 'unsupported model contract or price' USING ERRCODE='check_violation'; END IF;
+ END LOOP;
+ params:=t->'parameters';
+ IF NOT reckoner.v1_configuration_keys(params,ARRAY['review_cost','margin_rate','t_low_floor','t_low_ceiling','t_high','amount_aware'])
+ OR jsonb_typeof(params->'amount_aware') IS DISTINCT FROM 'boolean' THEN
+  RAISE EXCEPTION 'invalid threshold fields' USING ERRCODE='check_violation'; END IF;
+ FOREACH field IN ARRAY ARRAY['review_cost','margin_rate','t_low_floor','t_low_ceiling','t_high'] LOOP
+  IF (jsonb_typeof(params->field)='string' AND params->>field ~ '^(0|[1-9][0-9]*)(\.[0-9]+)?$') IS NOT TRUE THEN
+   RAISE EXCEPTION 'nonnegative decimal string required' USING ERRCODE='check_violation'; END IF;
+ END LOOP;
+ floor:=(params->>'t_low_floor')::numeric; ceiling:=(params->>'t_low_ceiling')::numeric;
+ high:=(params->>'t_high')::numeric;
+ IF NOT (floor<=ceiling AND ceiling<high AND high<=1)
+ OR (params->>'margin_rate')::numeric>1
+ OR (params->'amount_aware'='false'::jsonb AND high<=0.05) THEN
+  RAISE EXCEPTION 'invalid threshold semantics' USING ERRCODE='check_violation'; END IF;
+ IF c->>'config_id' IS DISTINCT FROM encode(sha256(convert_to(reckoner.v1_configuration_json(c-'config_id'),'UTF8')),'hex')
+ OR t->>'config_id' IS DISTINCT FROM encode(sha256(convert_to(reckoner.v1_configuration_json(t-'config_id'),'UTF8')),'hex') THEN
+  RAISE EXCEPTION 'configuration content identity mismatch' USING ERRCODE='check_violation'; END IF;
+ IF c->>'score_mode'='raw' THEN
+  IF c->'calibration_id' <> 'null'::jsonb OR q->'calibration' <> 'null'::jsonb THEN
+   RAISE EXCEPTION 'raw mode cannot carry calibration' USING ERRCODE='check_violation'; END IF;
+  RETURN q;
+ END IF;
+ SELECT document->'artifact' INTO artifact FROM reckoner.v1_selected_calibrations
+  WHERE tenant_id=c->>'tenant_id' AND calibration_id=c->>'calibration_id';
+ IF NOT FOUND OR artifact#>>'{qualification,status}' IS DISTINCT FROM 'selected'
+ OR (q->'calibration' <> 'null'::jsonb AND q->'calibration' IS DISTINCT FROM artifact) THEN
+  RAISE EXCEPTION 'registered selected calibration required' USING ERRCODE='check_violation'; END IF;
+ expected_context:=jsonb_build_object('scorer',reckoner.v1_pick(c->'scorer',ARRAY['provider','model','question_version']),
+ 'feature_version',c->'feature_version','scaler_id',c->'scaler_id','graph_version',c->'graph_version',
+ 'retrieval_version',c->'retrieval_version','evidence_mode',q->'evidence_mode','data_kind',q->'data_kind');
+ IF artifact->'context' IS DISTINCT FROM expected_context THEN
+  RAISE EXCEPTION 'calibration context mismatch' USING ERRCODE='check_violation'; END IF;
+ RETURN jsonb_set(q,'{calibration}',artifact);
+END $$;
+REVOKE ALL ON FUNCTION reckoner.v1_validate_configuration(jsonb,jsonb,jsonb) FROM PUBLIC;
+
+CREATE FUNCTION reckoner.v1_configuration_calibration(p_tenant text,p_calibration text)
+ RETURNS jsonb LANGUAGE sql SECURITY DEFINER SET search_path=pg_catalog,reckoner AS $$
+ SELECT document->'artifact' FROM reckoner.v1_selected_calibrations
+ WHERE tenant_id=p_tenant AND calibration_id=p_calibration
+$$;
 REVOKE ALL ON FUNCTION reckoner.v1_configuration_calibration(text,text) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION reckoner.v1_configuration_calibration(text,text) TO reckoner_api;
 
 CREATE FUNCTION reckoner.v1_save_configuration(c jsonb,t jsonb,q jsonb) RETURNS void
  LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,reckoner AS $$
-DECLARE part text; selected_model jsonb; saved jsonb;
+DECLARE saved jsonb;
 BEGIN
- IF c->>'tenant_id' IS DISTINCT FROM t->>'tenant_id' OR c->>'threshold_config_id' IS DISTINCT FROM t->>'config_id' THEN
-  RAISE EXCEPTION 'configuration ownership mismatch' USING ERRCODE='check_violation'; END IF;
- FOREACH part IN ARRAY ARRAY['scorer','note_model','judge_model'] LOOP
-  selected_model:=c->part;
-  IF NOT EXISTS (SELECT FROM reckoner.v1_model_registry r WHERE r.provider=selected_model->>'provider'
-   AND r.model=selected_model->>'model' AND r.purpose=CASE WHEN part='scorer' THEN 'scorer' ELSE 'note' END
-   AND r.contract_supported AND r.price_table=selected_model->'price_table') THEN
-   RAISE EXCEPTION 'unsupported or unpriced model' USING ERRCODE='check_violation'; END IF;
- END LOOP;
+ q:=reckoner.v1_validate_configuration(c,t,q);
  INSERT INTO reckoner.threshold_configs VALUES(t->>'tenant_id',t->>'config_id',t) ON CONFLICT DO NOTHING;
  SELECT document INTO saved FROM reckoner.threshold_configs WHERE tenant_id=t->>'tenant_id' AND config_id=t->>'config_id';
  IF saved IS DISTINCT FROM t THEN RAISE EXCEPTION 'immutable threshold conflict' USING ERRCODE='check_violation'; END IF;
@@ -209,6 +313,7 @@ END $$;
 CREATE FUNCTION reckoner.v1_activate_configuration(p_tenant text,p_config text,p_version bigint,p_key text) RETURNS jsonb
  LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,reckoner AS $$
 DECLARE current_version bigint; previous reckoner.v1_configuration_activations; result jsonb;
+ config_document jsonb; threshold_document jsonb; qualification jsonb;
 BEGIN
  IF p_key IS NULL OR length(p_key) NOT BETWEEN 1 AND 256 OR p_version IS NULL OR p_version<0 THEN
   RAISE EXCEPTION 'invalid activation' USING ERRCODE='check_violation'; END IF;
@@ -223,6 +328,12 @@ BEGIN
   RETURN previous.document;
  END IF;
  IF current_version<>p_version THEN RAISE EXCEPTION 'stale activation version' USING ERRCODE='serialization_failure'; END IF;
+ SELECT c.document,t.document,q.document INTO STRICT config_document,threshold_document,qualification
+ FROM reckoner.v1_configs c JOIN reckoner.threshold_configs t
+ ON (t.tenant_id,t.config_id)=(c.tenant_id,c.threshold_config_id)
+ JOIN reckoner.v1_configuration_details q ON (q.tenant_id,q.config_id)=(c.tenant_id,c.config_id)
+ WHERE c.tenant_id=p_tenant AND c.config_id=p_config;
+ PERFORM reckoner.v1_validate_configuration(config_document,threshold_document,qualification);
  result:=jsonb_build_object('tenant_id',p_tenant,'config_id',p_config,'version',current_version+1);
  UPDATE reckoner.v1_active_configuration SET config_id=p_config,version=current_version+1 WHERE tenant_id=p_tenant;
  INSERT INTO reckoner.v1_configuration_activations VALUES(p_tenant,p_key,p_config,p_version,result);
@@ -234,5 +345,5 @@ GRANT EXECUTE ON FUNCTION reckoner.v1_review(text,text,text,text,text,integer,bo
 GRANT EXECUTE ON FUNCTION reckoner.v1_save_configuration(jsonb,jsonb,jsonb),reckoner.v1_activate_configuration(text,text,bigint,text) TO reckoner_api;
 GRANT SELECT ON reckoner.api_v1_case_details,reckoner.api_v1_configurations,reckoner.api_v1_activation,
  reckoner.api_v1_models,reckoner.api_v1_preview TO reckoner_api,reckoner_evaluator;
-INSERT INTO reckoner.v1_model_registry VALUES ('typesafe','jev-1.13.0','scorer',true,'{"schema_version": "price-table-v1", "model": "jev-1.13.0", "currency": "USD", "input_per_million": "0.042", "output_per_million": "0", "retrieved_at": "2026-09-30T00:00:00Z", "source_url": "https://docs.typesafe.ai/models", "price_table_version": "1c4fb24e0df14061bf8b1d90eab2db3102a753d352e89eca92be660f0a97a88c"}'::jsonb);
-INSERT INTO reckoner.v1_model_registry VALUES ('anthropic','anthropic/claude-haiku-4-5-20251001','note',true,'{"currency": "USD", "input_per_million": "1.00", "model": "anthropic/claude-haiku-4-5-20251001", "output_per_million": "5.00", "price_table_version": "245d2d3dd12226e11e1328b65a7a63eb2db964b9e40a71eb56a0f30d07e6bcc2", "retrieved_at": "2026-09-25T00:00:00Z", "schema_version": "price-table-v1", "source_url": "https://platform.claude.com/docs/en/about-claude/pricing"}'::jsonb);
+INSERT INTO reckoner.v1_model_registry SELECT tenant_id,'typesafe','jev-1.13.0','scorer',true,'{"schema_version": "price-table-v1", "model": "jev-1.13.0", "currency": "USD", "input_per_million": "0.042", "output_per_million": "0", "retrieved_at": "2026-09-30T00:00:00Z", "source_url": "https://docs.typesafe.ai/models", "price_table_version": "1c4fb24e0df14061bf8b1d90eab2db3102a753d352e89eca92be660f0a97a88c"}'::jsonb FROM (VALUES ('tenant-a'),('tenant-b')) AS tenants(tenant_id);
+INSERT INTO reckoner.v1_model_registry SELECT tenant_id,'anthropic','anthropic/claude-haiku-4-5-20251001','note',true,'{"currency": "USD", "input_per_million": "1.00", "model": "anthropic/claude-haiku-4-5-20251001", "output_per_million": "5.00", "price_table_version": "245d2d3dd12226e11e1328b65a7a63eb2db964b9e40a71eb56a0f30d07e6bcc2", "retrieved_at": "2026-09-25T00:00:00Z", "schema_version": "price-table-v1", "source_url": "https://platform.claude.com/docs/en/about-claude/pricing"}'::jsonb FROM (VALUES ('tenant-a'),('tenant-b')) AS tenants(tenant_id);
