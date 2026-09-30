@@ -392,6 +392,17 @@ def import_v1(
             "SELECT has_table_privilege(current_user, 'oracle.v1_resolutions', 'INSERT')"
         ).fetchone()[0]:
             raise psycopg.errors.InsufficientPrivilege("owner import privileges required")
+
+        def check_resources():
+            _resource_check(bundle)
+            derived = sum(p.stat().st_size for p in bundle.iterdir() if p.is_file())
+            database_bytes = connection.execute(
+                "SELECT pg_database_size(current_database())"
+            ).fetchone()[0]
+            if derived + database_bytes > MAX_DERIVED:
+                raise ValueError("derived bundle and database exceed 20 GiB cap")
+
+        check_resources()
         previous = set()
         for tx in queries.values():
             row = history.connection.execute(
@@ -473,13 +484,8 @@ def import_v1(
             )
             count += 1
             if count % 10000 == 0:
-                derived = sum(p.stat().st_size for p in bundle.iterdir() if p.is_file())
-                database_bytes = connection.execute(
-                    "SELECT pg_database_size(current_database())"
-                ).fetchone()[0]
-                if derived + database_bytes > MAX_DERIVED:
-                    raise ValueError("derived bundle and database exceed 20 GiB cap")
-                _resource_check(bundle)
+                check_resources()
+        check_resources()
         return {
             "bundle_id": index["bundle_id"],
             "imported_history_records": count,

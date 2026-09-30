@@ -125,7 +125,8 @@ and validated historical resolution documents. Its working set is the union of
 availability), together with previous-card records outside those windows. Import
 receipts expose the query count, time intervals, previous-card coverage, and whether
 2019 queries were included. It checks derived-bundle plus database size against
-20 GiB while loading; complete source histories stay in the archive/index. The full
+20 GiB and requires 15 GiB free disk before loading, during batches, and before
+commit; complete source histories stay in the archive/index. The full
 archive working-set import has not been benchmarked or published to measured stores.
 
 `reckoner.v1_history_before(tenant_id, transaction_id)` returns the tenant's strict

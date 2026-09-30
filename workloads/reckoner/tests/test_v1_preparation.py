@@ -210,3 +210,52 @@ def test_import_rejects_conflicting_existing_canonical_content(inputs, tmp_path,
         import_v1(prepared, source, pg.owner_dsn)
     with psycopg.connect(pg.owner_dsn) as connection:
         assert connection.execute("SELECT count(*) FROM reckoner.v1_history").fetchone()[0] == 0
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    "scenario", ["small-disk", "small-size", "retry-disk", "final-disk", "final-size"]
+)
+def test_import_resource_guards_cover_small_retries_and_partial_batches(
+    scenario, inputs, tmp_path, pg, monkeypatch
+):
+    import psycopg
+    from reckoner.v1.data import prepare as preparation
+
+    source, baseline = inputs
+    prepared = tmp_path / "prepared"
+    preparation.prepare_v1(source, baseline, prepared)
+    if scenario == "retry-disk":
+        receipt = preparation.import_v1(prepared, source, pg.owner_dsn)
+        assert receipt["imported_history_records"] < 10000
+    with psycopg.connect(pg.owner_dsn) as connection:
+        before = connection.execute("SELECT count(*) FROM reckoner.v1_history").fetchone()[0]
+        initial_size = connection.execute("SELECT pg_database_size(current_database())").fetchone()[
+            0
+        ]
+    derived = sum(path.stat().st_size for path in prepared.iterdir() if path.is_file())
+    if scenario.endswith("size"):
+        # Empty database fits only the final-batch case; the actual rows then grow it.
+        allowance = 1 if scenario == "final-size" else -1
+        monkeypatch.setattr(preparation, "MAX_DERIVED", derived + initial_size + allowance)
+        message = "20 GiB cap"
+    else:
+        usage = preparation.shutil.disk_usage(prepared)
+        calls = 0
+
+        def disk_usage(_):
+            nonlocal calls
+            calls += 1
+            free = (
+                usage.free if scenario == "final-disk" and calls == 1 else preparation.MIN_FREE - 1
+            )
+            return usage._replace(free=free)
+
+        monkeypatch.setattr(preparation.shutil, "disk_usage", disk_usage)
+        message = "15 GiB free disk"
+    with pytest.raises(ValueError, match=message):
+        preparation.import_v1(prepared, source, pg.owner_dsn)
+    with psycopg.connect(pg.owner_dsn) as connection:
+        assert (
+            connection.execute("SELECT count(*) FROM reckoner.v1_history").fetchone()[0] == before
+        )
