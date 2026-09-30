@@ -380,3 +380,18 @@ A missing note does not prevent manual review. Task7 owns note generation; this
 Task6 graph ends after decision persistence and does not mark a run's billing complete.
 The generated graph is `docs/architecture/reckoner-v1-workflow.mmd`, produced with
 `build_graph(InMemorySaver()).get_graph().draw_mermaid()`.
+
+### Task7 note/evaluation implementation
+
+Installed and exercised DeepEval4.2.7 `BaseMetric`/`LLMTestCase` and Ragas0.4.3 modern
+`collections.Faithfulness`/`InstructorBaseRagasLLM` with injected responses. Joint
+resolution needs `langchain-community==0.4.1`;0.4.2 removes `chat_models.vertexai`,
+which Ragas0.4.3 imports. No provider/account endpoint or paid compatibility claim.
+Each actual framework request passes through Task4 accounting; no parser/library
+retries are active. See [note evaluation](note-evaluation.md) for exact stage bounds,
+late-note persistence, runtime attachment and Task13 staged-protocol handoff.
+
+Case-note confidence adds `jev_distribution_concentration`. Generation copies Jev's
+separate confidence field, never raw/calibrated probability or estimated accuracy.
+Older schema enum spellings remain readable; the new factual validator rejects them
+for newly generated notes. No baseline contract or artifact is regenerated.

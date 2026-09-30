@@ -119,6 +119,7 @@
         },
         "meaning": {
           "enum": [
+            "jev_distribution_concentration",
             "raw_choice_probability",
             "calibrated_fraud_probability",
             "unavailable"

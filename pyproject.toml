@@ -14,6 +14,7 @@ members = ["workloads/reckoner", "workloads/synthetic", "platform"]
 dev = ["pytest>=8,<10", "ruff>=0.11,<1", "jsonschema[format]>=4,<5", "httpx2>=2,<3"]
 
 [tool.pytest.ini_options]
+addopts = "-p no:deepeval -p no:rerunfailures"
 pythonpath = ["workloads/reckoner/tests"]
 testpaths = ["workloads/reckoner/tests", "workloads/synthetic/tests", "contracts/tests", "platform/tests"]
 markers = ["integration: requires an isolated PostgreSQL test database", "clickhouse_integration: requires an isolated ClickHouse and collector", "neo4j_integration: requires an isolated Neo4j with GDS"]

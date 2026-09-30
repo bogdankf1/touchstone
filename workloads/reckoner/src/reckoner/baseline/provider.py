@@ -131,17 +131,22 @@ class AnthropicProvider:
     provider_name = "anthropic"
     is_fake = False
 
-    def __init__(self, api_key: str, *, _http_client: httpx.Client | None = None):
+    def __init__(
+        self, api_key: str, *, _http_client: httpx.Client | None = None, timeout_seconds: int = 60
+    ):
         if not isinstance(api_key, str) or not api_key:
             raise ValueError("Anthropic API key is required")
+        self._timeout = timeout_seconds
         self._api_key = api_key
         self._anthropic = Anthropic(
             api_key=api_key,
             max_retries=0,
-            timeout=60,
+            timeout=self._timeout,
             http_client=_http_client,
         )
-        self._completion_client = _NativeUsageHTTPHandler(timeout=60, client=_http_client)
+        self._completion_client = _NativeUsageHTTPHandler(
+            timeout=self._timeout, client=_http_client
+        )
 
     @staticmethod
     def _validate_request(request: dict) -> None:
@@ -185,7 +190,7 @@ class AnthropicProvider:
             "stream": False,
             "num_retries": 0,
             "max_retries": 0,
-            "timeout": 60,
+            "timeout": self._timeout,
         }
         self._completion_client.reset_native_usage()
         arguments["client"] = self._completion_client

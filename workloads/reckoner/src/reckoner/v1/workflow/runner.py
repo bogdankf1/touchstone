@@ -146,7 +146,11 @@ def run_task(repo, graph, task: dict, config: dict) -> dict:
         ):
             raise ValueError("task identity/configuration mismatch")
         binding = _bind(repo, actual, config)
-        return _execute(repo, graph, actual, binding)
+        decision = _execute(repo, graph, actual, binding)
+        from reckoner.v1.notes.lifecycle import continue_note
+
+        continue_note(repo, decision)
+        return decision
 
 
 def resume_task(repo, graph, tenant_id: str, run_id: str, task_id: str) -> dict:
@@ -156,4 +160,8 @@ def resume_task(repo, graph, tenant_id: str, run_id: str, task_id: str) -> dict:
         binding = repo.workflow_document("v1_workflow_tasks", identity)
         if binding is None:
             raise LookupError("workflow task has not started")
-        return _execute(repo, graph, actual, binding)
+        decision = _execute(repo, graph, actual, binding)
+        from reckoner.v1.notes.lifecycle import continue_note
+
+        continue_note(repo, decision)
+        return decision

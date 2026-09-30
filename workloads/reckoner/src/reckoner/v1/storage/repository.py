@@ -9,8 +9,10 @@ from reckoner.v1.contracts import validate_v1
 
 
 class V1Repository:
-    def __init__(self, dsn: str, *, scorer_client=None):
+    def __init__(self, dsn: str, *, scorer_client=None, note_client=None, note_protocol=None):
         self.scorer_client = scorer_client
+        self.note_client = note_client
+        self.note_protocol = note_protocol
         self._connection = psycopg.connect(dsn, autocommit=True, row_factory=dict_row)
 
     def __enter__(self):
@@ -157,6 +159,9 @@ class V1Repository:
                     {**case, "document": case},
                     {"tenant_id": case["tenant_id"], "case_id": case["case_id"]},
                 )
+            from reckoner.v1.notes.lifecycle import declare_note
+
+            declare_note(self, document)
             self._connection.execute(
                 "UPDATE reckoner.v1_tasks SET status='completed' "
                 "WHERE tenant_id=%s AND run_id=%s AND task_id=%s",
@@ -166,6 +171,8 @@ class V1Repository:
 
     def workflow_document(self, table: str, identity: dict) -> dict | None:
         if table not in {
+            "v1_note_work",
+            "v1_note_results",
             "v1_workflow_runs",
             "v1_workflow_tasks",
             "v1_configs",
