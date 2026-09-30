@@ -25,6 +25,8 @@ from reckoner.storage.budget import BudgetExceeded, RunBusy
 from reckoner.storage.migrate import migrate, provision_roles
 from reckoner.storage.postgres import PostgresRepository
 from reckoner.telemetry.otlp import export_evaluations, export_run, replay
+from reckoner.v1.cli import execute as execute_v1
+from reckoner.v1.cli import register as register_v1
 
 
 def _environment(path: Path) -> dict[str, str]:
@@ -56,6 +58,7 @@ def _environment(path: Path) -> dict[str, str]:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="reckoner")
     commands = parser.add_subparsers(dest="command", required=True)
+    register_v1(commands)
     prepare_command = commands.add_parser("prepare")
     prepare_command.add_argument("--source-dir", type=Path, required=True)
     prepare_command.add_argument("--output", type=Path, required=True)
@@ -190,6 +193,8 @@ def main(argv: list[str] | None = None) -> int:
             if result["pending"] or result["uncertain"] or result["failed"]:
                 print(json.dumps(result, sort_keys=True))
                 return 3
+        elif args.command == "v1":
+            result = execute_v1(args)
         elif args.command == "prepare":
             index = prepare(args.source_dir, args.output)
             result = {"bundle_id": index["bundle_id"]}
