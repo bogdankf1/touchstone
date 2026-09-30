@@ -2,14 +2,14 @@ import { test, expect } from '@playwright/test';
 test.beforeEach(async ({ request }) => {
   await request.get('http://127.0.0.1:8100/__scenario?name=review');
 });
-test('keyboard navigation excludes controls and attributes exactly one review', async ({ page, request }) => {
+test('clicked queue supports shortcuts while editable controls do not submit', async ({ page, request }) => {
   await page.goto('/review');
   await expect(page.getByRole('heading', { name: 'case-001', exact: true })).toBeVisible();
   await page.getByLabel('Reviewer identity').fill('alex');
   await page.getByLabel('Reviewer identity').press('j');
   await expect(page.getByRole('heading', { name: 'case-001', exact: true })).toBeVisible();
   await page.getByLabel('Reviewer identity').fill('alex');
-  await page.getByRole('heading', { name: 'Reviewer console' }).click();
+  await page.getByRole('button', { name: /case-001/ }).click();
   await page.keyboard.press('j');
   await expect(page.getByRole('heading', { name: 'case-002', exact: true })).toBeVisible();
   await page.keyboard.press('k');
@@ -151,10 +151,7 @@ test('crowded graph bounds drawing and keeps safe accessible identities', async 
   expect(await page.locator('svg line').count()).toBeLessThanOrEqual(200);
   await expect(page.getByText(/Truncated graph/)).toBeVisible();
 });
-test('tenant and status selection stay scoped; d outside controls declines once', async ({
-  page,
-  request,
-}) => {
+test('tenant and status selection stay scoped; d from queue declines once', async ({ page, request }) => {
   await page.goto('/review');
   await page.getByLabel('Tenant').selectOption('tenant-b');
   await page.getByLabel('Case status').selectOption('open');
@@ -165,7 +162,7 @@ test('tenant and status selection stay scoped; d outside controls declines once'
   expect(await (await request.get('http://127.0.0.1:8100/__writes')).json()).toHaveLength(0);
   await page.getByLabel('Case status').selectOption('open');
   await expect(page.getByRole('heading', { name: 'case-001', exact: true })).toBeVisible();
-  await page.getByRole('heading', { name: 'Reviewer console' }).click();
+  await page.getByRole('button', { name: /case-001/ }).click();
   await page.keyboard.press('d');
   await expect(page.getByText('Resolved by sam')).toBeVisible();
   const w = await (await request.get('http://127.0.0.1:8100/__writes')).json();
@@ -184,7 +181,7 @@ test('keyboard-selected crowded queue row stays in the queue viewport', async ({
   await request.get('http://127.0.0.1:8100/__scenario?name=crowded');
   await page.goto('/review');
   await expect(page.getByRole('heading', { name: 'case-001', exact: true })).toBeVisible();
-  await page.getByRole('heading', { name: 'Reviewer console' }).click();
+  await page.getByRole('button', { name: /case-001/ }).click();
   for (let i = 0; i < 20; i++) await page.keyboard.press('j');
   await expect(page.getByRole('heading', { name: 'case-021', exact: true })).toBeVisible();
   await expect
@@ -196,4 +193,53 @@ test('keyboard-selected crowded queue row stays in the queue viewport', async ({
       }),
     )
     .toBe(true);
+});
+
+test('focused queue row supports navigation and one decision while modifiers and repeat are ignored', async ({
+  page,
+  request,
+}) => {
+  await page.goto('/review');
+  await page.getByLabel('Reviewer identity').fill('alex');
+  const row = page.getByRole('button', { name: /case-001/ });
+  await row.focus();
+  await expect(row).toBeFocused();
+  await page.keyboard.press('j');
+  await expect(page.getByRole('heading', { name: 'case-002', exact: true })).toBeVisible();
+  for (const shortcut of ['Alt+a', 'Control+d', 'Meta+a', 'Shift+d']) await page.keyboard.press(shortcut);
+  await row.evaluate((el) =>
+    el.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', repeat: true, bubbles: true })),
+  );
+  expect(await (await request.get('http://127.0.0.1:8100/__writes')).json()).toHaveLength(0);
+  await page.keyboard.press('d');
+  await page.keyboard.press('d');
+  await expect(page.getByText('Resolved by alex')).toBeVisible();
+  const writes = await (await request.get('http://127.0.0.1:8100/__writes')).json();
+  expect(writes).toHaveLength(1);
+  expect(writes[0]).toMatchObject({ case_id: 'case-002', reviewer_id: 'alex', verdict: 'decline' });
+});
+
+test('textarea and nested contenteditable retain ordinary typing without queue actions', async ({
+  page,
+  request,
+}) => {
+  await page.goto('/review');
+  await page.getByLabel('Reviewer identity').fill('alex');
+  await page.evaluate(() => {
+    const textarea = document.createElement('textarea');
+    textarea.setAttribute('aria-label', 'Temporary editing field');
+    const editable = document.createElement('div');
+    editable.contentEditable = 'true';
+    editable.setAttribute('aria-label', 'Temporary rich editing field');
+    editable.innerHTML = '<span>Editable content</span>';
+    document.querySelector('main')!.append(textarea, editable);
+  });
+  await page.getByLabel('Temporary editing field').focus();
+  await page.keyboard.press('j');
+  await page.keyboard.press('a');
+  await page.getByLabel('Temporary rich editing field').locator('span').click();
+  await page.keyboard.press('k');
+  await page.keyboard.press('d');
+  await expect(page.getByRole('heading', { name: 'case-001', exact: true })).toBeVisible();
+  expect(await (await request.get('http://127.0.0.1:8100/__writes')).json()).toHaveLength(0);
 });

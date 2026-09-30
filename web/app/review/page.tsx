@@ -146,7 +146,7 @@ export default function ReviewPage() {
         e.ctrlKey ||
         e.metaKey ||
         e.shiftKey ||
-        target.closest('input,textarea,select,button,a,[contenteditable="true"],[role="textbox"]')
+        target.closest('input,textarea,select,[contenteditable="true"],[role="textbox"]')
       )
         return;
       if (['j', 'k', 'a', 'd'].includes(e.key)) {
