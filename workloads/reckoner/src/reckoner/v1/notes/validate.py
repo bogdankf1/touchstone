@@ -65,9 +65,6 @@ def note_data(evidence, score):
         "evidence_id": evidence["evidence_id"],
         "coverage": deepcopy(evidence["coverage"]),
         "confidence": confidence(score),
-        "fraud_probability": score.get("adjusted_probability") or score.get("raw_probability")
-        if score.get("attempt_status") == "responded"
-        else None,
         "risk_indicators": [
             {
                 k: deepcopy(i[k])

@@ -6,8 +6,57 @@ from copy import deepcopy
 
 from reckoner.v1.evaluation.report import aggregate, persist_report
 from reckoner.v1.notes.calls import ApprovalRequired
+from reckoner.v1.notes.prompt import build_note_context, build_note_request
 from reckoner.v1.notes.validate import CONTENT_FIELDS, validate_note
 from reckoner.v1.storage.budget import ProviderBudget, validate_protocol
+
+
+def persisted_case(budget, case):
+    """Bind caller inputs to the immutable case that actually produced its note."""
+    stored = budget._connection.execute(
+        "SELECT d.document AS decision,c.document AS config,e.document AS evidence,"
+        "r.score,w.document AS work,nr.document AS result,n.document AS note, "
+        "nc.document AS generation_call "
+        "FROM reckoner.v1_decisions d "
+        "JOIN reckoner.v1_configs c ON c.tenant_id=d.tenant_id AND c.config_id=d.config_id "
+        "JOIN reckoner.v1_evidence e ON e.tenant_id=d.tenant_id AND e.evidence_id=d.evidence_id "
+        "LEFT JOIN reckoner.v1_provider_responses r "
+        "ON r.tenant_id=d.tenant_id AND r.call_id=d.call_id "
+        "LEFT JOIN reckoner.v1_note_work w "
+        "ON w.tenant_id=d.tenant_id AND w.case_id=d.decision_id "
+        "LEFT JOIN reckoner.v1_note_results nr "
+        "ON nr.tenant_id=d.tenant_id AND nr.case_id=d.decision_id "
+        "LEFT JOIN reckoner.v1_notes n ON n.tenant_id=d.tenant_id "
+        "AND n.case_id=d.decision_id AND n.note_id=nr.document->'note'->>'note_id' "
+        "LEFT JOIN reckoner.v1_provider_calls nc ON nc.tenant_id=d.tenant_id "
+        "AND nc.call_id=n.document->>'call_id' "
+        "WHERE d.tenant_id=%s AND d.decision_id=%s",
+        (case["tenant_id"], case["case_id"]),
+    ).fetchone()
+    if stored is None or stored["work"] is None or stored["result"] is None:
+        raise ValueError("actual note work is missing or pending")
+    result = stored["result"]
+    if (
+        result["status"] != "succeeded"
+        or stored["note"] is None
+        or result["note"] != stored["note"]
+    ):
+        raise ValueError("actual note is failed, unavailable or not published before review")
+    if stored["decision"]["call_id"] is not None and stored["score"] is None:
+        raise ValueError("actual scorer response is missing")
+    actual = {key: stored[key] for key in ("note", "evidence", "score")}
+    actual["score"] = actual["score"] or {}
+    if any(case.get(key) != value for key, value in actual.items()):
+        raise ValueError("evaluation inputs differ from immutable persisted inputs")
+    request = build_note_request(
+        stored["decision"], actual["evidence"], actual["score"], stored["config"]
+    )
+    if (
+        stored["generation_call"] is None
+        or stored["generation_call"]["request_document"] != request
+    ):
+        raise ValueError("generation request does not match frozen note context")
+    return {**case, **actual, "decision": stored["decision"], "config": stored["config"]}
 
 
 def evaluate_note_fixtures(
@@ -59,7 +108,12 @@ def evaluate_note_fixtures(
         )
         rows.append(row)
         try:
+            if authorized and isinstance(budget, ProviderBudget):
+                case = persisted_case(budget, case)
             validate_note(case["note"], case["evidence"], case["score"])
+            context = build_note_context(
+                case["decision"], case["evidence"], case["score"], case["config"]
+            )
             if any(case["note"][k] != case[k] for k in ("tenant_id", "case_id")):
                 raise ValueError("note case identity mismatch")
         except (ValueError, KeyError, TypeError):
@@ -106,9 +160,7 @@ def evaluate_note_fixtures(
                 raise ValueError("invalid judge verdict")
             row["agreement"] = verdict == case["oracle_verdict"]
             row["judge_verdict"] = verdict
-            faith = current["faithfulness"].evaluate(
-                note, evidence=deepcopy(case["evidence"]), score=deepcopy(case["score"])
-            )
+            faith = current["faithfulness"].evaluate(note, context=deepcopy(context))
             if (
                 isinstance(faith, bool)
                 or not isinstance(faith, (float, int))

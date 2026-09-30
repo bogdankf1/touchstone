@@ -241,3 +241,26 @@ def test_confidence_from_another_tenant_is_rejected():
     score["tenant_id"] = "tenant-b"
     with pytest.raises(ValueError):
         api().validate_note(note, evidence, score)
+
+
+def test_note_context_preserves_raw_effective_calibration_and_confidence_separately():
+    _, evidence, score = sample()
+    config = config_fixture()
+    config.update(score_mode="calibrated", calibration_id="b" * 64)
+    identified(config, "config_id")
+    decision = decision_fixture(config=config, evidence=evidence)
+    decision["effective_probability"] = "0.7"
+    identified(decision, "decision_id")
+    original = json.dumps(score, sort_keys=True)
+    request = api().build_note_request(decision, evidence, score, config)
+    data = json.loads(request["messages"][0]["content"])
+    assert data["routing"] == {
+        "raw_probability": "0.2",
+        "effective_probability": "0.7",
+        "score_mode": "calibrated",
+        "calibration_id": "b" * 64,
+    }
+    assert data["confidence"]["value"] == "0.8"
+    assert "fraud_probability" not in data
+    assert json.dumps(score, sort_keys=True) == original
+    assert score["adjusted_probability"] is None and score["calibration_id"] is None

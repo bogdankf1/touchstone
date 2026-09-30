@@ -36,7 +36,7 @@ class Judge:
 
 def cases(n=10):
     note, evidence, score = sample()
-    from v1_fixtures import identified
+    from v1_fixtures import config_fixture, decision_fixture, identified
 
     result = []
     for i in range(n):
@@ -50,6 +50,8 @@ def cases(n=10):
                 "note": item,
                 "evidence": evidence,
                 "score": score,
+                "config": config_fixture(),
+                "decision": decision_fixture(evidence=evidence),
                 "oracle_verdict": "approve",
                 "raw_transaction": {"secret": "RAW"},
             }

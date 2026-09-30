@@ -16,8 +16,12 @@ No client or protocol leaves it pending. Later attachment resumes it even when t
 LangGraph decision is already complete. The existing task lifecycle lock protects
 continuation. `continue_note()` is an internal helper called under that lock.
 
-`build_note_request(decision, evidence, score, frozen_config)` prepares the exact
-request for approval after routing. `generate_note(case, evidence, score, client,
+`build_note_context(decision, evidence, score, frozen_config)` preserves separate
+`routing.raw_probability`, the persisted `routing.effective_probability`, frozen
+score mode and calibration ID, alongside unchanged Jev confidence. It never edits
+the original provider response. `build_note_request(decision, evidence, score,
+frozen_config)` serializes that context and prepares the exact request for approval
+after routing. `generate_note(case, evidence, score, client,
 config, *, protocol=None)` uses an injected `BudgetedCalls`, not an unmetered model.
 `BudgetedCalls(repo, provider, task, config, kind="note"|"judge", budget=None)`
 uses the Task4 `ProviderBudget` and exact request hashes. An optionally shared budget
@@ -111,14 +115,24 @@ a factory receiving only `{tenant_id,case_id}` and returning that case's adapter
 Factories let multi-case runs bind each actual call to its own task. Build each adapter
 with the same supplied protocol and `BudgetedCalls(..., kind="judge", budget=budget)`.
 Case records include identity, note, evidence, score and an evaluator-only
-`oracle_verdict`; arbitrary raw fields are never forwarded. DeepEval's custom metric
+`oracle_verdict`; arbitrary raw fields are never forwarded. Fixture-only evaluation
+also supplies decision/config documents. Durable evaluation loads those documents
+from the persisted decision and frozen configuration; caller replacements cannot
+select different routing inputs. DeepEval's custom metric
 sees the note, then compares the returned verdict locally with the expected verdict;
-it never sends `expected_output` to the model. Ragas sees the six-field note and the
-exact allowlisted generation data. Oracle joins belong to an evaluator connection,
+it never sends `expected_output` to the model. Ragas receives the six-field note and
+`RagasFaithfulness.evaluate(note, *, context=...)` receives the identical frozen
+generation context, including the effective routing probability and calibration ID.
+There is no raw-probability-only fallback. Oracle joins belong to an evaluator connection,
 not the runner, scorer, browser or provider.
 
 With a real `ProviderBudget`, evaluation requires all root tasks complete and exact
-membership of every persisted escalation in the tenant/run. All cases, including
+membership of every persisted escalation in the tenant/run. Before dispatch, a tenant-scoped join verifies
+the actual note-work declaration/result, published note, decision, evidence, original
+scorer response and configuration. Supplied note/evidence/score documents must match
+those immutable records exactly. The saved generation call request must also match
+the reconstructed request; context or prompt drift blocks evaluation. Pending/failed
+notes cannot be replaced with caller-created valid-looking notes. All cases, including
 missing/degraded notes, remain in the denominator. Results include case status,
 provenance, evidence/note IDs, individual scores and failures; reports persist in
 `v1_note_evaluations`. Schema validity must be100%; agreement and mean faithfulness

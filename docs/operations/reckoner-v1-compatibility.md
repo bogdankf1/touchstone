@@ -395,3 +395,10 @@ Case-note confidence adds `jev_distribution_concentration`. Generation copies Je
 separate confidence field, never raw/calibrated probability or estimated accuracy.
 Older schema enum spellings remain readable; the new factual validator rejects them
 for newly generated notes. No baseline contract or artifact is regenerated.
+
+Task7 review hardening binds durable evaluation to the actual persisted note work,
+published note, decision/evidence/scorer/configuration, and exact saved generation
+request. Missing/failed notes and caller substitutions cannot pass. Generation and
+Ragas share `build_note_context`, with distinct raw/effective routing probabilities,
+frozen calibration identity and unchanged Jev concentration. This changes prepared
+request bytes/hashes; old exact-hash approvals do not approve the revised request.

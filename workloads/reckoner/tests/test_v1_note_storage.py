@@ -278,18 +278,24 @@ def test_each_ragas_stage_is_reserved_and_saved_individually(pg):
         note, evidence, score = sample()
         envelope = {"approved": True, "stages": {}}
         judge = RagasFaithfulness(calls, config, envelope)
+        from reckoner.v1.notes import build_note_context
+        from v1_fixtures import decision_fixture
+
+        context = build_note_context(
+            decision_fixture(config=config, evidence=evidence), evidence, score, config
+        )
         # No blanket fixture approval: prepare the exact next stage and explicitly
         # fabricate a local authorization matching its hash, then replay cached stages.
         for expected_stage in ("judge-statements", "judge-faithfulness"):
             with pytest.raises(api.ApprovalRequired) as pending:
-                judge.evaluate(note, evidence=evidence, score=score)
+                judge.evaluate(note, context=context)
             assert pending.value.stage == expected_stage
             p = protocol(task, pending.value.request_sha256, provider="anthropic", attempts=1)
             p.update(input_token_ceiling=16000, usd_cap=".1", purpose="judge")
             identified(p, "protocol_id")
             envelope["stages"][expected_stage] = p
-        assert judge.evaluate(note, evidence=evidence, score=score) == 1
-        assert judge.evaluate(note, evidence=evidence, score=score) == 1
+        assert judge.evaluate(note, context=context) == 1
+        assert judge.evaluate(note, context=context) == 1
         assert len(transport.calls) == 2
         assert (
             repo._connection.execute(
@@ -426,8 +432,11 @@ def test_valid_schema_repair_has_two_separate_settlements_in_one_envelope(pg):
         assert len(transport.calls) == 2
 
 
-def test_per_case_eval_artifact_persists_with_framework_provenance(pg):
+@pytest.mark.parametrize("state", ["pending", "failed", "ready", "evidence", "score", "note"])
+def test_durable_eval_verifies_actual_note_and_inputs_before_judging(pg, state):
     from reckoner.v1.evaluation.notes import evaluate_note_fixtures
+    from reckoner.v1.notes import CONTENT_FIELDS, build_note_request, validate_note
+    from reckoner.v1.notes.lifecycle import note_work
     from reckoner.v1.notes.validate import note_data
     from test_v1_graph_workflow import execute, prepared
     from test_v1_note_eval import Judge
@@ -460,6 +469,43 @@ def test_per_case_eval_artifact_persists_with_framework_provenance(pg):
         )
         note["what_would_change_verdict"] = []
         identified(note, "note_id")
+        if state != "pending":
+            with PostgresRepository(pg.runner_dsn) as old:
+                legacy = next(
+                    t
+                    for t in old.pending_tasks("baseline-preserved")
+                    if t["tenant_id"] == "tenant-a"
+                )
+            ledger_fixture(pg, legacy)
+            config = repo.workflow_document(
+                "v1_configs", {"tenant_id": task["tenant_id"], "config_id": task["config_id"]}
+            )
+            req = build_note_request(decision, evidence, score, config)
+            approval = protocol(task, content_id(req), provider="anthropic", attempts=1)
+            approval["purpose"] = "online-note"
+            identified(approval, "protocol_id")
+            response = paid_body(json.dumps({k: note[k] for k in CONTENT_FIELDS}))
+            if state == "failed":
+                response["finish_reason"] = "refusal"
+            repo.note_protocol = approval
+            repo.note_client = Transport([response])
+            execute(repo, task, settings)
+            actual = note_work(repo, decision)
+            if state != "failed":
+                assert actual["status"] == "succeeded"
+                note = actual["note"]
+        if state == "evidence":
+            evidence["features"]["amount_usd"] = "900.00"
+            identified(evidence, "evidence_id")
+            note["evidence_id"] = evidence["evidence_id"]
+            note["entity_neighbourhood"]["evidence_refs"] = [evidence["evidence_id"]]
+        if state == "score":
+            score["raw_probability"] = "0.3"
+            score["distribution"] = {"fraud": "0.3", "legitimate": "0.7"}
+        if state == "note":
+            note["verdict_recommendation"] = "decline"
+        identified(note, "note_id")
+        validate_note(note, evidence, score)
         p = protocol(task, provider="anthropic", attempts=1)
         p["purpose"] = "judge"
         identified(p, "protocol_id")
@@ -474,20 +520,25 @@ def test_per_case_eval_artifact_persists_with_framework_provenance(pg):
             }
         ]
         budget = ProviderBudget(repo._connection)
+        verdict, faithfulness = Judge(["approve"]), Judge([1])
         report = evaluate_note_fixtures(
             cases,
-            {"verdict": Judge(["approve"]), "faithfulness": Judge([1])},
+            {"verdict": verdict, "faithfulness": faithfulness},
             1,
             protocol=p,
             budget=budget,
         )
-        assert report["status"] == "passed"
+        assert report["status"] == ("passed" if state == "ready" else "failed")
+        if state != "ready":
+            assert verdict.inputs == [] and faithfulness.inputs == []
+            assert report["cases"][0]["schema"] == "fail"
         assert report["quality_acceptance"] == "pending separately approved measured evaluation"
         stored = repo._connection.execute(
             "SELECT document FROM reckoner.v1_note_evaluations"
         ).fetchone()["document"]
         assert stored == report
-        assert stored["cases"][0]["judges"]["verdict"]["model"] == "fixture"
+        if state == "ready":
+            assert stored["cases"][0]["judges"]["verdict"]["model"] == "fixture"
 
 
 def test_invalid_provider_shape_cannot_pin_a_generation_stage(pg):
@@ -509,3 +560,96 @@ def test_invalid_provider_shape_cannot_pin_a_generation_stage(pg):
             ).fetchone()["n"]
             == 0
         )
+
+
+def test_calibrated_note_and_eval_share_persisted_routing_without_rewriting_score(pg):
+    from copy import deepcopy
+
+    import httpx
+    from reckoner.v1.evaluation.notes import evaluate_note_fixtures
+    from reckoner.v1.notes import build_note_context, build_note_request
+    from reckoner.v1.notes.lifecycle import note_work
+    from reckoner.v1.providers.jev import JevClient
+    from test_v1_graph_workflow import calibrated_setup, execute
+    from test_v1_jev import response
+    from test_v1_note_eval import Judge
+
+    repo, task, settings, _ = calibrated_setup(pg)
+    scorer_body = response()
+    scorer_body["answers"]["risk"]["probabilities"] = {"fraud": 0.4, "legitimate": 0.6}
+    repo.scorer_client = JevClient(
+        "fabricated-only",
+        transport=httpx.MockTransport(lambda _: httpx.Response(200, json=scorer_body)),
+    )
+    with PostgresRepository(pg.runner_dsn) as old:
+        legacy = next(
+            t for t in old.pending_tasks("baseline-preserved") if t["tenant_id"] == "tenant-a"
+        )
+    ledger_fixture(pg, legacy)
+    with repo:
+        decision, _ = execute(repo, task, settings)
+        assert decision["outcome"] == "escalate"
+        assert decision["raw_probability"] != decision["effective_probability"]
+        evidence = repo.workflow_document(
+            "v1_evidence", {"tenant_id": task["tenant_id"], "evidence_id": decision["evidence_id"]}
+        )
+        config = repo.workflow_document(
+            "v1_configs", {"tenant_id": task["tenant_id"], "config_id": task["config_id"]}
+        )
+        score = repo._connection.execute(
+            "SELECT score FROM reckoner.v1_provider_responses WHERE call_id=%s",
+            (decision["call_id"],),
+        ).fetchone()["score"]
+        original = deepcopy(score)
+        context = build_note_context(decision, evidence, score, config)
+        fields = {
+            k: context[k]
+            for k in ("confidence", "risk_indicators", "entity_neighbourhood", "comparable_cases")
+        }
+        fields.update(verdict_recommendation="approve", what_would_change_verdict=[])
+        request = build_note_request(decision, evidence, score, config)
+        approval = protocol(task, content_id(request), provider="anthropic", attempts=1)
+        approval["purpose"] = "online-note"
+        identified(approval, "protocol_id")
+        repo.note_protocol = approval
+        repo.note_client = Transport([paid_body(json.dumps(fields))])
+        execute(repo, task, settings)
+        actual = note_work(repo, decision)
+        assert actual["status"] == "succeeded"
+        assert json.loads(repo.note_client.calls[0]["messages"][0]["content"]) == context
+        assert context["routing"] == {
+            "raw_probability": "0.4",
+            "effective_probability": decision["effective_probability"],
+            "score_mode": "calibrated",
+            "calibration_id": settings["calibration"]["calibration_id"],
+        }
+        assert context["confidence"]["value"] == "0.8"
+        assert "oracle" not in json.dumps(context)
+        judge_protocol = protocol(task, provider="anthropic", attempts=1)
+        judge_protocol["purpose"] = "judge"
+        identified(judge_protocol, "protocol_id")
+        faithfulness = Judge([1])
+        report = evaluate_note_fixtures(
+            [
+                {
+                    "tenant_id": task["tenant_id"],
+                    "case_id": decision["decision_id"],
+                    "note": actual["note"],
+                    "evidence": evidence,
+                    "score": score,
+                    "oracle_verdict": "approve",
+                }
+            ],
+            {"verdict": Judge(["approve"]), "faithfulness": faithfulness},
+            1,
+            protocol=judge_protocol,
+            budget=ProviderBudget(repo._connection),
+        )
+        assert report["status"] == "passed"
+        assert faithfulness.inputs[0][1]["context"] == context
+        persisted = repo._connection.execute(
+            "SELECT score FROM reckoner.v1_provider_responses WHERE call_id=%s",
+            (decision["call_id"],),
+        ).fetchone()["score"]
+        assert persisted == original
+        assert persisted["adjusted_probability"] is None and persisted["calibration_id"] is None

@@ -12,7 +12,7 @@ from ragas.metrics.collections.faithfulness.util import NLIStatementOutput, Stat
 from reckoner.v1.notes.calls import ApprovalRequired
 from reckoner.v1.notes.generate import parse_json
 from reckoner.v1.notes.prompt import MODEL
-from reckoner.v1.notes.validate import CONTENT_FIELDS, note_data
+from reckoner.v1.notes.validate import CONTENT_FIELDS
 
 
 def request(config, system, data):
@@ -162,13 +162,13 @@ class RagasFaithfulness:
         self.calls, self.config, self.protocol = calls, config, protocol
         self.provenance = provenance("ragas")
 
-    def evaluate(self, note, *, evidence, score=None, **kwargs):
+    def evaluate(self, note, *, context):
         llm = AccountedRagasLLM(self.calls, self.config, self.protocol)
         metric = Faithfulness(llm=llm)
         result = metric.score(
             user_input="Explain this simulated review recommendation.",
             response=json.dumps({k: note[k] for k in CONTENT_FIELDS}, sort_keys=True),
-            retrieved_contexts=[json.dumps(note_data(evidence, score or {}), sort_keys=True)],
+            retrieved_contexts=[json.dumps(context, sort_keys=True)],
         )
         if not math.isfinite(result.value):
             raise ValueError("faithfulness unavailable")
