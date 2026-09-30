@@ -20,6 +20,10 @@ def register(commands):
     scorer.add_argument("--manifest", type=Path, required=True)
     scorer.add_argument("--protocol", type=Path, required=True)
     scorer.add_argument("--env-file", type=Path, required=True)
+    reviewer = subcommands.add_parser("review-simulated")
+    reviewer.add_argument("--tenant-id", required=True)
+    reviewer.add_argument("--run-id", required=True)
+    reviewer.add_argument("--env-file", type=Path, required=True)
     calibration = subcommands.add_parser("calibrate")
     calibration.add_argument("--development", type=Path, required=True)
     calibration.add_argument("--validation", type=Path, required=True)
@@ -27,6 +31,8 @@ def register(commands):
 
 
 def execute(args):
+    if args.v1_command == "review-simulated":
+        return _review_simulated(args)
     if args.v1_command == "calibrate":
         from reckoner.v1.calibration import write_calibration_report
 
@@ -137,3 +143,32 @@ def _score(args):
                 }
             )
         return {"protocol_id": protocol["protocol_id"], "tasks": statuses}
+
+
+def _review_simulated(args):
+    from pydantic import TypeAdapter
+
+    from reckoner.v1.api.schemas import OpaqueID
+    from reckoner.v1.storage.repository import V1Repository
+    from reckoner.v1.storage.reviews import review_simulated
+
+    tenant = TypeAdapter(OpaqueID).validate_python(args.tenant_id)
+    run = TypeAdapter(OpaqueID).validate_python(args.run_id)
+    key = "RECKONER_EVALUATOR_DSN"
+    if args.env_file == Path("-"):
+        dsn = os.environ.get(key)
+    else:
+        values = {}
+        for raw in args.env_file.read_text().splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            name, separator, value = line.partition("=")
+            if not separator or name != key:
+                raise ValueError("simulation requires an evaluator-only environment file")
+            values[name] = value
+        dsn = values.get(key)
+    if not dsn:
+        raise ValueError("simulation requires RECKONER_EVALUATOR_DSN")
+    with V1Repository(dsn) as repo:
+        return review_simulated(repo, tenant_id=tenant, run_id=run)
