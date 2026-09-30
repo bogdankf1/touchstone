@@ -15,7 +15,7 @@ def persisted_case(budget, case):
     """Bind caller inputs to the immutable case that actually produced its note."""
     stored = budget._connection.execute(
         "SELECT d.document AS decision,c.document AS config,e.document AS evidence,"
-        "r.score,w.document AS work,nr.document AS result,n.document AS note, "
+        "r.score,w.document AS work,nr.document AS result,nr.document->'note' AS note, "
         "nc.document AS generation_call "
         "FROM reckoner.v1_decisions d "
         "JOIN reckoner.v1_configs c ON c.tenant_id=d.tenant_id AND c.config_id=d.config_id "
@@ -26,22 +26,16 @@ def persisted_case(budget, case):
         "ON w.tenant_id=d.tenant_id AND w.case_id=d.decision_id "
         "LEFT JOIN reckoner.v1_note_results nr "
         "ON nr.tenant_id=d.tenant_id AND nr.case_id=d.decision_id "
-        "LEFT JOIN reckoner.v1_notes n ON n.tenant_id=d.tenant_id "
-        "AND n.case_id=d.decision_id AND n.note_id=nr.document->'note'->>'note_id' "
         "LEFT JOIN reckoner.v1_provider_calls nc ON nc.tenant_id=d.tenant_id "
-        "AND nc.call_id=n.document->>'call_id' "
+        "AND nc.call_id=nr.document->'note'->>'call_id' "
         "WHERE d.tenant_id=%s AND d.decision_id=%s",
         (case["tenant_id"], case["case_id"]),
     ).fetchone()
     if stored is None or stored["work"] is None or stored["result"] is None:
         raise ValueError("actual note work is missing or pending")
     result = stored["result"]
-    if (
-        result["status"] != "succeeded"
-        or stored["note"] is None
-        or result["note"] != stored["note"]
-    ):
-        raise ValueError("actual note is failed, unavailable or not published before review")
+    if result["status"] != "succeeded" or stored["note"] is None:
+        raise ValueError("actual note is failed or unavailable")
     if stored["decision"]["call_id"] is not None and stored["score"] is None:
         raise ValueError("actual scorer response is missing")
     actual = {key: stored[key] for key in ("note", "evidence", "score")}

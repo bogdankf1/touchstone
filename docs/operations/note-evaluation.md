@@ -128,11 +128,13 @@ not the runner, scorer, browser or provider.
 
 With a real `ProviderBudget`, evaluation requires all root tasks complete and exact
 membership of every persisted escalation in the tenant/run. Before dispatch, a tenant-scoped join verifies
-the actual note-work declaration/result, published note, decision, evidence, original
+the actual note-work declaration/result, durable result note, decision, evidence, original
 scorer response and configuration. Supplied note/evidence/score documents must match
 those immutable records exactly. The saved generation call request must also match
 the reconstructed request; context or prompt drift blocks evaluation. Pending/failed
-notes cannot be replaced with caller-created valid-looking notes. All cases, including
+notes cannot be replaced with caller-created valid-looking notes. Successful late notes
+are evaluated from `v1_note_results`, independently of pre-review publication in
+`v1_notes`; the captured review recommendation remains unchanged. All cases, including
 missing/degraded notes, remain in the denominator. Results include case status,
 provenance, evidence/note IDs, individual scores and failures; reports persist in
 `v1_note_evaluations`. Schema validity must be100%; agreement and mean faithfulness

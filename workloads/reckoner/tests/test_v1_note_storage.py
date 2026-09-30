@@ -311,11 +311,15 @@ def test_each_ragas_stage_is_reserved_and_saved_individually(pg):
         )
 
 
-def test_note_completed_after_manual_review_cannot_create_pre_review_recommendation(pg):
+def test_late_note_is_evaluated_without_changing_manual_review_snapshot(pg):
     _, lifecycle = modules()
+    from reckoner.v1.contracts import validate_v1
+    from reckoner.v1.evaluation.notes import evaluate_note_fixtures
     from reckoner.v1.notes import build_note_request
     from reckoner.v1.notes.validate import note_data
     from test_v1_graph_workflow import execute, prepared
+    from test_v1_note_eval import Judge
+    from v1_fixtures import review_fixture
 
     repo, task, evidence, settings, _ = prepared(pg)
     with PostgresRepository(pg.runner_dsn) as old:
@@ -325,8 +329,38 @@ def test_note_completed_after_manual_review_cannot_create_pre_review_recommendat
     ledger_fixture(pg, legacy)
     with repo:
         decision, _ = execute(repo, task, settings)
-        with psycopg.connect(pg.owner_dsn, autocommit=True) as owner:
-            owner.execute(
+        assert lifecycle.note_work(repo, decision)["status"] == "pending"
+        review = review_fixture()
+        review.update(
+            case_id=decision["decision_id"],
+            decision_id=decision["decision_id"],
+            verdict="decline",
+            recommendation=None,
+        )
+        validate_v1("review", review)
+        with V1Repository(pg.owner_dsn) as owner:
+            owner._insert(
+                "v1_reviews",
+                {
+                    **{
+                        k: review[k]
+                        for k in (
+                            "tenant_id",
+                            "action_id",
+                            "case_id",
+                            "decision_id",
+                            "idempotency_key",
+                            "prior_case_version",
+                            "reviewer_type",
+                            "verdict",
+                            "reviewed_at",
+                        )
+                    },
+                    "document": review,
+                },
+                {"tenant_id": review["tenant_id"], "action_id": review["action_id"]},
+            )
+            owner._connection.execute(
                 "UPDATE reckoner.v1_cases SET status='reviewed',version=2 WHERE "
                 "tenant_id=%s AND case_id=%s",
                 (task["tenant_id"], decision["decision_id"]),
@@ -364,6 +398,40 @@ def test_note_completed_after_manual_review_cannot_create_pre_review_recommendat
         assert (
             repo._connection.execute("SELECT version FROM reckoner.v1_cases").fetchone()["version"]
             == 2
+        )
+
+        judge_protocol = protocol(task, provider="anthropic", attempts=1)
+        judge_protocol["purpose"] = "judge"
+        identified(judge_protocol, "protocol_id")
+        verdict, faithfulness = Judge(["approve"]), Judge([1])
+        report = evaluate_note_fixtures(
+            [
+                {
+                    "tenant_id": task["tenant_id"],
+                    "case_id": decision["decision_id"],
+                    "note": result["note"],
+                    "evidence": evidence,
+                    "score": score,
+                    "oracle_verdict": "approve",
+                }
+            ],
+            {"verdict": verdict, "faithfulness": faithfulness},
+            1,
+            protocol=judge_protocol,
+            budget=ProviderBudget(repo._connection),
+        )
+        assert report["status"] == "passed"
+        assert len(verdict.inputs) == len(faithfulness.inputs) == 1
+        assert lifecycle.note_work(repo, decision) == result
+        assert (
+            repo._connection.execute("SELECT count(*) AS n FROM reckoner.v1_notes").fetchone()["n"]
+            == 0
+        )
+        assert (
+            repo._connection.execute("SELECT document FROM reckoner.v1_reviews").fetchone()[
+                "document"
+            ]
+            == review
         )
 
 
