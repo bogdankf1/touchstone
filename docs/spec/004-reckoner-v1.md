@@ -1,7 +1,7 @@
 # 004 — Reckoner v1
 
-**Status:** Proposed written specification. The owner approved the conversational
-design; review of this document and then a separate implementation plan remain.
+**Status:** Approved by the owner on 2026-09-30. A separate implementation plan
+requires review before execution.
 **Date:** 2026-09-30.
 **Starting revision:** `e5832a594c9de78c4cb0804d9e5ed2712e108831` (Phases 0–2).
 **Sources:** [Foundation](000-foundation.md), [Touchstone v1](003-touchstone-v1.md),
@@ -551,9 +551,8 @@ experiment version and discloses reuse; stronger confirmation uses reserved data
 | Local capacity | Existing 8 GB RAM budget; phased operation agreed | Measure graph fit and current free disk |
 | GitHub | Owner handles publishing | Push reviewed branch and merge after checks; no implicit publishing authorization |
 
-Writing this specification is authorized by the conversational design approval.
-Its status remains proposed until the owner reviews this file. After approval,
-write and present the detailed implementation plan. After plan approval, create
+The owner approved this written specification on 2026-09-30. Write and present
+the detailed implementation plan. After plan approval, create
 an isolated worktree and follow TDD → fresh subagent execution → code review →
 finish-branch. No product implementation, dependency installation, paid inference,
 deployment, or remote publishing is performed as part of this specification step.

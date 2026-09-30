@@ -10,7 +10,7 @@ provision paid services. Keep secret values outside Git and chat.
 | Anthropic | Phase 1 measured access worked; current credentials are not revalidated | Renew access only if it stops working; approve a concrete paid evaluation or generation run before additional spending | Later case-note generation and DeepEval/Ragas judge runs; no new calls needed for Phase 2 baseline replay |
 | GitHub publishing | Owner has handled pushes and merges | Push reviewed branches and merge after checks pass, unless publishing responsibility is explicitly changed | Publishing completed phases; local implementation is independent |
 | Phase 2 design and plan | Approved on 2026-09-26; local DuckDB implementation and deployment verified on 2026-09-28 | No further planning input needed; owner handles branch publication | Approval gate satisfied |
-| Phase 3 design and plan | Conversational design approved; [written specification](../spec/004-reckoner-v1.md) proposed on 2026-09-30 | Review the written specification, then the separately prepared implementation plan | Product implementation has not started |
+| Phase 3 design and plan | [Written specification](../spec/004-reckoner-v1.md) and [implementation plan](../superpowers/plans/2026-09-30-reckoner-v1.md) approved on 2026-09-30 | No further design/plan approval needed; concrete paid-run approvals remain separate | Subagent-driven implementation authorized |
 
 ## Details to settle when access becomes available
 
