@@ -322,3 +322,61 @@ Calibration artifacts are standalone, evaluator-produced JSON using the existing
 configuration still records only the selected `calibration_id` and `score_mode`.
 The separate explicit context validator and artifact/export formats are documented
 in [Phase 3 experiments](../data/phase-3-experiments.md#offline-calibration-diagnostics-task-5).
+
+## Durable workflow runtime (Task 6)
+
+Pinned runtime: `langgraph==1.2.12`, `langgraph-checkpoint==4.1.0`, CPython3.12.
+Migration010 adds tenant/run policy bindings, task evidence/protocol bindings,
+checkpoint payloads and pending node writes. The synchronous tenant-scoped
+`PostgresCheckpointer(dsn, tenant_id)` implements the supported
+`BaseCheckpointSaver` `get_tuple`, `list`, `put` and `put_writes` interfaces using
+LangGraph's typed serializer. A separate database connection handles checkpoint
+writes; graph execution uses synchronous durability. This implementation supports
+this synchronous graph; async execution, unscoped checkpoint listing, deletion,
+forking and administrative replay are not exposed.
+
+Use `V1Repository(runner_dsn, scorer_client=client)` and
+`build_graph(checkpointer)`. The client is an injected runtime dependency, never a
+checkpoint or JSON field. `run_task(repo, graph, task, config)` accepts exactly:
+
+- `evidence_id`: a previously persisted strict evidence document for that task's
+  transaction and query time. Persist an explicit unavailable bundle when mandatory
+  evidence cannot be obtained; never invent a successful evidence record.
+- `evidence_mode`: `relational` or `gds-augmented`. This is independently supplied
+  experiment policy, never copied from a calibration artifact. Graph sharing is
+  evidence provenance rather than another treatment. Relational policy rejects
+  graph references; GDS policy with no projection degrades to escalation.
+- `data_kind`: explicitly `fabricated` or `simulated-cctd`, supplied by the caller's
+  established experiment inputs. These software tests use fabricated records only.
+- `protocol`: the strict Task4 approved protocol, or null when mandatory evidence
+  is unavailable and no scoring dispatch can happen. This interface does not grant
+  paid-run approval. Available evidence requires a protocol before binding the task.
+- `calibration`: the selected Task5 artifact, or null in raw mode. Runtime checks
+  its identity against the pinned run configuration and calls
+  `validate_calibration_context` with independently pinned scorer, feature, scaler,
+  graph, retrieval, evidence-mode and data-kind context before numerical apply.
+
+The first task atomically pins evidence mode, data kind and calibration at **run**
+scope; all later tasks must match. Task scope additionally pins evidence, protocol,
+configuration and initial timestamp. Changed inputs conflict, including after a
+completed task. New settings versions cannot rewrite an existing run. Full source
+histories, oracle labels, clients and credentials never enter graph state; it holds
+identities, bounded status categories, probabilities and effective thresholds.
+PageRank nonconvergence remains explicit alongside the immutable evidence reference.
+
+`resume_task(repo, graph, tenant_id, run_id, task_id)` uses persisted bindings.
+Both entrypoints hold a task-scoped PostgreSQL advisory lock for the full lifecycle,
+including HTTP, so concurrent workers cannot mistake an active call for a crashed
+one. Each worker owns its repository connection. Opaque IDs are encoded as a JSON
+identity hash for the LangGraph thread; tenant/run/task columns remain separate in
+all checkpoint queries and foreign keys. Checkpoint writes reject substituted
+identity/configuration/evidence/calibration/protocol values.
+
+Task4 response and billing records remain authoritative if a checkpoint fails.
+Restart at the score node consumes the saved response without another HTTP request;
+ambiguous delivery stays uncertain and budget exhaustion propagates with no decision.
+The decision and escalation case commit atomically before terminal graph success.
+A missing note does not prevent manual review. Task7 owns note generation; this
+Task6 graph ends after decision persistence and does not mark a run's billing complete.
+The generated graph is `docs/architecture/reckoner-v1-workflow.mmd`, produced with
+`build_graph(InMemorySaver()).get_graph().draw_mermaid()`.

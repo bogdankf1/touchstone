@@ -9,7 +9,8 @@ from reckoner.v1.contracts import validate_v1
 
 
 class V1Repository:
-    def __init__(self, dsn: str):
+    def __init__(self, dsn: str, *, scorer_client=None):
+        self.scorer_client = scorer_client
         self._connection = psycopg.connect(dsn, autocommit=True, row_factory=dict_row)
 
     def __enter__(self):
@@ -162,3 +163,24 @@ class V1Repository:
                 tuple(identity.values()),
             )
         return result
+
+    def workflow_document(self, table: str, identity: dict) -> dict | None:
+        if table not in {
+            "v1_workflow_runs",
+            "v1_workflow_tasks",
+            "v1_configs",
+            "v1_evidence",
+            "v1_decisions",
+            "threshold_configs",
+        }:
+            raise ValueError("unsupported workflow document")
+        row = self._connection.execute(
+            sql.SQL("SELECT document FROM reckoner.{} WHERE {}").format(
+                sql.Identifier(table),
+                sql.SQL(" AND ").join(
+                    sql.SQL("{}=%s").format(sql.Identifier(key)) for key in identity
+                ),
+            ),
+            tuple(identity.values()),
+        ).fetchone()
+        return row["document"] if row else None
