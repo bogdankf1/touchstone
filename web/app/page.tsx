@@ -6,7 +6,7 @@ import { CostTable } from '../components/cost-table';
 import { EvaluationTable } from '../components/evaluation-table';
 import { TaskTable } from '../components/task-table';
 import { RefreshState } from '../components/refresh-state';
-import Link from 'next/link';
+import { AppShell as Shell } from '../components/app-shell';
 
 type Params = Record<string, string | string[] | undefined>;
 function param(values: Params, name: string) {
@@ -211,34 +211,6 @@ function SnapshotChanged() {
     <div className="empty">
       <h2>Snapshot changed during read</h2>
       <p>The published generation changed while loading this page. Reload to read one consistent snapshot.</p>
-    </div>
-  );
-}
-
-function Shell({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="app-shell">
-      <aside className="sidebar">
-        <div className="brand">
-          <span className="brand-mark">T</span>
-          <span>TOUCHSTONE</span>
-        </div>
-        <nav aria-label="Primary">
-          <Link className="active" href="/">
-            Runs
-          </Link>
-          <span>Evaluations</span>
-          <span>Data health</span>
-        </nav>
-        <div className="sidebar-foot">LOCAL PREVIEW</div>
-      </aside>
-      <main id="main">
-        <header className="topbar">
-          <span>Measurement / Runs</span>
-          <span>Touchstone v1</span>
-        </header>
-        <div className="main-inner">{children}</div>
-      </main>
     </div>
   );
 }

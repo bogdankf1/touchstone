@@ -1,4 +1,5 @@
 import { createServer } from 'node:http';
+import { reckonerRoute, resetReckoner } from './reckoner-fixtures.mjs';
 
 let scenario = 'baseline';
 const metadata = {
@@ -136,11 +137,12 @@ const wrap = (data, route = '') => ({
   },
   data,
 });
-const server = createServer((request, response) => {
+const server = createServer(async (request, response) => {
   const url = new URL(request.url, 'http://127.0.0.1:8100');
   response.setHeader('Content-Type', 'application/json');
   if (url.pathname === '/__scenario') {
     scenario = url.searchParams.get('name') || 'baseline';
+    resetReckoner();
     response.end('{}');
     return;
   }
@@ -148,6 +150,7 @@ const server = createServer((request, response) => {
     response.end('{"status":"ok"}');
     return;
   }
+  if (await reckonerRoute(request, response, url, scenario)) return;
   if (scenario === 'unavailable') {
     response.statusCode = 503;
     response.end('{"detail":"published snapshot unavailable"}');
