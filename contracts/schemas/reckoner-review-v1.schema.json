@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://touchstone.example/contracts/reckoner-review-v1.schema.json",
+  "title": "Reckoner review v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "tenant_id",
+    "case_id",
+    "action_id",
+    "decision_id",
+    "reviewer_id",
+    "reviewer_type",
+    "verdict",
+    "recommendation",
+    "idempotency_key",
+    "prior_case_version",
+    "reviewed_at",
+    "oracle_version",
+    "resolution_policy_version"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "reckoner-review-v1"
+    },
+    "tenant_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "case_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "action_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "decision_id": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "reviewer_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "reviewer_type": {
+      "enum": [
+        "human",
+        "simulated"
+      ]
+    },
+    "verdict": {
+      "enum": [
+        "approve",
+        "decline"
+      ]
+    },
+    "recommendation": {
+      "anyOf": [
+        {
+          "enum": [
+            "approve",
+            "decline"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "idempotency_key": {
+      "type": "string",
+      "minLength": 1
+    },
+    "prior_case_version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "reviewed_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "oracle_version": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "resolution_policy_version": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  }
+}

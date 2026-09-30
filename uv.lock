@@ -2011,6 +2011,7 @@ source = { editable = "workloads/reckoner" }
 dependencies = [
     { name = "anthropic" },
     { name = "fastapi" },
+    { name = "httpx" },
     { name = "jsonschema", extra = ["format"] },
     { name = "litellm" },
     { name = "opentelemetry-exporter-otlp-proto-http" },
@@ -2023,6 +2024,7 @@ dependencies = [
 requires-dist = [
     { name = "anthropic", specifier = ">=0.69,<1" },
     { name = "fastapi", specifier = ">=0.115,<1" },
+    { name = "httpx", specifier = "==0.28.1" },
     { name = "jsonschema", extras = ["format"], specifier = ">=4,<5" },
     { name = "litellm", specifier = ">=1.78,<2" },
     { name = "opentelemetry-exporter-otlp-proto-http", specifier = "==1.37.0" },

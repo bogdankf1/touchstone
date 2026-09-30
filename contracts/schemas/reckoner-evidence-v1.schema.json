@@ -1,0 +1,234 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://touchstone.example/contracts/reckoner-evidence-v1.schema.json",
+  "title": "Reckoner evidence v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "tenant_id",
+    "evidence_id",
+    "transaction_id",
+    "query_time",
+    "source_snapshot_ids",
+    "cutoffs",
+    "coverage",
+    "features",
+    "risk_indicators",
+    "comparable_cases"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "reckoner-evidence-v1"
+    },
+    "tenant_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "evidence_id": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "transaction_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "query_time": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "source_snapshot_ids": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "postgres",
+        "graph"
+      ],
+      "properties": {
+        "postgres": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "graph": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "cutoffs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "history_before",
+        "resolved_before",
+        "graph_before"
+      ],
+      "properties": {
+        "history_before": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "resolved_before": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "graph_before": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "missing"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "available",
+            "partial",
+            "unavailable"
+          ]
+        },
+        "missing": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 0,
+          "uniqueItems": true
+        }
+      }
+    },
+    "features": {
+      "type": "object",
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "type": "string",
+            "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      }
+    },
+    "risk_indicators": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "rank",
+          "indicator_id",
+          "description",
+          "method",
+          "evidence_refs"
+        ],
+        "properties": {
+          "rank": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 3
+          },
+          "indicator_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1
+          },
+          "method": {
+            "type": "string",
+            "minLength": 1
+          },
+          "evidence_refs": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "minItems": 1,
+            "uniqueItems": true
+          }
+        }
+      },
+      "minItems": 0,
+      "maxItems": 3
+    },
+    "comparable_cases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "tenant_id",
+          "transaction_id",
+          "verdict",
+          "resolved_at",
+          "resolution_policy_version",
+          "similarity",
+          "evidence_refs"
+        ],
+        "properties": {
+          "tenant_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "transaction_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "verdict": {
+            "enum": [
+              "approve",
+              "decline"
+            ]
+          },
+          "resolved_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "resolution_policy_version": {
+            "type": "string",
+            "minLength": 1
+          },
+          "similarity": {
+            "type": "string",
+            "pattern": "^(?:0(?:\\.[0-9]+)?|1(?:\\.0+)?)$"
+          },
+          "evidence_refs": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "minItems": 1,
+            "uniqueItems": true
+          }
+        }
+      },
+      "minItems": 0
+    }
+  }
+}

@@ -16,7 +16,7 @@ jobs:
           enable-cache: true
       - run: uv sync --all-packages --frozen
       - run: uv run --frozen --all-packages dbt deps --project-dir platform/dbt
-      - run: uv run --frozen --all-packages pytest -m 'not integration and not clickhouse_integration' -q
+      - run: uv run --frozen --all-packages pytest -m 'not integration and not clickhouse_integration and not neo4j_integration' -q
       - run: uv run --frozen ruff check .
       - run: uv run --frozen ruff format --check .
   postgres-integration:

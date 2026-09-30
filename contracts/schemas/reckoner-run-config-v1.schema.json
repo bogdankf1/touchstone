@@ -1,0 +1,321 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://touchstone.example/contracts/reckoner-run-config-v1.schema.json",
+  "title": "Reckoner run-config v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "tenant_id",
+    "config_id",
+    "workflow_version",
+    "scorer",
+    "note_model",
+    "judge_model",
+    "threshold_config_id",
+    "feature_version",
+    "scaler_id",
+    "calibration_id",
+    "score_mode",
+    "graph_version",
+    "retrieval_version",
+    "resolution_policy_version",
+    "limits"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "reckoner-run-config-v1"
+    },
+    "tenant_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "config_id": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "workflow_version": {
+      "const": "reckoner-v1"
+    },
+    "scorer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider",
+        "model",
+        "question_version",
+        "price_table"
+      ],
+      "properties": {
+        "provider": {
+          "const": "typesafe"
+        },
+        "model": {
+          "const": "jev-1.13.0"
+        },
+        "question_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "price_table": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema_version",
+            "price_table_version",
+            "model",
+            "currency",
+            "input_per_million",
+            "output_per_million",
+            "retrieved_at",
+            "source_url"
+          ],
+          "properties": {
+            "schema_version": {
+              "const": "price-table-v1"
+            },
+            "price_table_version": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "model": {
+              "type": "string",
+              "minLength": 1
+            },
+            "currency": {
+              "const": "USD"
+            },
+            "input_per_million": {
+              "type": "string",
+              "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$"
+            },
+            "output_per_million": {
+              "type": "string",
+              "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$"
+            },
+            "retrieved_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "source_url": {
+              "type": "string",
+              "format": "uri"
+            }
+          }
+        }
+      }
+    },
+    "note_model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider",
+        "model",
+        "prompt_version",
+        "price_table"
+      ],
+      "properties": {
+        "provider": {
+          "const": "anthropic"
+        },
+        "model": {
+          "const": "anthropic/claude-haiku-4-5-20251001"
+        },
+        "prompt_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "price_table": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema_version",
+            "price_table_version",
+            "model",
+            "currency",
+            "input_per_million",
+            "output_per_million",
+            "retrieved_at",
+            "source_url"
+          ],
+          "properties": {
+            "schema_version": {
+              "const": "price-table-v1"
+            },
+            "price_table_version": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "model": {
+              "type": "string",
+              "minLength": 1
+            },
+            "currency": {
+              "const": "USD"
+            },
+            "input_per_million": {
+              "type": "string",
+              "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$"
+            },
+            "output_per_million": {
+              "type": "string",
+              "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$"
+            },
+            "retrieved_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "source_url": {
+              "type": "string",
+              "format": "uri"
+            }
+          }
+        }
+      }
+    },
+    "judge_model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider",
+        "model",
+        "prompt_version",
+        "price_table"
+      ],
+      "properties": {
+        "provider": {
+          "const": "anthropic"
+        },
+        "model": {
+          "const": "anthropic/claude-haiku-4-5-20251001"
+        },
+        "prompt_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "price_table": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema_version",
+            "price_table_version",
+            "model",
+            "currency",
+            "input_per_million",
+            "output_per_million",
+            "retrieved_at",
+            "source_url"
+          ],
+          "properties": {
+            "schema_version": {
+              "const": "price-table-v1"
+            },
+            "price_table_version": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "model": {
+              "type": "string",
+              "minLength": 1
+            },
+            "currency": {
+              "const": "USD"
+            },
+            "input_per_million": {
+              "type": "string",
+              "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$"
+            },
+            "output_per_million": {
+              "type": "string",
+              "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$"
+            },
+            "retrieved_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "source_url": {
+              "type": "string",
+              "format": "uri"
+            }
+          }
+        }
+      }
+    },
+    "threshold_config_id": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "feature_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "scaler_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "calibration_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "score_mode": {
+      "enum": [
+        "raw",
+        "calibrated"
+      ]
+    },
+    "graph_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "retrieval_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "resolution_policy_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "timeout_seconds",
+        "input_token_ceiling",
+        "max_output_tokens",
+        "maximum_attempts"
+      ],
+      "properties": {
+        "timeout_seconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "input_token_ceiling": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_output_tokens": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "maximum_attempts": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    }
+  }
+}

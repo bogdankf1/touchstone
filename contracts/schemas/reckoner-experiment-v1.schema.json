@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://touchstone.example/contracts/reckoner-experiment-v1.schema.json",
+  "title": "Reckoner experiment v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "tenant_id",
+    "experiment_id",
+    "run_id",
+    "purpose",
+    "config_id",
+    "dataset_simulated",
+    "dataset_version",
+    "cohort_version",
+    "code_revision",
+    "created_at",
+    "tasks"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "reckoner-experiment-v1"
+    },
+    "tenant_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "experiment_id": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "purpose": {
+      "enum": [
+        "pilot",
+        "calibration",
+        "development",
+        "validation",
+        "graph-comparison",
+        "final",
+        "judge",
+        "fabricated"
+      ]
+    },
+    "config_id": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "dataset_simulated": {
+      "const": true
+    },
+    "dataset_version": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "cohort_version": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "code_revision": {
+      "type": "string",
+      "minLength": 1
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "tasks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "task_id",
+          "transaction_id"
+        ],
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "transaction_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "minItems": 1
+    }
+  }
+}

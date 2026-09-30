@@ -6,6 +6,7 @@ dependencies = [
     "anthropic>=0.69,<1",
     "fastapi>=0.115,<1",
     "jsonschema[format]>=4,<5",
+    "httpx==0.28.1",
     "litellm>=1.78,<2",
     "opentelemetry-exporter-otlp-proto-http==1.37.0",
     "opentelemetry-sdk==1.37.0",
