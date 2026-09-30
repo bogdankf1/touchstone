@@ -441,3 +441,177 @@ def test_offline_scoring_without_routing_decision_exports_and_closes_only_after_
             == "offline"
         )
         assert len([d for d in docs if d.get("event_kind") == "work_closure"]) == 2
+
+
+@pytest.mark.parametrize("scenario", ["uncertain", "invalid", "retry"])
+def test_scoring_settlement_and_attempt_outcomes_survive_collection(
+    pg, tmp_path, monkeypatch, scenario
+):
+    from decimal import Decimal
+
+    import httpx
+    from reckoner.v1.storage.attempts import score_task
+    from reckoner.v1.storage.budget import ProviderBudget
+    from test_v1_budget import scoring
+    from test_v1_jev import response
+    from v1_fixtures import identified
+
+    repo, task, evidence, protocol, _, jev = scoring(pg, attempts=2 if scenario == "retry" else 1)
+    sent = []
+
+    def handle(request):
+        sent.append(request)
+        if scenario == "retry" and len(sent) == 1:
+            raise httpx.ConnectError("fabricated connect failure")
+        body = response()
+        if scenario == "uncertain":
+            body["usage"] = None
+        if scenario == "invalid":
+            body["model"] = "invalid-model"
+        return httpx.Response(200, json=body)
+
+    client = jev.JevClient("fabricated", transport=httpx.MockTransport(handle))
+    monkeypatch.setattr("reckoner.v1.storage.attempts.time.sleep", lambda seconds: None)
+    with repo:
+        run = repo._connection.execute(
+            "SELECT document FROM reckoner.v1_runs WHERE tenant_id=%s AND run_id=%s",
+            (task["tenant_id"], task["run_id"]),
+        ).fetchone()["document"] | {"run_id": "score-review-" + scenario, "purpose": "calibration"}
+        identified(run, "experiment_id")
+        with repository(pg.owner_dsn) as owner:
+            owner.create_run(run, run["config_id"], telemetry_mode="scoring-only")
+        task = repo.task(task["tenant_id"], run["run_id"], task["task_id"])
+        protocol = protocol | {"run_id": run["run_id"], "purpose": "calibration"}
+        identified(protocol, "protocol_id")
+        score = score_task(repo, client, task, evidence, protocol)
+        ledger = ProviderBudget(repo._connection)
+        ledger.close(protocol["protocol_id"])
+        api = outbox()
+        api.collect_scoring_run(repo, task["tenant_id"], task["run_id"])
+
+        def documents():
+            return repo._connection.execute(
+                "SELECT document,payload FROM reckoner.v1_otlp_delivery WHERE run_id=%s",
+                (run["run_id"],),
+            ).fetchall()
+
+        before = documents()
+        if scenario == "uncertain":
+            assert not any(r["document"].get("event_kind") == "provider_usage" for r in before)
+            assert [
+                r["document"]["payload"]["status"]
+                for r in before
+                if r["document"].get("event_kind") == "execution"
+            ] == ["started"]
+            with pytest.raises(ValueError, match="billing|protocol|response"):
+                api.close_scope(
+                    repo,
+                    tenant_id=task["tenant_id"],
+                    run_id=task["run_id"],
+                    task_id=task["task_id"],
+                    scope="offline",
+                )
+            ledger.settle(
+                score["call_id"], {"input_tokens": 2000, "output_tokens": 0}, Decimal(".000084")
+            )
+        api.collect_scoring_run(repo, task["tenant_id"], task["run_id"])
+        for scope in ("online", "offline"):
+            api.close_scope(
+                repo,
+                tenant_id=task["tenant_id"],
+                run_id=task["run_id"],
+                task_id=task["task_id"],
+                scope=scope,
+            )
+        rows = documents()
+        after = {r["document"]["event_id"]: bytes(r["payload"]) for r in rows}
+        assert all(after[r["document"]["event_id"]] == bytes(r["payload"]) for r in before)
+        docs = [r["document"] for r in rows]
+        executions = [
+            d
+            for d in docs
+            if d.get("event_kind") == "execution"
+            and d["payload"]["status"] in {"completed", "failed"}
+        ]
+        assert len(executions) == 1
+        assert executions[0]["payload"]["status"] == (
+            "failed" if scenario == "invalid" else "completed"
+        )
+        calls = [d for d in docs if d.get("event_kind") == "provider_usage"]
+        assert len(calls) == (2 if scenario == "retry" else 1)
+        assert sum(Decimal(c["payload"]["cost_amount"]) for c in calls) == Decimal(".000084")
+        assert len({c["payload"]["call_id"] for c in calls}) == len(calls)
+        # Reconcile the actual producer documents with production staging/dbt, not a shadow run.
+        import json
+        import subprocess
+        from datetime import UTC, datetime
+        from pathlib import Path
+
+        import duckdb
+        from touchstone_platform.contracts import EventIdentity, canonical_sha256, validate_event
+        from touchstone_platform.extract import ValidatedDeclaration
+        from touchstone_platform.query import SnapshotReader
+        from touchstone_platform.staging import build_snapshot
+
+        declared = next(d for d in docs if d["schema_version"] == "run-declaration-v1")
+        received = datetime.now(UTC)
+        declaration = ValidatedDeclaration(
+            EventIdentity(
+                *(declared[k] for k in ("tenant_id", "workflow_id", "run_id", "event_id"))
+            ),
+            "trace",
+            "span",
+            received.isoformat(),
+            canonical_sha256(declared),
+            json.dumps(declared),
+        )
+        warehouse = tmp_path / "warehouse.duckdb"
+        build_snapshot(
+            [
+                validate_event(d, received.isoformat())
+                for d in docs
+                if d["schema_version"] == "measurement-v1"
+            ],
+            [declaration],
+            warehouse,
+            through=received,
+        )
+        (tmp_path / "profiles.yml").write_text(
+            f"touchstone:\n  target: local\n  outputs:\n    local:\n"
+            f"      type: duckdb\n      path: {warehouse}\n      schema: main\n      threads: 1\n"
+        )
+        built = subprocess.run(
+            [
+                "dbt",
+                "build",
+                "--project-dir",
+                str(Path(__file__).parents[3] / "platform/dbt"),
+                "--profiles-dir",
+                str(tmp_path),
+                "--target-path",
+                str(tmp_path / "target"),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        assert built.returncode == 0, built.stdout[-5000:] + built.stderr[-2000:]
+        with duckdb.connect(str(warehouse)) as c:
+            assert c.execute("select count(*),sum(cost_amount) from int_calls").fetchone() == (
+                2 if scenario == "retry" else 1,
+                Decimal(".000084"),
+            )
+            assert c.execute(
+                "select completed_tasks,failed_tasks,latency_population,provider_spend,"
+                "online_cost_complete,offline_cost_complete from mart_runs"
+            ).fetchone() == (
+                0 if scenario == "invalid" else 1,
+                1 if scenario == "invalid" else 0,
+                0 if scenario == "invalid" else 1,
+                Decimal(".000084"),
+                True,
+                True,
+            )
+            summary = SnapshotReader(c, {"generation": "review-fixture"}, {}).summary(
+                "reckoner", run["run_id"], tenant_id=run["tenant_id"]
+            )
+            assert summary["cpst"] is None

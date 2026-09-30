@@ -109,7 +109,9 @@ The additional `measurement-v1` event kinds are:
   are explicit, including empty arrays. Each suite has the existing suite/version/check shape
   and exact case IDs. There is one immutable declaration per root. New case populations come
   from this declaration, never from successful results. Missing/conflicting declarations,
-  undeclared suites/checks, or missing declared child executions prevent closure.
+  undeclared suites/checks, or missing declared child executions prevent closure. A root
+  must itself have an unambiguous terminal execution (completed or failed); declarations
+  and closures alone never establish execution or complete cost.
 - `work_closure`: root `task_id`; payload `{cost_scope: "online"|"offline", call_ids: string[],
   work_status: "completed"|"failed", billing_status: "complete"|"uncertain"}`. Each scope has
   its own immutable closure and exact actual call identities. Unknown usage, missing/extra
@@ -147,7 +149,11 @@ optional `note_result`, `reviews`, and `evaluations`. Domain outcomes and metric
 are calculated in Reckoner with the frozen threshold/oracle inputs.
 
 `enqueue_events(repo, events)` validates and inserts exact deterministic OTLP protobuf bytes;
-matching identities are idempotent, changed content conflicts. `collect_run(repo, tenant_id,
+matching identities are idempotent, changed content conflicts. Usage events are deferred
+until an authoritative cost settlement is available: uncertain or unanswered calls stay in
+operational storage and prevent closure, while previously delivered bytes remain immutable.
+Interim exported call counts count settled observations, not all dispatched calls, and cannot
+claim final coverage without closure. `collect_run(repo, tenant_id,
 run_id)` maps late persisted calls/notes/reviews/evaluations. `evaluate_run` requires the
 existing evaluator role and emits only derived outcomes/contributions. `close_scope(repo,
 *, tenant_id, run_id, task_id, scope)` checks terminal work and settled exact calls; admission
@@ -184,7 +190,10 @@ has no decision metric or note-suite expectations. Empty per-root work is declar
 creation. Actual admission/response timestamps produce a scoring execution; there is no
 fabricated routing decision, outcome, or note. All source task protocols must be closed using
 `ProviderBudget.close(protocol_id)` before terminal scoring work and scope closure; unresolved
-billing remains incomplete. Task 13 must finish all intended calls before closing telemetry
+billing remains incomplete. A score-only execution stays started until billing is settled;
+then persisted attempt outcomes determine completed (a valid scoring response) versus failed
+(no valid response). A billed failed score contributes spend but never successful completion
+or successful-latency population. Task 13 must finish all intended calls before closing telemetry
 scopes, keep source IDs for reused results, and close online and offline separately. A
 score-only run can expose complete provider spend while decision outcomes/CPST remain absent.
 

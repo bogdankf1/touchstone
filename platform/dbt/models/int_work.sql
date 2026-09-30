@@ -26,7 +26,9 @@ with declarations as (
 select t.tenant_id, t.workflow_id, t.run_id, t.task_id, t.cost_scope,
     d.document_json as declaration_json,
     (d.versions = 1 and d.conflict = 0) as declared,
-    coalesce(d.versions = 1 and d.conflict = 0 and c.versions = 1 and c.conflict = 0
+    coalesce(t.terminal_status in ('completed','failed') and not t.incomplete
+        and t.first_started_at is not null and t.terminal_at is not null
+        and d.versions = 1 and d.conflict = 0 and c.versions = 1 and c.conflict = 0
         and json_extract_string(c.document_json, '$.payload.billing_status') = 'complete'
         and not exists (
             select 1 from json_each(d.document_json, '$.payload.evaluation_suites') ds

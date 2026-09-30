@@ -168,7 +168,7 @@ def measurement_events(run: dict, task: dict, outcomes: list[dict]) -> list[dict
         },
     )
     for call in task.get("calls", []):
-        if call.get("pending"):
+        if call.get("pending") or call["cost"] is None:
             continue
         scope = cost_scope(call["purpose"])
         amount = call["cost"]
@@ -424,7 +424,10 @@ def scoring_events(run: dict, task: dict) -> list[dict]:
     calls = task.get("calls", [])
     if calls:
         start = min(c["started_at"] for c in calls)
-        terminal = task.get("protocols_closed", False)
+        terminal = task.get("protocols_closed", False) and task.get("scoring_status") in {
+            "completed",
+            "failed",
+        }
         end = max(c["occurred_at"] for c in calls) if terminal else None
         emit(
             "execution",
@@ -433,7 +436,7 @@ def scoring_events(run: dict, task: dict) -> list[dict]:
                 "started_at": start,
                 "ended_at": end,
                 "duration_ms": _duration(start, end) if end else None,
-                "status": "completed" if terminal else "started",
+                "status": task["scoring_status"] if terminal else "started",
                 "attempt_number": 1,
                 "parent_task_id": None,
                 "parent_span_id": None,
@@ -443,7 +446,7 @@ def scoring_events(run: dict, task: dict) -> list[dict]:
             end or start,
         )
     for call in calls:
-        if call.get("pending"):
+        if call.get("pending") or call["cost"] is None:
             continue
         usage = call.get("usage") or {}
         amount = call["cost"]

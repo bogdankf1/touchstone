@@ -110,6 +110,7 @@ def _bundle(repo, tenant_id, run_id, task_id):
                 "occurred_at": (row["received_at"] or row["dispatched_at"]).isoformat(),
                 "started_at": row["dispatched_at"].isoformat(),
                 "pending": row["received_at"] is None,
+                "attempt_status": (row["score"] or {}).get("attempt_status"),
             }
         )
     if decision is None:
@@ -123,8 +124,20 @@ def _bundle(repo, tenant_id, run_id, task_id):
             ).fetchone()["n"]
             == 0
         )
+        result_known = bool(calls) and all(
+            not c["pending"]
+            and c["cost"] is not None
+            and c["attempt_status"] in {"responded", "failed", "uncertain"}
+            for c in calls
+        )
+        status = None
+        if result_known:
+            status = (
+                "completed" if any(c["attempt_status"] == "responded" for c in calls) else "failed"
+            )
         return run, {
             "scoring": True,
+            "scoring_status": status,
             "task_id": task_id,
             "calls": calls,
             "protocols_closed": bool(calls) and closed and not any(c["pending"] for c in calls),
@@ -212,8 +225,8 @@ def close_scope(repo, *, tenant_id: str, run_id: str, task_id: str, scope: str) 
             (tenant_id, run_id, task_id),
         ).fetchone()
         run, task = _bundle(repo, tenant_id, run_id, task_id)
-        if task.get("scoring") and not task["protocols_closed"]:
-            raise ValueError("pending source protocol or response")
+        if task.get("scoring") and (not task["protocols_closed"] or task["scoring_status"] is None):
+            raise ValueError("pending source protocol, response, or billing")
         escalated = not task.get("scoring") and task["decision"]["outcome"] == "escalate"
         if escalated and task["note_result"] is None:
             raise ValueError("pending note work")

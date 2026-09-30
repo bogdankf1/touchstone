@@ -92,6 +92,12 @@ def test_usage_maps_purpose_without_raw_request_or_response():
     assert call["payload"]["cost_amount"] == "0.123456789012"
     assert call["payload"]["call_id"] == "one"
     assert "NEVER-EXPORT" not in json.dumps(events)
+    unsettled = deepcopy(task)
+    unsettled["calls"][0]["cost"] = None
+    assert not any(
+        e["event_kind"] == "provider_usage"
+        for e in telemetry().measurement_events(run, unsettled, [])
+    )
     unknown = deepcopy(task)
     unknown["calls"][0]["purpose"] = "unknown-purpose"
     with pytest.raises(ValueError, match="purpose"):
@@ -156,7 +162,7 @@ def test_otlp_provenance_and_genai_attributes_are_allowlisted():
             "provider": "typesafe",
             "purpose": "final",
             "model": "pinned",
-            "cost": None,
+            "cost": "0.000084",
             "usage": {"input_tokens": -1, "output_tokens": True},
             "price_table_version": "price",
             "occurred_at": "2026-09-30T10:02:00Z",

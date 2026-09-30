@@ -414,3 +414,36 @@ def test_offline_score_only_spend_needs_no_routing_outcome(tmp_path):
             "reckoner", "run-fixture-1", tenant_id="tenant-fixture-a"
         )
         assert row["cpst"] is None
+
+
+@pytest.mark.parametrize("root_state", ["missing", "started", "conflicting", "failed", "completed"])
+def test_scope_closure_requires_unambiguous_terminal_root(tmp_path, root_state):
+    roots = []
+    if root_state != "missing":
+        roots = [
+            event(
+                "execution",
+                "a",
+                status="started"
+                if root_state == "started"
+                else ("failed" if root_state == "failed" else "completed"),
+            )
+        ]
+    if root_state == "conflicting":
+        roots.append(event("execution", "a", status="failed", event_id="other-terminal"))
+    warehouse = build_marts(tmp_path, [*roots, *closures(online=(), offline=())], [lifecycle()])
+    with duckdb.connect(str(warehouse)) as c:
+        expected = root_state in {"failed", "completed"}
+        assert c.execute(
+            "select online_cost_complete,offline_cost_complete from mart_runs"
+        ).fetchone() == (expected, expected)
+    if root_state == "missing":
+        late = tmp_path / "late"
+        late.mkdir()
+        warehouse = build_marts(
+            late, [event("execution", "a"), *closures(online=(), offline=())], [lifecycle()]
+        )
+        with duckdb.connect(str(warehouse)) as c:
+            assert c.execute(
+                "select online_cost_complete,offline_cost_complete from mart_runs"
+            ).fetchone() == (True, True)
