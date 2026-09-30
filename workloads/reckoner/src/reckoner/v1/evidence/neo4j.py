@@ -30,6 +30,12 @@ def import_graph(driver, records, identities, coverage):
         for statement in (CYPHER / "constraints.cypher").read_text().split(";"):
             if statement.strip():
                 session.run(statement).consume()
+        session.run(
+            "UNWIND $identities AS item "
+            "MERGE(m:MerchantIdentity {tenant_id:item.tenant_id,merchant_id:item.merchant_id}) "
+            "ON CREATE SET m.shared_identity=item.identity",
+            identities=identities,
+        ).consume()
         rows = []
         for item in records:
             tx, resolution = item["transaction"], item["resolution"]
@@ -227,11 +233,38 @@ class Neo4jEvidence:
                 )
             coverage = covered["c"]
             merchant = session.run(
-                "MATCH (m:Merchant {tenant_id:$tenant,identity:$merchant}) "
+                "MATCH(m:MerchantIdentity {tenant_id:$tenant,merchant_id:$merchant}) "
                 "RETURN m.shared_identity AS identity",
                 tenant=tx["tenant_id"],
                 merchant=tx["merchant_id"],
             ).single()
+            scope_missing = []
+            if merchant is None:
+                scope_missing.append("shared-merchant scope undeclared")
+            else:
+                scoped = session.run(
+                    "MATCH(m:MerchantIdentity {shared_identity:$identity}) "
+                    "WITH DISTINCT m.tenant_id AS tenant "
+                    "OPTIONAL MATCH(c:EvidenceCoverage {tenant_id:tenant}) "
+                    "RETURN tenant,c.history_from AS start,c.history_until AS end ORDER BY tenant",
+                    identity=merchant["identity"],
+                )
+                for foreign in scoped:
+                    if (
+                        foreign["start"] is None
+                        or instant(str(foreign["start"])) > query - timedelta(days=97)
+                        or instant(str(foreign["end"])) < query
+                    ):
+                        scope_missing.append(
+                            "shared-merchant scope coverage unavailable: " + foreign["tenant"]
+                        )
+            if scope_missing:
+                return document(
+                    tx,
+                    coverage["source_snapshot_id"],
+                    {"status": "partial", "missing": scope_missing},
+                    {},
+                )
             rows = session.run(
                 (CYPHER / "neighbourhood.cypher").read_text(),
                 query_time=tx["occurred_at"],

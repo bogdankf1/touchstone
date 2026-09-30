@@ -211,3 +211,16 @@ exercises actual pgvector top-five search. Task 11 must measure equivalent SQL/C
 work with controlled caches and investigate relational query plans; exploratory
 adapter times do not establish a graph speed advantage. Full operational import,
 all-query coverage and real candidate-vector preparation remain later gates.
+
+Task 3 review adds migration `008_v1_evidence_scope.sql`; applied 007 remains
+unchanged. `v1_shared_merchant_scope` exposes declared tenant scope through a
+runner-only cutoff-adapter helper. Neo4j stores owner-supplied `MerchantIdentity`
+declarations independently of observed history, including declared tenants with
+zero imported events. Both adapters require declared shared-merchant scope and
+coverage through the query with its 97-day lookback. Missing declarations or
+incomplete foreign coverage yield explicit partial evidence; neighbourhood totals
+are omitted and merchant-exposure ratios/indicators are suppressed. Valid own-card
+features and same-tenant cases remain usable. Projection identity validation hashes
+stored receipt contents excluding `projection_id` and query-derived
+`snapshot_age_seconds`; convergence and other body fields cannot drift under an
+existing identity. PostgreSQL-only CI excludes the Neo4j integration marker.

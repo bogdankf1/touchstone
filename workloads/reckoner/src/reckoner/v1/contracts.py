@@ -125,6 +125,13 @@ def validate_v1(kind: str, document: dict) -> dict:
             if cutoff is not None and _time(cutoff) > query_time:
                 raise ValueError("evidence cutoff cannot follow query time")
         if projection := document.get("graph_projection"):
+            projection_body = {
+                k: v
+                for k, v in projection.items()
+                if k not in {"projection_id", "snapshot_age_seconds"}
+            }
+            if projection["projection_id"] != content_id(projection_body):
+                raise ValueError("graph projection identity mismatch")
             if _time(projection["cutoff"]) > query_time:
                 raise ValueError("graph projection cannot follow query time")
             if (

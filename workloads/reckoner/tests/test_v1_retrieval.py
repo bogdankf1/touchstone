@@ -190,3 +190,52 @@ def test_supported_case_population_is_accessible_only_through_cutoff_adapter(pg)
         r["transaction_id"]
         for r in PostgresEvidence(pg.runner_dsn).resolved_cases({"transaction": query})
     } == {"a", "b", "c", "d", "e", "z"}
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("foreign_state", ["missing", "late_start", "early_end", "undeclared"])
+def test_shared_merchant_scope_incomplete_does_not_claim_totals_or_exposure(pg, foreign_state):
+    import psycopg
+
+    query, rows, identities = records()
+    rows = [r for r in rows if r["transaction"]["tenant_id"] == query["tenant_id"]]
+    for i in range(20):
+        tx = {**rows[0]["transaction"], "transaction_id": f"exposure-{i}"}
+        rows.append(
+            {
+                "transaction": tx,
+                "resolution": historical_resolution(
+                    tx, "fraud" if i == 0 else "legitimate", "simulated-seven-days-v1"
+                ),
+            }
+        )
+    cfg = config()
+    import_evidence(
+        pg.owner_dsn, [query], rows, identities, coverage(), cfg["scaler"], include_vectors=False
+    )
+    adapter = PostgresEvidence(pg.runner_dsn)
+    task = {"transaction": query}
+    before = adapter.for_task(task, cfg)
+    assert "merchant-exposure" in {x["indicator_id"] for x in before["risk_indicators"]}
+    with psycopg.connect(pg.owner_dsn) as connection:
+        if foreign_state == "missing":
+            connection.execute(
+                "DELETE FROM reckoner.v1_evidence_coverage WHERE tenant_id='tenant-b'"
+            )
+        elif foreign_state == "late_start":
+            connection.execute(
+                "UPDATE reckoner.v1_evidence_coverage SET history_from="
+                "'2018-05-01Z' WHERE tenant_id='tenant-b'"
+            )
+        elif foreign_state == "early_end":
+            connection.execute(
+                "UPDATE reckoner.v1_evidence_coverage SET history_until="
+                "'2018-06-01T11:00:00Z' WHERE tenant_id='tenant-b'"
+            )
+        else:
+            connection.execute("DELETE FROM reckoner.v1_merchant_identities")
+    result = adapter.for_task(task, cfg)
+    assert any("shared-merchant scope" in x for x in result["coverage"]["missing"])
+    assert "neighbourhood" not in result
+    assert "merchant-exposure" not in {x["indicator_id"] for x in result["risk_indicators"]}
+    assert result["features"]["prior_30d_count"] == before["features"]["prior_30d_count"]

@@ -163,3 +163,40 @@ def test_successful_decision_agrees_with_strict_threshold_boundaries(probability
     identified(decision, "decision_id")
     with pytest.raises(ValueError):
         validate("decision", decision)
+
+
+def test_projection_content_identity_rejects_changed_body_with_valid_evidence_hash():
+    from evidence_fixtures import records
+    from reckoner.contracts import content_id
+    from reckoner.v1.evidence.assemble import document
+    from reckoner.v1.evidence.neo4j import PARAMETERS
+
+    query, _, _ = records()
+    receipt = {
+        "cutoff": "2018-06-01T00:00:00Z",
+        "window_days": 30,
+        "gds_version": "2026.09.0",
+        "algorithm": "louvain-page-rank-v1",
+        "parameters": PARAMETERS,
+        "node_count": 4,
+        "edge_count": 6,
+        "covered_accounts": 1,
+        "covered_cards": 1,
+        "covered_merchants": 2,
+        "build_seconds": 1.0,
+        "page_rank_converged": True,
+        "page_rank_iterations": 3,
+        "community_count": 1,
+        "cross_tenant": True,
+    }
+    receipt["projection_id"] = content_id(receipt)
+    receipt["snapshot_age_seconds"] = "43200.0"
+    valid = document(
+        query, "a" * 64, {"status": "available", "missing": []}, {}, projection=receipt
+    )
+    for key, value in [("page_rank_converged", False), ("node_count", 5)]:
+        changed = deepcopy(valid)
+        changed["graph_projection"][key] = value
+        identified(changed, "evidence_id")
+        with pytest.raises(ValueError, match="projection.*identity"):
+            validate("evidence", changed)

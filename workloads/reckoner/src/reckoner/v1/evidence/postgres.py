@@ -156,24 +156,44 @@ class PostgresEvidence:
                 "previous": previous["document"] if previous else None,
             }
             values = history_features(tx, history)
-            neighbours = connection.execute(
-                "SELECT * FROM reckoner.v1_neighbours(%s,%s)", key
+            scope = connection.execute(
+                "SELECT tenant_id FROM reckoner.v1_shared_merchant_scope(%s,%s)", key
             ).fetchall()
-            display = neighbourhood(
-                [
-                    {"transaction": r["document"], "merchant_identity": r["merchant_identity"]}
-                    for r in neighbours
-                ]
-            )
-            resolved = connection.execute(
-                "SELECT * FROM reckoner.v1_merchant_resolved(%s,%s)", key
-            ).fetchall()
-            merchant = {
-                "status": "available",
-                "resolved_count": len(resolved),
-                "fraud_count": sum(r["document"]["verdict"] == "decline" for r in resolved),
-                "evidence_refs": sorted(r["document"]["resolution_id"] for r in resolved),
-            }
+            if not scope:
+                missing.append("shared-merchant scope undeclared")
+            for tenant in scope:
+                foreign = connection.execute(
+                    "SELECT * FROM reckoner.v1_runtime_coverage WHERE tenant_id=%s",
+                    (tenant["tenant_id"],),
+                ).fetchone()
+                if (
+                    foreign is None
+                    or foreign["history_from"] > query - timedelta(days=97)
+                    or foreign["history_until"] < query
+                ):
+                    missing.append(
+                        "shared-merchant scope coverage unavailable: " + tenant["tenant_id"]
+                    )
+            display, merchant = None, {"status": "unavailable"}
+            if not missing:
+                neighbours = connection.execute(
+                    "SELECT * FROM reckoner.v1_neighbours(%s,%s)", key
+                ).fetchall()
+                display = neighbourhood(
+                    [
+                        {"transaction": r["document"], "merchant_identity": r["merchant_identity"]}
+                        for r in neighbours
+                    ]
+                )
+                resolved = connection.execute(
+                    "SELECT * FROM reckoner.v1_merchant_resolved(%s,%s)", key
+                ).fetchall()
+                merchant = {
+                    "status": "available",
+                    "resolved_count": len(resolved),
+                    "fraud_count": sum(r["document"]["verdict"] == "decline" for r in resolved),
+                    "evidence_refs": sorted(r["document"]["resolution_id"] for r in resolved),
+                }
             vector = feature_vector(tx, history, config["scaler"])
             if config["scaler_id"] != config["scaler"]["scaler_id"]:
                 raise ValueError("pinned scaler mismatch")

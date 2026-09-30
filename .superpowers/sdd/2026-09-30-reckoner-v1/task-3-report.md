@@ -169,3 +169,57 @@ scaler input; Task11 retains full retrieval/performance gates; Task12deploymentg
 Self-review concerns: PageRanknonconvergence, deprecated projection API, communityID
 stability without randomseed, ownership facts limited to boundedimport, no full
 operational/vector coverage claim. Controller independent review follows taskcommit.
+
+## Review fix round 1 (base 818304d)
+
+Fixed the three important findings; no unrelated minor findings expanded.
+Postgres-only CI now selects `integration and not neo4j_integration`; dedicated
+Neo4j job retained. Declared shared-merchant scope comes from identity mappings,
+independent of observed events. Missing declarations, absent foreign coverage,
+late coverage starts or early ends produce explicit partial coverage. Neither
+adapter presents neighbourhood totals for incomplete population; SQL does not
+query or compute complete merchant-exposure counts/ratio/indicator. Valid own-card
+features and same-tenant cases remain available. Neo4j omits projection metadata
+for incomplete shared scope. Receipt body hash validates `projection_id`, excluding
+its own ID and per-query snapshot age. Altered convergence/counts cannot retain ID.
+
+Applied 007 bytes unchanged; additive008 introduces runner-only scope helper.
+Neo4j declarations have composite uniqueness/shared-identity index, are imported
+by the owner separately from history. A verified-empty graph test now supplies an
+explicit unshared merchant declaration, distinguishing emptiness from undeclared
+scope. Future timestamp, unavailable and paired retrieval tests still pass.
+
+Exact focused RED command (same documented UV/local endpoints):
+`uv run --all-packages pytest workloads/reckoner/tests/test_v1_retrieval.py workloads/reckoner/tests/test_v1_graph.py contracts/tests/test_reckoner_v1.py -k 'scope or projection_content_identity' -q`
+=> **9 failed,36 deselected in8.41s**. Four SQL and four graph missing/late-start/
+early-end/undeclared cases reported no missing scope; altered projection body
+raised no error despite regenerated enclosing evidence hash.
+
+Exact focused GREEN command:
+`uv run --all-packages pytest workloads/reckoner/tests/test_v1_retrieval.py workloads/reckoner/tests/test_v1_graph.py contracts/tests/test_reckoner_v1.py -q`
+=> **45 passed in11.81s**. Sequential UUID-isolated graph/fresh-database mutations.
+Scoped Ruff check and format check =>all checks passed/six files formatted.
+
+CI selection RED collect-only: graph module with `-m integration` selected two
+paired tests, despite Postgres-only job lacking Neo4j. GREEN graph module with
+`-m 'integration and not neo4j_integration'`: zero selected/eight deselected
+(expected collect-only exit5); `-m neo4j_integration`: all eight selected. Combined
+retrieval/graph Postgres expression selects only the nine Postgres cases.
+
+Measured store upgrade was metadata only: applied008 to existing task3_benchmark;
+imported124930 authoritative retained Postgres merchant mappings as independent
+Neo4j declarations. No source re-extraction or benchmark rerun. Preserved original
+resource-receipt.json byte SHA256 and contentID; both stored original projection
+hashes validate and retain PageRankfalse. Rows still433596histories/433596resolutions/
+433596graphtransactions,zero source vectors. Seven query scopes match exactly in
+SQL/Neo4j: first six both declared tenants, last tenant-a only; no missing coverage.
+Original completeness status unchanged; original measurement claims not expanded.
+
+Scoped reconciliation preserved at
+`artifacts/phase3/task3/resource-scope-reconciliation.json`, contentID
+`e2372e0d8d2346da8fbaf9e9e984ceb8ba9f961b8951c28c44d68ca265b1665e`.
+Original receipt/samples/failed/resumed logs remain unchanged. Both services stopped
+again preserving all measured volumes/plugin/artifacts and same restart command.
+Migration numbering downstream shifts are controller-owned (provider009/workflow010/
+operational011). Remaining concerns remain original PageRank nonconvergence,
+deprecated projection API and later full operational/retrieval benchmark gates.

@@ -57,7 +57,18 @@ def test_verified_empty_and_unavailable_graph_are_distinct(graph_driver):
     graph = Neo4jEvidence(graph_driver)
     task = {"transaction": query, "query_time": query["occurred_at"]}
     assert graph.for_task(task, config())["coverage"]["status"] == "unavailable"
-    import_graph(graph_driver, [], [], coverage(graph_driver.test_tenants))
+    import_graph(
+        graph_driver,
+        [],
+        [
+            {
+                "tenant_id": query["tenant_id"],
+                "merchant_id": query["merchant_id"],
+                "identity": "empty-only",
+            }
+        ],
+        coverage(graph_driver.test_tenants),
+    )
     result = graph.for_task(task, config())
     assert result["neighbourhood"]["total_transactions"] == 0
     assert result["coverage"]["status"] == "partial"  # no GDS snapshot yet
@@ -116,3 +127,41 @@ def test_import_only_maintains_incoming_shared_merchant_identities(graph_driver)
             tenant=query["tenant_id"],
         ).single()
         assert row["when"] == "2018-05-22T00:00:00Z"
+
+
+@pytest.mark.neo4j_integration
+@pytest.mark.parametrize("foreign_state", ["missing", "late_start", "early_end", "undeclared"])
+def test_graph_shared_scope_is_declared_independently_of_history(graph_driver, foreign_state):
+    query, rows, identities = records(graph_driver.test_tenants)
+    rows = [r for r in rows if r["transaction"]["tenant_id"] == query["tenant_id"]]
+    import_graph(graph_driver, rows, identities, coverage(graph_driver.test_tenants))
+    graph = Neo4jEvidence(graph_driver)
+    task = {"transaction": query}
+    assert "neighbourhood" in graph.for_task(task, config())
+    with graph_driver.session() as session:
+        foreign = graph_driver.test_tenants[1]
+        if foreign_state == "missing":
+            session.run(
+                "MATCH(c:EvidenceCoverage {tenant_id:$tenant}) DELETE c", tenant=foreign
+            ).consume()
+        elif foreign_state == "late_start":
+            session.run(
+                "MATCH(c:EvidenceCoverage {tenant_id:$tenant}) "
+                "SET c.history_from=datetime('2018-05-01T00:00:00Z')",
+                tenant=foreign,
+            ).consume()
+        elif foreign_state == "early_end":
+            session.run(
+                "MATCH(c:EvidenceCoverage {tenant_id:$tenant}) "
+                "SET c.history_until=datetime('2018-06-01T11:00:00Z')",
+                tenant=foreign,
+            ).consume()
+        else:
+            session.run(
+                "MATCH(m:MerchantIdentity) WHERE m.tenant_id IN $tenants DELETE m",
+                tenants=list(graph_driver.test_tenants),
+            ).consume()
+    result = graph.for_task(task, config())
+    assert any("shared-merchant scope" in x for x in result["coverage"]["missing"])
+    assert "neighbourhood" not in result
+    assert "graph_projection" not in result
