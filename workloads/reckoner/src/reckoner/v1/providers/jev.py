@@ -1,6 +1,7 @@
 """One direct HTTP attempt; protected callers own persistence and retries."""
 
 import json
+import math
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation, localcontext
 from email.utils import parsedate_to_datetime
@@ -128,7 +129,8 @@ def retry_hint(value):
     if value is None:
         return None
     try:
-        return max(0.0, float(value))
+        seconds = float(value)
+        return max(0.0, seconds) if math.isfinite(seconds) else None
     except ValueError:
         try:
             return max(0.0, (parsedate_to_datetime(value) - datetime.now(UTC)).total_seconds())

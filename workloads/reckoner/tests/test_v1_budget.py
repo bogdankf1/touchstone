@@ -527,3 +527,91 @@ def test_expired_circuit_allows_one_probe_and_rate_deadline_is_persisted(pg):
             p,
         )
         assert skip is None and 0 < wait <= 0.5
+
+
+@pytest.mark.parametrize("result", ["timeout", "invalid", 401, 422, 500, "success"])
+def test_only_successful_half_open_probe_closes_persisted_circuit(pg, result):
+    from datetime import UTC, datetime
+
+    repo, task, evidence, p, attempts, jev = scoring(pg)
+    with repo:
+        repo._connection.execute(
+            "INSERT INTO reckoner.v1_provider_state "
+            "(provider,consecutive_failures,open_until) "
+            "VALUES ('typesafe',5,now()-interval '1 second')"
+        )
+
+        def handle(_):
+            if result == "timeout":
+                raise httpx.ReadTimeout("fabricated")
+            if result == "invalid":
+                return httpx.Response(200, text="<html>fabricated</html>")
+            if result == "success":
+                return httpx.Response(200, json=response())
+            return httpx.Response(result, text="fabricated")
+
+        score = attempts.score_task(
+            repo,
+            jev.JevClient("fabricated-only", transport=httpx.MockTransport(handle)),
+            task,
+            evidence,
+            p,
+        )
+        state = repo._connection.execute("SELECT * FROM reckoner.v1_provider_state").fetchone()
+        assert state["active_call"] is None
+        assert (
+            repo._connection.execute(
+                "SELECT count(*) AS n FROM reckoner.v1_provider_responses"
+            ).fetchone()["n"]
+            == 1
+        )
+        if result == "success":
+            assert score["attempt_status"] == "responded"
+            assert state["consecutive_failures"] == 0 and state["open_until"] is None
+        else:
+            assert score["attempt_status"] == ("uncertain" if result == "timeout" else "failed")
+            assert state["consecutive_failures"] >= 5
+            assert (state["open_until"] - datetime.now(UTC)).total_seconds() > 59
+
+
+@pytest.mark.parametrize("hint,expected_calls", [("Infinity", 3), ("1e300", 1)])
+def test_excessive_retry_after_persists_response_settlement_and_releases_dispatch(
+    pg, monkeypatch, hint, expected_calls
+):
+    import math
+
+    repo, task, evidence, p, attempts, jev = scoring(pg)
+    count = []
+
+    def sleep(delay):
+        assert math.isfinite(delay) and delay <= 60
+
+    monkeypatch.setattr(attempts.time, "sleep", sleep)
+
+    def handle(_):
+        count.append(1)
+        return httpx.Response(429, text="protected fabricated error", headers={"Retry-After": hint})
+
+    with repo:
+        client = jev.JevClient("fabricated-only", transport=httpx.MockTransport(handle))
+        score = attempts.score_task(repo, client, task, evidence, p)
+        assert score["attempt_status"] == "failed"
+        assert len(count) == expected_calls
+        state = repo._connection.execute("SELECT * FROM reckoner.v1_provider_state").fetchone()
+        assert state["active_call"] is None
+        rows = repo._connection.execute(
+            "SELECT r.body,s.status,s.cost FROM reckoner.v1_provider_responses r "
+            "JOIN reckoner.v1_settlements s USING(tenant_id,call_id)"
+        ).fetchall()
+        assert len(rows) == expected_calls
+        assert all(
+            row["body"] == "protected fabricated error"
+            and row["status"] == "uncertain"
+            and row["cost"] is None
+            for row in rows
+        )
+        if hint == "1e300":
+            assert state["next_dispatch_at"].year == 9999
+            skipped = attempts.score_task(repo, client, task, evidence, p)
+            assert skipped["scorer_status"] == "unavailable"
+            assert len(count) == 1

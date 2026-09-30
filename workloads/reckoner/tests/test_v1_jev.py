@@ -204,3 +204,18 @@ def test_http_decimal_precision_does_not_round_outside_tolerance_into_a_score():
     )
     with pytest.raises(module.JevError):
         module.validate_response(client.evaluate({}))
+
+
+@pytest.mark.parametrize("hint", ["Infinity", "-Infinity", "NaN", "1e999"])
+def test_nonfinite_retry_after_is_invalid_not_an_infinite_delay(hint):
+    module = provider()
+    client = module.JevClient(
+        "fabricated-only",
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(429, text="fabricated", headers={"Retry-After": hint})
+        ),
+    )
+    with pytest.raises(module.JevError) as error:
+        client.evaluate({})
+    assert error.value.category == "transient"
+    assert error.value.retry_after is None

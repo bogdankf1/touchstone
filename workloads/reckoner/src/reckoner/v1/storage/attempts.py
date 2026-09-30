@@ -127,11 +127,22 @@ def _finish(repo, ledger, call, score, category, body, usage, cost, retry_after)
             (call["provider"],),
         ).fetchone()
         if state and state["active_call"] == call["call_id"]:
-            failures = (
-                state["consecutive_failures"] + 1 if category in {"transient", "connect"} else 0
-            )
-            opened = datetime.now(UTC) + timedelta(seconds=60) if failures >= 5 else None
-            deferred = datetime.now(UTC) + timedelta(seconds=retry_after or 0)
+            transient = category in {"transient", "connect"}
+            if category == "responded":
+                failures = 0
+            elif state["open_until"] is not None:
+                # A half-open probe establishes recovery only on a valid response.
+                failures = max(5, state["consecutive_failures"] + int(transient))
+            else:
+                failures = state["consecutive_failures"] + 1 if transient else 0
+            now = datetime.now(UTC)
+            opened = now + timedelta(seconds=60) if failures >= 5 else None
+            try:
+                deferred = now + timedelta(seconds=retry_after or 0)
+            except OverflowError:
+                # Preserve excessive finite waits as deferrals without losing the
+                # response/settlement or leaving the dispatch lease active.
+                deferred = datetime.max.replace(tzinfo=UTC)
             repo._connection.execute(
                 "UPDATE reckoner.v1_provider_state SET active_call=NULL,"
                 "consecutive_failures=%s,open_until=%s,"
