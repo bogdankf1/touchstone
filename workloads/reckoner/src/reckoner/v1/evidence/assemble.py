@@ -57,7 +57,12 @@ def neighbourhood(rows):
         "cross_tenant": len({r["transaction"]["tenant_id"] for r in rows}) > 1,
         "nodes": display_nodes,
         "edges": display_edges,
-        "transaction_refs": sorted(r["transaction"]["transaction_id"] for r in rows),
+        "transaction_refs": sorted(
+            content_id(
+                [r["transaction"]["tenant_id"], "transaction", r["transaction"]["transaction_id"]]
+            )
+            for r in rows
+        ),
     }
 
 

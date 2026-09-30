@@ -142,7 +142,7 @@ def test_semantic_inconsistencies_fail_even_with_valid_hashes():
 
 def test_long_decimal_distribution_is_not_rounded_into_a_valid_sum():
     with pytest.raises(ValueError):
-        validate("score", score_fixture(fraud="0.2", legitimate="0.80000000000000000000000000001"))
+        validate("score", score_fixture(fraud="0.2", legitimate="0.80000100000000000000000000001"))
 
 
 @pytest.mark.parametrize(

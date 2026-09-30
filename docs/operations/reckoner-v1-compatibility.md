@@ -9,8 +9,8 @@ measured artifacts retain their original meaning.
 filenames are `reckoner-{kind}-v1.schema.json`. Validation returns a detached
 JSON document, rejects unknown fields and naive timestamps, and checks identities
 and cross-field consistency. Probability and money values are decimal strings;
-probabilities must be finite and within [0,1], and binary distributions sum exactly
-to one. Configuration, evidence, decision, note, resolution, and experiment IDs
+probabilities must be finite and within [0,1], and binary distributions sum to one within 1e-6. Raw probabilities are preserved;
+the validator does not normalize them. Configuration, evidence, decision, note, resolution, and experiment IDs
 are SHA-256 hashes computed with the existing canonical `content_id` function,
 excluding their own identity field. Call/action/task/run/case IDs are opaque data.
 
@@ -224,3 +224,79 @@ features and same-tenant cases remain usable. Projection identity validation has
 stored receipt contents excluding `projection_id` and query-derived
 `snapshot_age_seconds`; convergence and other body fields cannot drift under an
 existing identity. PostgreSQL-only CI excludes the Neo4j integration marker.
+
+## Jev attempts and provider accounting (Task 4)
+
+Migration 009 adds protected operational `v1_protocols`, `v1_protocol_closures`,
+`v1_provider_calls`, `v1_provider_responses`, `v1_settlements`, provider-wide
+`v1_provider_state` and `v1_legacy_provenance`. Call/protocol/response/settlement
+joins use tenant-qualified foreign keys. Immutable records permit append only;
+API roles cannot read provider bodies or accounting tables. Provider-wide state
+uses the explicit `_provider-wide` operational tenant marker.
+
+`JevClient(api_key, transport=None).evaluate(request)` makes one HTTP attempt,
+with 5-second connect and 30-second response timeouts and disabled transport
+retries. It requires explicitly supplied `JEV_API_KEY`; it does not read an SDK
+default variable. JSON fractional numbers retain exact decimal text, and
+nonfinite JSON is rejected while retaining the protected body. Bearer headers
+never enter persisted request documents or public errors. No account call or
+paid inference was executed in Task 4; all provider tests use fabricated transport.
+
+`build_request(transaction, evidence)` projects canonical fields and validates a
+strict evidence record before serialization. Provider inputs include a simulated-data
+marker, evidence coverage, cutoffs, deterministic risk indicators, comparables
+and graph convergence limitations. They exclude oracle/source fields and personal
+payment attributes. Neighbourhood transaction references now use the same stable
+`content_id([tenant_id, "transaction", transaction_id])` as transaction display
+nodes, preserving opaque identities across tenants without delimiter ambiguity.
+
+`score_task(repo, client, task, evidence, protocol)` returns a strict score record.
+A provider skip instead returns `{scorer_status: "unavailable", degraded_reason:
+"..."}` with no invented call or probability. `BudgetExceeded` propagates and
+leaves unexecuted tasks incomplete. Task 5 applies calibration to raw scores;
+Task 6 must persist response/accounting before advancing its workflow checkpoint.
+Responses are keyed by immutable call identity: completed responses are reused;
+missing responses after reservation become uncertain and cannot auto-retry.
+Transient/connect responses can resume only within the same pinned request,
+protocol and maximum three attempts. Unknown usage retains the attempt maximum.
+Rate deadlines and Retry-After deferral survive restart. Five consecutive
+transient/connect failures open a 60-second circuit; one persisted active call
+provides sequential dispatch and the single half-open probe. Retry backoff is
+1/2 seconds with deterministic request-seeded jitter; hints over 60 seconds defer.
+
+`ProviderBudget(connection).reserve(call, Decimal(maximum), protocol)` creates a
+provider-wide envelope once and allocates individual attempt maxima within it.
+The envelope and allocations are one accounting hierarchy. Open envelopes retain
+their cap; `close(protocol_id)` releases only unused capacity while preserving
+settled costs and unresolved maxima. `settle(call_id, usage, cost)` appends an
+immutable uncertain or settled event, permits uncertain-to-known reconciliation,
+and rejects conflicting repeated known settlements. Cost/token overages block
+further dispatch for that provider. Jev and Anthropic totals remain independent.
+
+The original legacy ledger must exist in the measurement database. Owner-only
+`verify_legacy()` checks 1,040 actual settled ledger entries totaling USD .493151
+and records tenant-tagged content-hash provenance under advisory lock 732019102.
+It does not create entries or subtract a hardcoded balance. New Anthropic
+reservations and the scoring CLI require matching provenance; an empty database
+fails the gate. All existing legacy liability is read exactly once under the same
+lock. During Phase 3 measurement, stop legacy dispatch operationally; the v0
+Anthropic request implementation and budget enforcement were left unchanged.
+
+`reckoner v1 score --manifest PATH --protocol PATH --env-file PATH` requires an
+already registered immutable experiment, prepared evidence, and a runner-only
+file containing `RECKONER_RUNNER_DSN` and `JEV_API_KEY` (or `--env-file -` for explicit
+environment loading). The protocol is an immutable content-hashed document:
+`tenant_id`, `run_id`, `provider`, `purpose`, `model`, `input_token_ceiling`,
+`max_output_tokens`, `maximum_attempts`, decimal `usd_cap`, `approved: true`,
+`tasks: [{task_id, transaction_id, request_sha256}]`, and `protocol_id`. Cases
+must match the manifest exactly; each hash selects one prepared evidence/request.
+All cases, configuration/model/question/pricing and bounds are checked before
+any dispatch. This artifact represents separately obtained concrete paid-run
+approval; approving the implementation does not authorize producing or executing
+one. CLI returns task statuses without protected bodies or secrets.
+
+Input bounds use the complete request's UTF-8 byte count as a conservative local
+text-token bound, avoiding an invented provider tokenizer. Output usage is checked
+after response; the documented Jev endpoint exposes no output-limit parameter.
+Actual provider usage, account access, billing credits, original-ledger restoration
+and the measured paid-run gates remain unexecuted owner dependencies.

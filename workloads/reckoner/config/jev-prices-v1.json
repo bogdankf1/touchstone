@@ -1,0 +1,10 @@
+{
+  "schema_version": "price-table-v1",
+  "model": "jev-1.13.0",
+  "currency": "USD",
+  "input_per_million": "0.042",
+  "output_per_million": "0",
+  "retrieved_at": "2026-09-30T00:00:00Z",
+  "source_url": "https://docs.typesafe.ai/models",
+  "price_table_version": "1c4fb24e0df14061bf8b1d90eab2db3102a753d352e89eca92be660f0a97a88c"
+}

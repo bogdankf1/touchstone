@@ -76,8 +76,10 @@ def validate_v1(kind: str, document: dict) -> dict:
             raise ValueError("failed score cannot report probabilities")
         if distribution is not None:
             with localcontext() as context:
-                context.prec = max(len(value) for value in distribution.values()) + 1
-                if Decimal(distribution["fraud"]) + Decimal(distribution["legitimate"]) != 1:
+                context.prec = max(len(value) for value in distribution.values()) + 10
+                if abs(
+                    Decimal(distribution["fraud"]) + Decimal(distribution["legitimate"]) - 1
+                ) > Decimal("0.000001"):
                     raise ValueError("binary probabilities must sum to one")
             if Decimal(document["raw_probability"]) != Decimal(distribution["fraud"]):
                 raise ValueError("raw probability must match fraud choice")
