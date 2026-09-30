@@ -20,9 +20,17 @@ def register(commands):
     scorer.add_argument("--manifest", type=Path, required=True)
     scorer.add_argument("--protocol", type=Path, required=True)
     scorer.add_argument("--env-file", type=Path, required=True)
+    calibration = subcommands.add_parser("calibrate")
+    calibration.add_argument("--development", type=Path, required=True)
+    calibration.add_argument("--validation", type=Path, required=True)
+    calibration.add_argument("--output", type=Path, required=True)
 
 
 def execute(args):
+    if args.v1_command == "calibrate":
+        from reckoner.v1.calibration import write_calibration_report
+
+        return write_calibration_report(args.development, args.validation, args.output)
     if args.v1_command == "score":
         return _score(args)
     if args.v1_command == "prepare":

@@ -143,3 +143,112 @@ retries compare existing canonical/resolution documents and reject conflicts.
 The graph task must build its own frozen, bounded projection from these complete
 source-backed histories and report graph coverage. This preparation does not claim
 that a graph or a GDS projection has already been built.
+
+## Offline calibration diagnostics (Task 5)
+
+```sh
+uv run --frozen --all-packages reckoner v1 calibrate \
+  --development /path/to/development-predictions.json \
+  --validation /path/to/validation-predictions.json \
+  --output /path/to/new/calibration-report
+```
+
+This command accepts evaluator-only JSON lists. It reads no environment file,
+provider key, archive, or database. A privileged evaluator must first join successful
+strict scorer records to the frozen sample and oracle on tenant and transaction
+identity. Copy the scorer's exact `raw_probability` decimal text into `probability`;
+verify requested/reported model and question against the pinned configuration.
+Failed, uncertain, or missing scores cannot become successful calibration rows.
+Completeness is enforced by matching observed class counts to frozen `n_h`; do not
+silently drop unsuccessful sample members. The 20 new pilot members are already
+within the 2,000 development members and must not be excluded again.
+
+Each observation contains:
+
+```json
+{
+  "tenant_id": "synthetic-tenant-a",
+  "user_id": "canonical-user-id",
+  "case_id": "canonical-transaction-id",
+  "probability": "0.2",
+  "label": 0,
+  "weight": "837.1972222222222222222222222",
+  "purpose": "development",
+  "year": 2017,
+  "stratum": {"year": 2017, "N_h": 1506955, "n_h": 1800},
+  "context": {
+    "scorer": {
+      "provider": "typesafe",
+      "model": "jev-1.13.0",
+      "question_version": "<frozen-question-version>"
+    },
+    "feature_version": "features-v1",
+    "scaler_id": "<frozen-64-character-scaler-id>",
+    "graph_version": "<pinned-graph-version>",
+    "retrieval_version": "<pinned-retrieval-version>",
+    "evidence_mode": "<explicit-pinned-evidence-arm>",
+    "data_kind": "simulated-cctd"
+  }
+}
+```
+
+`label` is an evaluator-only integer (0 legitimate, 1 fraud). Stratum counts are
+sample-wide class counts, not tenant counts; use the frozen year-specific counts
+above and the preparation manifest's exact Decimal `N_h/n_h` text. Development
+requires 2017 and validation requires 2018; missing counts, reused year provenance,
+wrong weights, incomplete class samples, duplicate tenant/case identities, mixed
+contexts, and overlapping development/validation cases are rejected. These checks
+validate the supplied export; the exporter remains responsible for its source,
+cohort, resolution cutoff, and exact scorer-record joins. Direct metric diagnostics
+can operate on partial or empty rows, explicitly reporting availability.
+
+The fit uses NumPy 2.5.3 and SciPy 1.18.1 on Python 3.12. The sole candidate is
+`sigmoid(a * logit(clipped_p) + b)` with `a >= 0`, clip `[1e-6, 1-1e-6]`, initial
+`(1,0)`, SciPy L-BFGS-B, analytic gradient, maximum 1,000 iterations, and weighted
+mean log loss plus `.001 * ((a-1)^2 + b^2)`. Optimizer/library versions and actual
+convergence are recorded. One-class development and failed/nonfinite optimization
+remain unavailable for candidate application. Fitting reads development rows only.
+Validation selects the candidate only if Brier strictly improves and log loss does
+not increase. Raw scores otherwise remain exact; clipping applies only inside the
+candidate map and log-loss calculation. Bucket assignment compares decimal inputs
+to the exact specified edges, including the final endpoint 1.
+
+The new output directory contains `report.json`, readable `report.md`, standalone
+`reliability.svg` (Matplotlib 3.11.2 headless SVG backend), `candidate.json`, and `selected-artifact.json` (JSON null when raw
+is retained). Candidate/report/selected artifact identities use `content_id` over
+their complete bodies excluding their identity fields. Selection gives the frozen
+candidate a new calibration identity containing its validation qualification;
+use this selected identity in runtime configuration, rather than the candidate ID.
+No existing output is overwritten. Reports distinguish raw and candidate metrics
+for development/validation, overall and per tenant, including weighted Brier,
+log loss, ECE, bucket counts, weighted rates, effective sample sizes and intervals.
+Eligible 2017/2018 prevalence and its difference remain visible alongside sparse
+warnings regardless of numerical selection.
+
+Bootstrap draws whole `(tenant_id,user_id)` clusters with replacement 1,000 times,
+seed `20260930`; intervals use 2.5/97.5 percentiles. Empty and one-class replicates
+are counted and excluded from interval estimates. Fewer than two user clusters, or
+zero estimable replicates, leaves bounds unavailable. Nonempty one-class populations
+still have descriptive metrics; they do not acquire inferential confidence. Bucket
+intervals likewise require two classes within the resampled bucket. Sparse marks
+fewer than 30 cases or fewer than five of either class, a visible diagnostic heuristic
+rather than a success gate. Small metric changes do not prove meaningful improvement;
+weights do not repair entity-selection bias or establish real-payment calibration.
+
+Runtime must call `validate_calibration_context(artifact, context)` before
+`apply_calibration(raw_probability, artifact)`. Supply the independently pinned run
+configuration's `scorer`, `feature_version`, `scaler_id`, `graph_version`, and
+`retrieval_version`, plus explicit pinned `evidence_mode` and `data_kind`. The
+validator requires a converged, content-hashed, validation-selected artifact with
+valid numeric selection evidence and matching context. It does not derive the
+requested context from the artifact or hardcode one model. Task 6 owns pinning the
+explicit evidence mode in its runtime policy; it is not inferred from a graph
+version. Pure numeric application separately accepts a converged candidate for
+report evaluation; that does not qualify it for runtime. With no artifact,
+`apply_calibration` returns the original Decimal unchanged, including 0 and 1.
+
+Current Task 5 checks use **fabricated** labeled prediction fixtures only, with
+`data_kind: fabricated`. They prove offline software behavior and cannot qualify a
+run requesting `simulated-cctd`. No real Jev prediction export or calibration
+acceptance has been produced; those remain bounded, separately approved paid-run
+gates before the final 2019 experiment.

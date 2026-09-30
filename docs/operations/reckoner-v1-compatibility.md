@@ -300,3 +300,25 @@ text-token bound, avoiding an invented provider tokenizer. Output usage is check
 after response; the documented Jev endpoint exposes no output-limit parameter.
 Actual provider usage, account access, billing credits, original-ledger restoration
 and the measured paid-run gates remain unexecuted owner dependencies.
+
+## Verified numeric calibration dependencies (Task 5)
+
+The workspace now declares exact `numpy==2.5.3`, `scipy==1.18.1`, and
+`matplotlib==3.11.2` runtime pins
+in Reckoner and records both in `uv.lock`. `uv lock` resolved 190 packages, adding
+only these two numeric packages. Adding the standard scientific plotting library
+then resolved 197 packages, adding Matplotlib and six required dependencies
+(contourpy 1.4.0, cycler 0.12.1, fonttools 4.66.1, kiwisolver 1.5.1, Pillow 12.3.0,
+pyparsing 3.3.3); `uv sync --frozen --all-packages` installed their
+macOS arm64 wheels with CPython 3.12.13 and uv 0.11.32. Existing HTTPX 0.28.1,
+Pydantic 2.13.5 and OTel 1.37.0 remain resolved. Actual SciPy constrained optimization,
+NumPy weighted calculations, seeded cluster bootstrap, Matplotlib headless SVG
+publication and CLI execution passed on
+this joint environment. These pins replace the earlier prospective calibration
+metadata evidence; other tasks' prospective pins remain deferred.
+
+Calibration artifacts are standalone, evaluator-produced JSON using the existing
+`content_id` convention, not a new kind accepted by `validate_v1`. The strict run
+configuration still records only the selected `calibration_id` and `score_mode`.
+The separate explicit context validator and artifact/export formats are documented
+in [Phase 3 experiments](../data/phase-3-experiments.md#offline-calibration-diagnostics-task-5).
