@@ -141,3 +141,73 @@ check validated each schema through `validate_v1` from a separate installation
 outside the checkout and verified migration 005 is packaged. `neo4j_integration`
 is registered now and excluded from offline CI; GDS integration infrastructure
 belongs to its later task.
+
+## Temporal graph and vector evidence (Task 3)
+
+Migration 007 requires Postgres 17 with pgvector 0.8.6. Compose, Kubernetes and CI
+now pin `pgvector/pgvector:0.8.6-pg17-bookworm` at index digest
+`sha256:cf134a767f474095eeba57e0117be8e568e011a63f33fbf252f14c9b760f8e6f`.
+Its inspected arm64 manifest is
+`sha256:de5bb95ded567f98e342a29f188f8053b2e8d344cb9ccd52cbdfe15f720cfde7`.
+No service credentials, preserved volumes, Postgres major or existing resource
+settings changed. This is a prerequisite for Task 12, not a deployment receipt.
+
+The dedicated Task 3 recipe pins Neo4j Community 2026.09.0 at index digest
+`sha256:91fb0bf237c41b7b3dcbe84703aa0b82e0d7d067b16e1c8ab21f03fc679edf4e`
+(arm64 manifest `sha256:93a04808534ace5c812eeb77cc08df1f01607b970fd270263f7ccaf4940666be`).
+GDS 2026.09.0 JAR SHA-256 is
+`74e7026ed7bad144c67473a0e4d47276907b781ee5e283ecab11245498ad2a8e`;
+`infra/prepare-reckoner-v1-test.sh` checks these bytes. Its bundled license is
+GPLv3; community runtime reports `gds.isLicensed() = false`. Actual projection,
+Louvain and PageRank calls passed on this pair with `neo4j==6.0.3`.
+[Official installation](https://neo4j.com/docs/graph-data-science/current/installation/installation-docker/),
+[version compatibility](https://neo4j.com/docs/graph-data-science/current/installation/supported-neo4j-versions/)
+and [GDS license](https://github.com/neo4j/graph-data-science/blob/master/LICENSE.txt)
+provide the upstream references. The pinned legacy `gds.graph.project.cypher`
+procedure works and emits a deprecation notice; upgrade work must migrate it.
+
+`fit_scaler(development)` accepts weighted `{purpose: "development", weight,
+transaction, history}` observations from 2017 only. Numeric coordinates use
+weighted inverse-CDF median/IQR and missing coordinates independently; unavailable
+history retains the known amount coordinate. The frozen development scaler uses
+all 2,000 members (200 fraud / 1,800 legitimate); the pilot is a subset, not an
+exclusion. Runtime `feature_vector` requires available history and verifies the
+scaler content hash. Candidate history must precede the candidate timestamp.
+
+Task documents passed to adapters are `{transaction: <canonical transaction>,
+query_time: <same occurrence instant>}`; `query_time` may be omitted. The private
+runtime adapter input is `{...<validated persisted run-config>, scaler:
+<detached scaler JSON>}`. Persist only the strict run-config containing `scaler_id`;
+load and hash-check the detached artifact before calling the adapter. Task 3's
+artifact is `artifacts/phase3/task3/resource-scaler.json`, scaler identity
+`a5fd8dbaa782b6c5cf66e947f6ba13faca07dea5be2fefc231da939949e10dbb`, file SHA-256
+`8bf9170296d8f34c6d8d747847e9027fd3fade78dd5853b4a46dfff59dcf863a`.
+
+Evidence adds optional strict `neighbourhood` and `graph_projection` fields.
+The display is bounded to 100 nodes/200 edges, with complete transaction references,
+totals and truthful truncation. Projection metadata records actual cutoff, identity,
+age, algorithm/version/parameters, coverage counts and PageRank convergence.
+Unavailable history/projection/vector population is distinct from verified empty
+results. Later snapshots are never used for an earlier query. GDS communities and
+centrality do not themselves create risk factors. Louvain uses default resolution;
+its selected procedure has no random seed input (recorded `seed_supported: false`).
+[Algorithm reference](https://neo4j.com/docs/graph-data-science/current/algorithms/louvain/).
+PageRank retains damping .85, maximum 20 iterations, tolerance 1e-7 and concurrency
+one; nonconvergence remains in stored and returned evidence.
+[PageRank reference](https://neo4j.com/docs/graph-data-science/current/algorithms/page-rank/).
+
+Exact pgvector L2 search ranks five cases, ties by transaction ID; reported
+similarity is `1/(1+L2)`. SQL and Cypher candidate eligibility is same tenant,
+positive supported purchase, occurrence strictly earlier than query, resolution
+strictly earlier than query and at least query minus 90 days. All historical
+records/resolutions remain retained, including nonpositive events; excluded
+candidate counts appear as `excluded_unsupported_comparables`. Runner roles receive
+cutoff functions/coverage view, not direct histories, vectors or oracle access.
+
+The bounded simulated-source receipt proves one June 1 projection and seven frozen
+queries, not full operational import or complete real vector retrieval. Real vectors
+were deliberately omitted and their coverage is unavailable; fabricated integration
+exercises actual pgvector top-five search. Task 11 must measure equivalent SQL/Cypher
+work with controlled caches and investigate relational query plans; exploratory
+adapter times do not establish a graph speed advantage. Full operational import,
+all-query coverage and real candidate-vector preparation remain later gates.

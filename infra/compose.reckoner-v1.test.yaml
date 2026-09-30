@@ -1,0 +1,35 @@
+name: touchstone-phase3-task3
+services:
+  postgres:
+    image: pgvector/pgvector:0.8.6-pg17-bookworm@sha256:cf134a767f474095eeba57e0117be8e568e011a63f33fbf252f14c9b760f8e6f
+    environment:
+      POSTGRES_PASSWORD: reckoner-test-only
+    ports: ["127.0.0.1:55433:5432"]
+    mem_limit: 2g
+    volumes: ["task3-postgres:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 60
+  neo4j:
+    image: neo4j:2026.09.0@sha256:91fb0bf237c41b7b3dcbe84703aa0b82e0d7d067b16e1c8ab21f03fc679edf4e
+    environment:
+      NEO4J_AUTH: neo4j/reckoner-test-only
+      NEO4J_server_memory_heap_initial__size: 512m
+      NEO4J_server_memory_heap_max__size: 2g
+      NEO4J_server_memory_pagecache_size: 512m
+      NEO4J_dbms_security_procedures_unrestricted: gds.*
+    ports: ["127.0.0.1:57687:7687"]
+    mem_limit: 4g
+    volumes:
+      - task3-neo4j:/data
+      - ../artifacts/phase3/task3/plugins:/plugins:ro
+    healthcheck:
+      test: ["CMD", "cypher-shell", "-u", "neo4j", "-p", "reckoner-test-only", "RETURN gds.version()"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+volumes:
+  task3-postgres:
+  task3-neo4j:

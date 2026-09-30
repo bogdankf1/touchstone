@@ -17,6 +17,7 @@ from test_cohort import write_source
 
 ROOT = Path(__file__).resolve().parents[3]
 CONFIG_DIR = ROOT / "workloads/reckoner/config"
+pytest_plugins = ["evidence_fixtures"]
 
 
 @dataclass(frozen=True)

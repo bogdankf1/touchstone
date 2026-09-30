@@ -229,6 +229,270 @@
         }
       },
       "minItems": 0
+    },
+    "neighbourhood": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "window_days",
+        "total_nodes",
+        "total_edges",
+        "total_transactions",
+        "truncated",
+        "cross_tenant",
+        "nodes",
+        "edges",
+        "transaction_refs"
+      ],
+      "properties": {
+        "window_days": {
+          "const": 30
+        },
+        "total_nodes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "total_edges": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "total_transactions": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "cross_tenant": {
+          "type": "boolean"
+        },
+        "nodes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "tenant_id",
+              "kind",
+              "identity"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "tenant_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "kind": {
+                "enum": [
+                  "account",
+                  "card",
+                  "merchant",
+                  "transaction"
+                ]
+              },
+              "identity": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "maxItems": 100
+        },
+        "edges": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "source",
+              "target",
+              "kind"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "source": {
+                "type": "string",
+                "minLength": 1
+              },
+              "target": {
+                "type": "string",
+                "minLength": 1
+              },
+              "kind": {
+                "enum": [
+                  "owns",
+                  "used",
+                  "paid",
+                  "shared_identity"
+                ]
+              }
+            }
+          },
+          "maxItems": 200
+        },
+        "transaction_refs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "graph_projection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "projection_id",
+        "cutoff",
+        "window_days",
+        "gds_version",
+        "algorithm",
+        "parameters",
+        "node_count",
+        "edge_count",
+        "covered_accounts",
+        "covered_cards",
+        "covered_merchants",
+        "build_seconds",
+        "page_rank_converged",
+        "page_rank_iterations",
+        "community_count",
+        "snapshot_age_seconds",
+        "cross_tenant"
+      ],
+      "properties": {
+        "projection_id": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "cutoff": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "window_days": {
+          "const": 30
+        },
+        "gds_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "algorithm": {
+          "const": "louvain-page-rank-v1"
+        },
+        "parameters": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "concurrency",
+            "louvain",
+            "page_rank"
+          ],
+          "properties": {
+            "concurrency": {
+              "const": 1
+            },
+            "louvain": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "maxLevels",
+                "maxIterations",
+                "tolerance",
+                "includeIntermediateCommunities",
+                "seed_supported"
+              ],
+              "properties": {
+                "maxLevels": {
+                  "const": 10
+                },
+                "maxIterations": {
+                  "const": 10
+                },
+                "tolerance": {
+                  "const": 0.0001
+                },
+                "includeIntermediateCommunities": {
+                  "const": false
+                },
+                "seed_supported": {
+                  "const": false
+                }
+              }
+            },
+            "page_rank": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "dampingFactor",
+                "maxIterations",
+                "tolerance"
+              ],
+              "properties": {
+                "dampingFactor": {
+                  "const": 0.85
+                },
+                "maxIterations": {
+                  "const": 20
+                },
+                "tolerance": {
+                  "const": 1e-07
+                }
+              }
+            }
+          }
+        },
+        "node_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "edge_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "covered_accounts": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "covered_cards": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "covered_merchants": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "build_seconds": {
+          "type": "number"
+        },
+        "page_rank_converged": {
+          "type": "boolean"
+        },
+        "page_rank_iterations": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "community_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "snapshot_age_seconds": {
+          "type": "string",
+          "pattern": "^[0-9]+(?:\\.[0-9]+)?$"
+        },
+        "cross_tenant": {
+          "type": "boolean"
+        }
+      }
     }
   }
 }

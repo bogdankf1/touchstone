@@ -19,6 +19,11 @@ def instant(value: str) -> datetime:
     return parsed.astimezone(UTC)
 
 
+def _instant_us(value: str) -> int:
+    delta = instant(value) - datetime(1970, 1, 1, tzinfo=UTC)
+    return (delta.days * 86400 + delta.seconds) * 1000000 + delta.microseconds
+
+
 def eligible_before(occurred_at: str, available_at: str, query_at: str) -> bool:
     query = instant(query_at)
     return instant(occurred_at) < query and instant(available_at) < query
@@ -92,23 +97,28 @@ class SourceHistory:
         return adapted["transaction"]
 
     def card_before(self, tenant_id: str, card_id: str, query_at: str, since: str | None = None):
-        cutoff = instant(query_at).isoformat().replace("+00:00", "Z")
-        lower = instant(since).isoformat().replace("+00:00", "Z") if since else None
+        self.connection.create_function("instant_us", 1, _instant_us, deterministic=True)
+        cutoff = _instant_us(query_at)
+        lower = _instant_us(since) if since else None
         rows = self.connection.execute(
             "SELECT h.source_record FROM history h JOIN entities e ON e.entity_key=h.card_key "
-            "WHERE h.tenant_id=? AND e.identity=? AND h.occurred_at<? "
-            "AND (? IS NULL OR h.occurred_at>=?) ORDER BY h.occurred_at,h.source_record",
+            "WHERE e.tenant_id=? AND e.kind='card' AND e.identity=? AND "
+            "instant_us(h.occurred_at)<? "
+            "AND (? IS NULL OR instant_us(h.occurred_at)>=?) ORDER BY "
+            "instant_us(h.occurred_at),h.source_record",
             (tenant_id, card_id, cutoff, lower, lower),
         )
         for row in rows:
             yield self.transaction(row[0])
 
     def previous_card(self, tenant_id: str, card_id: str, query_at: str):
-        cutoff = instant(query_at).isoformat().replace("+00:00", "Z")
+        self.connection.create_function("instant_us", 1, _instant_us, deterministic=True)
+        cutoff = _instant_us(query_at)
         row = self.connection.execute(
             "SELECT h.source_record FROM history h JOIN entities e ON e.entity_key=h.card_key "
-            "WHERE h.tenant_id=? AND e.identity=? AND h.occurred_at<? "
-            "ORDER BY h.occurred_at DESC,h.source_record LIMIT 1",
+            "WHERE e.tenant_id=? AND e.kind='card' AND e.identity=? AND "
+            "instant_us(h.occurred_at)<? "
+            "ORDER BY instant_us(h.occurred_at) DESC,h.source_record LIMIT 1",
             (tenant_id, card_id, cutoff),
         ).fetchone()
         return self.transaction(row[0]) if row else None

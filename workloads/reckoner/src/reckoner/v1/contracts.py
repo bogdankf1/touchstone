@@ -124,6 +124,33 @@ def validate_v1(kind: str, document: dict) -> dict:
         for cutoff in document["cutoffs"].values():
             if cutoff is not None and _time(cutoff) > query_time:
                 raise ValueError("evidence cutoff cannot follow query time")
+        if projection := document.get("graph_projection"):
+            if _time(projection["cutoff"]) > query_time:
+                raise ValueError("graph projection cannot follow query time")
+            if (
+                document["cutoffs"]["graph_before"] != projection["cutoff"]
+                or document["source_snapshot_ids"]["graph"] != projection["projection_id"]
+            ):
+                raise ValueError("graph projection provenance mismatch")
+            if Decimal(projection["snapshot_age_seconds"]) != Decimal(
+                str((query_time - _time(projection["cutoff"])).total_seconds())
+            ):
+                raise ValueError("graph snapshot age mismatch")
+        if display := document.get("neighbourhood"):
+            nodes = {n["id"] for n in display["nodes"]}
+            if len(nodes) != len(display["nodes"]) or len(nodes) > display["total_nodes"]:
+                raise ValueError("invalid neighbourhood node totals")
+            if len(display["edges"]) > display["total_edges"] or any(
+                e["source"] not in nodes or e["target"] not in nodes for e in display["edges"]
+            ):
+                raise ValueError("invalid neighbourhood edges")
+            if len(display["transaction_refs"]) != display["total_transactions"]:
+                raise ValueError("invalid neighbourhood transaction totals")
+            if display["truncated"] != (
+                len(nodes) < display["total_nodes"]
+                or len(display["edges"]) < display["total_edges"]
+            ):
+                raise ValueError("invalid neighbourhood truncation flag")
         for case in document["comparable_cases"]:
             if _time(case["resolved_at"]) >= _time(document["cutoffs"]["resolved_before"]):
                 raise ValueError("comparable resolution must precede cutoff strictly")
