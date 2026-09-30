@@ -38,6 +38,10 @@ export type Run = {
   correct_tasks: number | null;
   missing_outcomes: number | null;
   model_cost: string | null;
+  offline_model_cost?: string | null;
+  provider_spend?: string | null;
+  online_cost_complete?: boolean;
+  offline_cost_complete?: boolean;
   review_cost: string | null;
   error_cost: string | null;
   cpst: string | null;
@@ -79,6 +83,10 @@ export type ContributionRate = {
 };
 export type DashboardResponse = Envelope<Run>;
 export type NodeCost = {
+  offline_model_cost?: string | null;
+  provider_spend?: string | null;
+  online_cost_complete?: boolean;
+  offline_cost_complete?: boolean;
   node_name: string;
   currency: string | null;
   model_cost: string | null;

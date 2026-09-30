@@ -36,7 +36,9 @@ export function MetricSummary({ run }: { run: Run }) {
         </div>
         <div>
           <span className="metric-label">
-            {run.measurement_mode === 'measured'
+            {run.online_cost_complete !== undefined
+              ? 'Online model cost'
+              : run.measurement_mode === 'measured'
               ? 'Provider usage cost'
               : run.measurement_mode === 'fabricated'
                 ? 'Fabricated provider cost'

@@ -24,6 +24,18 @@ def register(commands):
     reviewer.add_argument("--tenant-id", required=True)
     reviewer.add_argument("--run-id", required=True)
     reviewer.add_argument("--env-file", type=Path, required=True)
+    for name in ("collect", "collect-scoring", "export", "close", "evaluate"):
+        telemetry = subcommands.add_parser("telemetry-" + name)
+        telemetry.add_argument("--env-file", type=Path, required=True)
+        if name == "export":
+            telemetry.add_argument("--endpoint", required=True)
+            telemetry.add_argument("--limit", type=int, default=500)
+        else:
+            telemetry.add_argument("--tenant-id", required=True)
+            telemetry.add_argument("--run-id", required=True)
+        if name == "close":
+            telemetry.add_argument("--task-id", required=True)
+            telemetry.add_argument("--scope", choices=("online", "offline"), required=True)
     calibration = subcommands.add_parser("calibrate")
     calibration.add_argument("--development", type=Path, required=True)
     calibration.add_argument("--validation", type=Path, required=True)
@@ -31,6 +43,8 @@ def register(commands):
 
 
 def execute(args):
+    if args.v1_command.startswith("telemetry-"):
+        return _telemetry(args)
     if args.v1_command == "review-simulated":
         return _review_simulated(args)
     if args.v1_command == "calibrate":
@@ -172,3 +186,53 @@ def _review_simulated(args):
         raise ValueError("simulation requires RECKONER_EVALUATOR_DSN")
     with V1Repository(dsn) as repo:
         return review_simulated(repo, tenant_id=tenant, run_id=run)
+
+
+def _telemetry(args):
+    from reckoner.v1.storage.repository import V1Repository
+    from reckoner.v1.telemetry.exporter import OTLPExporter
+    from reckoner.v1.telemetry.outbox import (
+        close_scope,
+        collect_run,
+        collect_scoring_run,
+        evaluate_run,
+        export_pending,
+    )
+
+    variable = (
+        "RECKONER_EVALUATOR_DSN"
+        if args.v1_command == "telemetry-evaluate"
+        else "RECKONER_RUNNER_DSN"
+    )
+    if args.env_file == Path("-"):
+        environment = {variable: os.environ.get(variable)}
+    else:
+        environment = {}
+        for raw in args.env_file.read_text().splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            key, separator, value = line.partition("=")
+            if not separator or key != variable:
+                raise ValueError("telemetry requires a DSN-only environment file")
+            environment[key] = value
+    if not environment.get(variable):
+        raise ValueError("telemetry database DSN is required")
+    with V1Repository(environment[variable]) as repo:
+        if args.v1_command == "telemetry-export":
+            return export_pending(repo, OTLPExporter(args.endpoint), limit=args.limit)
+        if args.v1_command == "telemetry-close":
+            return {
+                "enqueued": close_scope(
+                    repo,
+                    tenant_id=args.tenant_id,
+                    run_id=args.run_id,
+                    task_id=args.task_id,
+                    scope=args.scope,
+                )
+            }
+        collect = {
+            "telemetry-evaluate": evaluate_run,
+            "telemetry-collect-scoring": collect_scoring_run,
+        }.get(args.v1_command, collect_run)
+        return {"enqueued": collect(repo, args.tenant_id, args.run_id)}

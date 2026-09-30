@@ -1,0 +1,20 @@
+{
+  "provenance": "Independent hand-calculated simulated software fixture; not measured provider evidence",
+  "tenant_id": "tenant-fixture-a",
+  "task_id": "a",
+  "root_node": "fixture-node",
+  "expected_tasks": 1,
+  "received_tasks": 1,
+  "completed_tasks": 1,
+  "correct_tasks": 1,
+  "model_cost": "0.3",
+  "offline_model_cost": "0.7",
+  "provider_spend": "1.0",
+  "review_cost": "4",
+  "error_cost": "0",
+  "cpst": "4.3",
+  "latency_p99_ms": 1000,
+  "call_count": 3,
+  "metric_numerator": 2,
+  "metric_denominator": 3
+}

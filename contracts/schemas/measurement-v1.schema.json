@@ -39,7 +39,9 @@
         "outcome",
         "evaluation",
         "review",
-        "metric_contribution"
+        "metric_contribution",
+        "work_declaration",
+        "work_closure"
       ]
     },
     "occurred_at": { "type": "string", "format": "date-time" },
@@ -83,7 +85,9 @@
         "event_kind": { "const": "metric_contribution" },
         "payload": { "$ref": "#/$defs/metric_contribution" }
       }
-    }
+    },
+    {"properties": {"event_kind": {"const": "work_declaration"}, "payload": {"$ref": "#/$defs/work_declaration"}}},
+    {"properties": {"event_kind": {"const": "work_closure"}, "payload": {"$ref": "#/$defs/work_closure"}}}
   ],
   "$defs": {
     "nonempty": {
@@ -182,6 +186,7 @@
         "provider": { "$ref": "#/$defs/nonempty" },
         "model": { "$ref": "#/$defs/nonempty" },
         "call_id": { "$ref": "#/$defs/nonempty" },
+        "cost_scope": { "enum": ["online", "offline"] },
         "input_tokens": { "type": ["integer", "null"], "minimum": 0 },
         "output_tokens": { "type": ["integer", "null"], "minimum": 0 },
         "cached_tokens": { "type": ["integer", "null"], "minimum": 0 },
@@ -298,7 +303,8 @@
         "reviewed_at"
       ],
       "properties": {
-        "recommendation": { "$ref": "#/$defs/nonempty" },
+        "recommendation": { "$ref": "#/$defs/nullable_nonempty" },
+        "started_at": { "type": "string", "format": "date-time" },
         "review_id": { "$ref": "#/$defs/nonempty" },
         "reviewer_id": { "$ref": "#/$defs/nonempty" },
         "reviewer_type": { "enum": ["human", "simulated"] },
@@ -324,6 +330,97 @@
         "unit": { "$ref": "#/$defs/nonempty" },
         "definition_version": { "$ref": "#/$defs/nonempty" },
         "cost_component_id": { "$ref": "#/$defs/nullable_nonempty" }
+      }
+    },
+    "work_declaration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "child_task_ids",
+        "evaluation_suites"
+      ],
+      "properties": {
+        "child_task_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/nonempty"
+          }
+        },
+        "evaluation_suites": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "suite_id",
+              "suite_version",
+              "expected_case_ids",
+              "required_checks"
+            ],
+            "properties": {
+              "suite_id": {
+                "$ref": "#/$defs/nonempty"
+              },
+              "suite_version": {
+                "$ref": "#/$defs/nonempty"
+              },
+              "expected_case_ids": {
+                "type": "array",
+                "uniqueItems": true,
+                "items": {
+                  "$ref": "#/$defs/nonempty"
+                }
+              },
+              "required_checks": {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": {
+                  "$ref": "#/$defs/nonempty"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "work_closure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cost_scope",
+        "call_ids",
+        "work_status",
+        "billing_status"
+      ],
+      "properties": {
+        "cost_scope": {
+          "enum": [
+            "online",
+            "offline"
+          ]
+        },
+        "call_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/nonempty"
+          }
+        },
+        "work_status": {
+          "enum": [
+            "completed",
+            "failed"
+          ]
+        },
+        "billing_status": {
+          "enum": [
+            "complete",
+            "uncertain"
+          ]
+        }
       }
     }
   }

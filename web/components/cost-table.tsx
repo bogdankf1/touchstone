@@ -37,6 +37,20 @@ export function CostTable({ run, tasks }: { run: Run; tasks: Task[] }) {
               </td>
               <td className="number">{money(run.model_cost, run.currency)}</td>
             </tr>
+            {run.provider_spend !== undefined && (
+              <>
+                <tr>
+                  <th scope="row">Offline model cost</th>
+                  <td>Excluded from online cost per task</td>
+                  <td className="number">{money(run.offline_model_cost ?? null, run.currency)}</td>
+                </tr>
+                <tr>
+                  <th scope="row">Total provider spend</th>
+                  <td>Online and offline calls</td>
+                  <td className="number">{money(run.provider_spend, run.currency)}</td>
+                </tr>
+              </>
+            )}
             <tr>
               <th scope="row">Review</th>
               <td>Modeled assumption</td>
@@ -59,7 +73,7 @@ export function CostTable({ run, tasks }: { run: Run; tasks: Task[] }) {
               <th scope="col">Task</th>
               <th scope="col">Calls</th>
               <th scope="col" className="number">
-                Attributed cost
+                {run.provider_spend !== undefined ? 'Provider spend' : 'Attributed cost'}
               </th>
             </tr>
           </thead>
@@ -70,7 +84,12 @@ export function CostTable({ run, tasks }: { run: Run; tasks: Task[] }) {
                   <th scope="row">{node.node_name}</th>
                   <td>{task.task_id}</td>
                   <td>{node.call_count}</td>
-                  <td className="number">{money(node.model_cost, node.currency)}</td>
+                  <td className="number">
+                    {money(
+                      node.provider_spend !== undefined ? node.provider_spend : node.model_cost,
+                      node.currency,
+                    )}
+                  </td>
                 </tr>
               )),
             )}

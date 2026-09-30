@@ -60,8 +60,14 @@ class V1Repository:
             )
         return document["config_id"]
 
-    def create_run(self, manifest: dict, config_id: str) -> dict:
+    def create_run(self, manifest: dict, config_id: str, *, telemetry_mode="workflow") -> dict:
+        from reckoner.v1.telemetry.events import OFFLINE_SCORING_PURPOSES
+
         manifest = validate_v1("experiment", manifest)
+        if telemetry_mode not in {"workflow", "scoring-only"} or (
+            telemetry_mode == "scoring-only" and manifest["purpose"] not in OFFLINE_SCORING_PURPOSES
+        ):
+            raise ValueError("explicit supported offline scoring mode required")
         if manifest["config_id"] != config_id:
             raise ValueError("manifest configuration does not match")
         with self._connection.transaction():
@@ -73,11 +79,18 @@ class V1Repository:
                     "config_id": config_id,
                     "experiment_id": manifest["experiment_id"],
                     "purpose": manifest["purpose"],
+                    "telemetry_mode": telemetry_mode,
                     "document": manifest,
                     "created_at": manifest["created_at"],
                 },
                 {"tenant_id": manifest["tenant_id"], "run_id": manifest["run_id"]},
             )
+            saved_mode = self._connection.execute(
+                "SELECT telemetry_mode FROM reckoner.v1_runs WHERE tenant_id=%s AND run_id=%s",
+                (manifest["tenant_id"], manifest["run_id"]),
+            ).fetchone()["telemetry_mode"]
+            if saved_mode != telemetry_mode:
+                raise ValueError("immutable telemetry mode conflict")
             for task in manifest["tasks"]:
                 identity = {
                     "tenant_id": manifest["tenant_id"],
@@ -86,6 +99,20 @@ class V1Repository:
                 }
                 task_document = {**identity, "transaction_id": task["transaction_id"]}
                 self._insert("v1_tasks", {**task_document, "document": task_document}, identity)
+            from reckoner.v1.telemetry.events import (
+                run_declaration,
+                scoring_events,
+            )
+            from reckoner.v1.telemetry.outbox import enqueue_events
+
+            config = self.workflow_document(
+                "v1_configs", {"tenant_id": manifest["tenant_id"], "config_id": config_id}
+            )
+            run = {"manifest": manifest, "config": config, "telemetry_mode": telemetry_mode}
+            enqueue_events(self, [run_declaration(run)])
+            if telemetry_mode == "scoring-only":
+                for task in manifest["tasks"]:
+                    enqueue_events(self, scoring_events(run, task))
         return result
 
     def task(self, tenant_id: str, run_id: str, task_id: str) -> dict:
@@ -162,6 +189,16 @@ class V1Repository:
             from reckoner.v1.notes.lifecycle import declare_note
 
             declare_note(self, document)
+            from reckoner.v1.telemetry.events import measurement_events
+            from reckoner.v1.telemetry.outbox import enqueue_events
+
+            run = self._connection.execute(
+                "SELECT r.document AS manifest,c.document AS config FROM reckoner.v1_runs r "
+                "JOIN reckoner.v1_configs c USING(tenant_id,config_id) "
+                "WHERE r.tenant_id=%s AND r.run_id=%s",
+                (document["tenant_id"], document["run_id"]),
+            ).fetchone()
+            enqueue_events(self, measurement_events(run, {"decision": document}, []))
             self._connection.execute(
                 "UPDATE reckoner.v1_tasks SET status='completed' "
                 "WHERE tenant_id=%s AND run_id=%s AND task_id=%s",

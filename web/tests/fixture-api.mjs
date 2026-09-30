@@ -220,6 +220,12 @@ const server = createServer(async (request, response) => {
           quality: { identity_conflicts: 0, incomplete_calls: 0, unavailable_prices: 0, rejected_events: 0 },
           contribution_rates: contributions,
         };
+    if (scenario === 'offline-pending') {
+      data.online_cost_complete = true;
+      data.offline_cost_complete = false;
+      data.offline_model_cost = null;
+      data.provider_spend = null;
+    }
     if (scenario === 'missing') {
       data.missing_outcomes = 5;
       data.metrics_complete = false;

@@ -116,3 +116,12 @@ test('does not infer real customer data from a false simulation flag', async ({ 
   await expect(page.getByText('Simulated source data', { exact: true })).toHaveCount(0);
   await expect(page.getByText('Measured calls on simulated data')).toHaveCount(0);
 });
+
+test('keeps online cost visible when offline billing is incomplete', async ({ page, request }) => {
+  await request.get('http://127.0.0.1:8100/__scenario?name=offline-pending');
+  await page.goto('/');
+  await expect(page.getByText('Online model cost', { exact: true })).toBeVisible();
+  await expect(page.getByText('USD 0.458940', { exact: true }).first()).toBeVisible();
+  await expect(page.getByRole('row', { name: /Offline model cost/ })).toContainText('Unavailable');
+  await expect(page.getByRole('row', { name: /Total provider spend/ })).toContainText('Unavailable');
+});

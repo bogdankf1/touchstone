@@ -13,6 +13,8 @@
   ],
   "properties": {
     "schema_version": { "const": "run-declaration-v1" },
+    "lifecycle_version": { "const": "root-work-v1" },
+    "provider_prices": {"type": "array", "uniqueItems": true, "items": {"type": "object", "additionalProperties": false, "required": ["provider", "model", "price_table_version"], "properties": {"provider": {"$ref": "#/$defs/nonempty"}, "model": {"$ref": "#/$defs/nonempty"}, "price_table_version": {"$ref": "#/$defs/nonempty"}}}},
     "event_id": { "$ref": "#/$defs/nonempty" },
     "tenant_id": { "$ref": "#/$defs/nonempty" },
     "workflow_id": { "$ref": "#/$defs/nonempty" },
