@@ -156,6 +156,19 @@ const server = createServer(async (request, response) => {
     response.end('{"detail":"published snapshot unavailable"}');
     return;
   }
+  if (url.pathname === '/v1/comparisons') {
+    const arm = (name, cpst, evidence) => ({...aggregate, run_id:name, cpst,
+      measurement_mode:'fabricated', arm_provenance:[{model_version:'fixture-model',
+      prompt_version:'fixture-prompt', calibration_id:'fixture-'+evidence,
+      evidence_version:evidence, config_version:'fixture-config', question_version:'fixture-question',
+      retrieval_window:'30/90 days', execution_mode:'fabricated', call_ids:[]} ]});
+    const data = {eligible:scenario!=='comparison-ineligible',
+      reasons:scenario==='comparison-ineligible'?['incompatible case membership']:[],
+      delta_cpst:scenario==='comparison-ineligible'?null:'-0.500000',
+      baseline:arm('fixture-baseline','2.5','relational'), current:arm('fixture-current','2','gds-augmented')};
+    response.end(JSON.stringify({metadata:{...metadata,generation:scenario==='comparison-generation'?'other':metadata.generation},data}));
+    return;
+  }
   if (url.pathname === '/v1/workflows') {
     response.end(
       JSON.stringify(

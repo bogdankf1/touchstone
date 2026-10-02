@@ -43,3 +43,7 @@ export function getTrace(filters: Filters, trace: string, tenant: string): Promi
     tenant_id: tenant,
   });
 }
+
+export function getComparison(filters: Filters, current: string): Promise<Envelope<import('./types').Comparison>> {
+  return get('/v1/comparisons', {...scope(filters), baseline: filters.run, current});
+}

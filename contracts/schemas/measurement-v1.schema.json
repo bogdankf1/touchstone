@@ -41,7 +41,8 @@
         "review",
         "metric_contribution",
         "work_declaration",
-        "work_closure"
+        "work_closure",
+        "comparison_attestation"
       ]
     },
     "occurred_at": { "type": "string", "format": "date-time" },
@@ -50,6 +51,7 @@
     "payload": { "type": "object" }
   },
   "oneOf": [
+    {"properties":{"event_kind":{"const":"comparison_attestation"},"payload":{"$ref":"#/$defs/comparison_attestation"}}},
     {
       "properties": {
         "event_kind": { "const": "execution" },
@@ -90,6 +92,7 @@
     {"properties": {"event_kind": {"const": "work_closure"}, "payload": {"$ref": "#/$defs/work_closure"}}}
   ],
   "$defs": {
+    "comparison_attestation": {"type":"object","additionalProperties":false,"required":["attestation_id","source_declaration_sha256","provenance","comparison"],"properties":{"attestation_id":{"type":"string","pattern":"^[a-f0-9]{64}$"},"source_declaration_sha256":{"type":"string","pattern":"^[a-f0-9]{64}$"},"provenance":{"type":"object","additionalProperties":false,"required":["source_manifest_sha256","config_version","dataset_version","config_artifact_sha256","dataset_artifact_sha256","comparison_artifact_sha256"],"properties":{"source_manifest_sha256":{"oneOf":[{"type":"string","pattern":"^[a-f0-9]{64}$"},{"type":"null"}]},"config_version":{"$ref":"#/$defs/nonempty"},"dataset_version":{"$ref":"#/$defs/nonempty"},"config_artifact_sha256":{"type":"string","pattern":"^[a-f0-9]{64}$"},"dataset_artifact_sha256":{"type":"string","pattern":"^[a-f0-9]{64}$"},"comparison_artifact_sha256":{"type":"string","pattern":"^[a-f0-9]{64}$"}}},"comparison":{"type":"object","additionalProperties":false,"required":["reference_version","business_config_id","arm"],"properties":{"reference_version":{"$ref":"#/$defs/nonempty"},"business_config_id":{"$ref":"#/$defs/nonempty"},"arm":{"type":"object","additionalProperties":false,"required":["config_version","model_version","prompt_version","question_version","calibration_id","evidence_version","retrieval_window","execution_mode","call_ids"],"properties":{"config_version":{"$ref":"#/$defs/nonempty"},"model_version":{"$ref":"#/$defs/nonempty"},"prompt_version":{"$ref":"#/$defs/nonempty"},"question_version":{"$ref":"#/$defs/nonempty"},"calibration_id":{"$ref":"#/$defs/nonempty"},"evidence_version":{"$ref":"#/$defs/nonempty"},"retrieval_window":{"$ref":"#/$defs/nonempty"},"execution_mode":{"$ref":"#/$defs/nonempty"},"call_ids":{"type":"array","uniqueItems":true,"items":{"$ref":"#/$defs/nonempty"}}}}}}}},
     "nonempty": {
       "type": "string",
       "minLength": 1

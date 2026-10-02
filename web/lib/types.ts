@@ -157,3 +157,11 @@ export function sumMoney(values: (string | null)[]): string | null {
 export function percent(value: number | null): string {
   return value === null ? 'Unavailable' : `${(value * 100).toFixed(1)}%`;
 }
+
+export type Comparison = {
+  eligible: boolean;
+  reasons: string[];
+  delta_cpst: string | null;
+  baseline: Run & {arm_provenance: Record<string, unknown>[]};
+  current: Run & {arm_provenance: Record<string, unknown>[]};
+};

@@ -236,6 +236,71 @@ class SnapshotReader:
         )
         return result
 
+    def comparison_arm(self, workflow_id, run_id, *, tenant_id=None, aggregate=False):
+        result = self.summary(workflow_id, run_id, tenant_id=tenant_id, aggregate=aggregate)
+        if result is None:
+            return None
+        metadata = self.metadata()
+        result.update(
+            generation=metadata["generation"],
+            refresh_state=metadata["latest_refresh"]["state"],
+            case_membership=[],
+            arm_provenance=[],
+        )
+        declarations = self._rows(
+            "select distinct tenant_id, document_json from raw_declarations "
+            "where workflow_id=? and run_id=? and tenant_id in "
+            "(select unnest(?))",
+            [workflow_id, run_id, result["tenant_ids"]],
+        )
+        refs, configs = set(), set()
+        for row in declarations:
+            document = json.loads(row["document_json"])
+            result["case_membership"].extend(
+                [row["tenant_id"], task] for task in document.get("expected_task_ids", [])
+            )
+            from touchstone_platform.comparison import resolve_comparison
+
+            companions = self._rows(
+                "select document_json,identity_conflict from stg_events where tenant_id=? and "
+                "workflow_id=? "
+                "and run_id=? and event_kind='comparison_attestation'",
+                [row["tenant_id"], workflow_id, run_id],
+            )
+            comparison = (
+                {}
+                if any(item["identity_conflict"] for item in companions)
+                else resolve_comparison(
+                    document, [json.loads(item["document_json"])["payload"] for item in companions]
+                )
+            )
+            refs.add(comparison.get("reference_version"))
+            configs.add(comparison.get("business_config_id"))
+            if comparison.get("arm"):
+                columns = {
+                    item[1]
+                    for item in self.connection.execute("pragma table_info('int_calls')").fetchall()
+                }
+                if "call_id" not in columns:
+                    continue
+                calls = self._rows(
+                    "select distinct call_id from int_calls where "
+                    "tenant_id=? and workflow_id=? and run_id=? order by call_id",
+                    [row["tenant_id"], workflow_id, run_id],
+                )
+                result["arm_provenance"].append(
+                    {
+                        "tenant_id": row["tenant_id"],
+                        **comparison["arm"],
+                        "call_ids": [call["call_id"] for call in calls],
+                    }
+                )
+        result["reference_version"] = next(iter(refs)) if len(refs) == 1 else None
+        result["business_config_id"] = next(iter(configs)) if len(configs) == 1 else None
+        if len(result["arm_provenance"]) != len(result["tenant_ids"]):
+            result["arm_provenance"] = []
+        return result
+
     def quality(self, workflow_id, run_id, tenant_ids):
         placeholders = ", ".join("?" for _ in tenant_ids)
         where = f"tenant_id in ({placeholders}) and workflow_id = ? and run_id = ?"

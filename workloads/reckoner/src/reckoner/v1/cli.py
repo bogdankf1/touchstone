@@ -9,6 +9,10 @@ from reckoner.v1.data.prepare import import_v1, prepare_v1
 def register(commands):
     group = commands.add_parser("v1")
     subcommands = group.add_subparsers(dest="v1_command", required=True)
+    comparison = subcommands.add_parser("compare")
+    comparison.add_argument("--arms", type=Path, required=True)
+    comparison.add_argument("--expected", type=Path, required=True)
+    comparison.add_argument("--output", type=Path, required=True)
     preparation = subcommands.add_parser("prepare")
     preparation.add_argument("--source", type=Path, required=True)
     preparation.add_argument("--baseline-bundle", type=Path, required=True)
@@ -43,6 +47,16 @@ def register(commands):
 
 
 def execute(args):
+    if args.v1_command == "compare":
+        import json
+
+        from reckoner.v1.benchmark.compare import compare_arms
+        from reckoner.v1.benchmark.report import write_report
+
+        result = compare_arms(
+            json.loads(args.arms.read_text()), json.loads(args.expected.read_text())
+        )
+        return write_report(result, args.output)
     if args.v1_command.startswith("telemetry-"):
         return _telemetry(args)
     if args.v1_command == "review-simulated":

@@ -160,3 +160,80 @@ def test_invalid_manifest_is_safe_503_for_readiness_and_data(published):
         data = client.get("/v1/workflows")
         assert data.status_code == 503
         assert data.json() == {"detail": "published snapshot unavailable"}
+
+
+def test_comparison_requires_declared_provenance_and_uses_one_generation(published):
+    client = TestClient(create_app(published))
+    response = client.get(
+        "/v1/comparisons",
+        params={
+            "workflow_id": "workflow",
+            "baseline": "run",
+            "current": "run",
+            "tenant_id": "tenant-a",
+        },
+    )
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["eligible"] is False
+    assert data["delta_cpst"] is None
+    assert data["baseline"]["generation"] == data["current"]["generation"]
+    assert "missing arm provenance" in data["reasons"]
+
+
+def test_declared_compatible_comparison_is_served_from_real_snapshot(published):
+    import duckdb
+
+    from tests.test_comparison import result
+
+    path = published.warehouse_dir / "generation-one.duckdb"
+    with duckdb.connect(str(path)) as db:
+        db.execute("alter table int_calls add column call_id varchar")
+        db.execute("update int_calls set call_id='actual-source-call'")
+        db.execute(
+            "update mart_runs set metrics_complete=true where tenant_id='tenant-a' and run_id='run'"
+        )
+        document = {
+            "code_revision": "rev1",
+            "dataset_version": "data1",
+            "expected_task_ids": ["a1", "a2"],
+            "config_version": "cfg",
+            "comparison": {
+                "reference_version": "r",
+                "business_config_id": "b",
+                "arm": result()["arm_provenance"][0],
+            },
+        }
+        db.execute(
+            "update raw_declarations set document_json=? where tenant_id='tenant-a' and "
+            "run_id='run'",
+            [json.dumps(document)],
+        )
+        db.execute(
+            "insert into mart_runs select * replace ('current' as run_id,0.200000000002 as "
+            "model_cost) from mart_runs where tenant_id='tenant-a' and run_id='run'"
+        )
+        db.execute(
+            "insert into raw_declarations select * replace ('current' as run_id,'newhash' as "
+            "content_sha256) from raw_declarations where tenant_id='tenant-a' and "
+            "run_id='run'"
+        )
+    (published.warehouse_dir / "refresh-status.json").write_text(json.dumps({"state": "succeeded"}))
+    client = TestClient(create_app(published))
+    response = client.get(
+        "/v1/comparisons",
+        params={
+            "workflow_id": "workflow",
+            "baseline": "run",
+            "current": "current",
+            "tenant_id": "tenant-a",
+        },
+    )
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert_schema(response, "comparison")
+    assert data["eligible"] is True, data["reasons"]
+    assert data["delta_cpst"] == "0.0500000000005"
+    assert data["baseline"]["case_membership"] == [["tenant-a", "a1"], ["tenant-a", "a2"]]
+    assert data["baseline"]["arm_provenance"][0]["call_ids"] == ["actual-source-call"]
+    assert data["current"]["arm_provenance"][0]["call_ids"] == []

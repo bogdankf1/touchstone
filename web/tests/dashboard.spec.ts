@@ -125,3 +125,21 @@ test('keeps online cost visible when offline billing is incomplete', async ({ pa
   await expect(page.getByRole('row', { name: /Offline model cost/ })).toContainText('Unavailable');
   await expect(page.getByRole('row', { name: /Total provider spend/ })).toContainText('Unavailable');
 });
+
+test('shows compatible simulated comparison and arm provenance', async ({page, request}) => {
+  await request.get('http://127.0.0.1:8100/__scenario?name=comparison');
+  await page.goto('/?compare=reckoner-pilot');
+  await expect(page.getByRole('heading',{name:'Baseline / current comparison'})).toBeVisible();
+  await expect(page.getByText('CPST change: USD -0.500000')).toBeVisible();
+  await expect(page.getByText('Simulated comparison fixture')).toBeVisible();
+  await page.getByText('Arm versions and call identities').last().click();
+  await expect(page.getByText('gds-augmented', {exact:false})).toBeVisible();
+});
+for (const scenario of ['comparison-ineligible','comparison-generation']) {
+  test(`hides delta for ${scenario}`, async ({page,request}) => {
+    await request.get(`http://127.0.0.1:8100/__scenario?name=${scenario}`);
+    await page.goto('/?compare=reckoner-pilot');
+    await expect(page.getByText('CPST change:',{exact:false})).toHaveCount(0);
+    await expect(page.getByText(scenario==='comparison-generation'?'Comparison snapshot changed':'Comparison ineligible')).toBeVisible();
+  });
+}

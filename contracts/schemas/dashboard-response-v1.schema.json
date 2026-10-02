@@ -3,6 +3,15 @@
   "$id": "https://touchstone.local/contracts/dashboard-response-v1.schema.json",
   "title": "Touchstone dashboard read responses v1",
   "$defs": {
+    "comparison": {
+      "type": "object", "required": ["metadata", "data"],
+      "properties": {
+        "metadata": {"$ref": "#/$defs/metadata"},
+        "data": {"type": "object", "required": ["eligible", "reasons", "delta_cpst", "baseline", "current"],
+          "properties": {"eligible": {"type": "boolean"}, "reasons": {"type": "array", "items": {"type": "string"}},
+            "delta_cpst": {"$ref": "#/$defs/money"}, "baseline": {"$ref": "#/$defs/run"}, "current": {"$ref": "#/$defs/run"}}}
+      }
+    },
     "metadata": {
       "type": "object",
       "required": ["generation", "warehouse", "published_at", "cutoff", "latest_refresh"],

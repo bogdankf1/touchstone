@@ -74,7 +74,6 @@ export function MetricSummary({ run }: { run: Run }) {
         missing tasks · {run.failed_tasks ?? 'Unknown'} failed tasks · {run.missing_outcomes ?? 'Unknown'}{' '}
         outcomes missing · {run.unexpected_tasks ?? 'Unknown'} unexpected tasks
       </div>
-      <div className="status-line muted">No compatible comparison run</div>
     </section>
   );
 }
