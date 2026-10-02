@@ -97,14 +97,22 @@ unchanged. All measured and fixture volumes are preserved.
   or incompatible membership, provenance, costs or refresh. Exact eligible-set
   agreement compares SQL/Cypher candidate IDs as sets and reports duplicates;
   any duplicate blocks agreement.
-- `reckoner v1 compare --arms ARMS.json --expected IDS.json --output PREFIX`
-  writes immutable, versioned JSON and a comparison Markdown (arms, eligibility,
-  reasons, CPST delta or `unavailable`) without dispatching inference.
-- `write_report` refuses a retrieval report without an explicit `measurement_mode`.
-  `measured-local-retrieval` and `synthetic-fixture` receive different headings
-  and labels. Both files are written to temporary names in the target directory
-  and hard-linked into place; an existing file is never replaced, and a failed
-  second link removes the first, so a failure leaves no partial pair.
+- `reckoner v1 compare --arms ARMS.json --expected IDS.json --output PREFIX
+  --measurement-mode measured-comparison|synthetic-fixture` writes immutable,
+  versioned JSON and a comparison Markdown (arms, eligibility, reasons, CPST delta
+  or `unavailable`) without dispatching inference. CPST deltas are computed exactly
+  (76-digit decimal context) in both the workload and the platform. An arm without
+  a calibration ID is reported as missing provenance, not as calibration reuse. A
+  parity test keeps the workload and platform invariants, pins and calibration
+  bindings in correspondence (`cohort_id`/`cohort_version`,
+  `oracle_version`/`reference_version`, `execution_mode`/`measurement_mode`).
+- `write_report` refuses a retrieval or comparison report without an explicit
+  `measurement_mode`; measured and synthetic reports receive different headings
+  and labels. `PREFIX` keeps its whole name (`report.v2` writes `report.v2.json`).
+  Code fences are longer than any backtick run in the content. Both files are
+  written to temporary names in the target directory and hard-linked into place;
+  an existing file is never replaced, and a failed second link removes the first,
+  so a failure leaves no partial pair.
 - Generic `run-declaration-v1.comparison` is optional. Old declarations remain
   valid and have unavailable comparison provenance. It declares reference/version,
   business-cost identity and model/input/evidence arm versions. `/v1/comparisons`
@@ -114,6 +122,8 @@ unchanged. All measured and fixture volumes are preserved.
 
 The dashboard permits an explicit current-run selection, displays both arm
 provenance records, and hides deltas when eligibility fails or generations change.
+A comparison API failure is shown as an error, not as "no compatible run". The
+simulated label appears when either arm is fabricated or on simulated data.
 Its fabricated comparison fixture proves UI plumbing only. Task 13 must produce
 complete original declarations and real measured results before any live v1 delta
 can be shown. Failed refresh state remains distinct from a published prior snapshot.
@@ -134,6 +144,22 @@ The event uses its original run/tenant/workflow and an existing declared root ta
 Staging rejects (into `raw_rejections`) any attestation whose task is not an
 expected root task of every staged declaration for that run, so it can neither
 attach to an undeclared task nor inflate `unexpected_tasks`.
+
+An attestation never changes the governed metrics of the run it attests: frozen
+baselines are immutable evidence. `comparison_attestation` events are excluded
+from event compatibility (`int_event_compat`), run evidence, task compatibility,
+cost and completeness rollups (`mart_runs`), and from the run summary's identity
+conflict count. Attestation integrity failures make only the comparison
+ineligible ("missing arm provenance"); the run's CPST, costs and completeness are
+byte-identical to the snapshot without the attestation (tested end to end for a
+valid, a conflicting and an envelope-mismatched attestation). The attestation
+envelope must therefore reproduce the attested run's declared reproducibility
+fields exactly: `workflow_version`; `reproducibility.experiment_version`,
+`cohort_version`, `config_version`, `code_revision` and `dataset_version`; and
+`simulated` equal to whether the declaration's `measurement_mode` is
+`fabricated`. Any mismatch leaves the comparison unavailable. More than one
+declaration version for a run is its own ineligibility reason ("multiple
+declaration versions").
 Its payload contains:
 
 ```text
@@ -221,7 +247,8 @@ peaks and do not replace earlier Task3 failure/import resource receipts.
 ## Tracked harness and offline reproduction
 
 The original Task 11 measurement ran from preserved, untracked scratch scripts.
-The same logic is now tracked in `reckoner.v1.benchmark.harness` and exposed as
+The same logic is now tracked under `reckoner.v1.benchmark` (`protocol.py`,
+`resources.py`, `assembly.py`, `steps.py`) and exposed as
 `reckoner v1 benchmark STEP`. Every step takes explicit paths; database URLs and
 Neo4j credentials come only from environment variables whose NAMES are passed
 (`--pg-dsn-env`, `--neo4j-user-env`, `--neo4j-password-env`). No environment
@@ -230,12 +257,34 @@ file is read, no credential is embedded, and no provider is called.
 | Step | Role | Writes (never overwrites) |
 | --- | --- | --- |
 | `inventory` | Evaluator-side preparation. The only step that reads privileged `oracle.v1_resolutions`, to freeze each query's eligible candidate population. Read-only session. | `candidates.jsonl`, `protocol.json`, `sql-function-plan.json` |
-| `prepare` | Candidate vectors from complete source history; preparation-role DSN; no oracle reads. | `vectors.jsonl`, `preparation.json` |
+| `prepare` | Candidate vectors from complete source history; preparation-role DSN; no oracle reads. One transaction with an explicit `COPY` column list: a failure stores no vectors, there is no resume, and a partial `vectors.jsonl` must be moved aside by the operator before a rerun. | `vectors.jsonl`, `preparation.json` |
 | `verify` | Stored vector count/hash equals the frozen union; strict coverage for every query. Read-only session. | `stored-verification.json` |
 | `measure` | Runtime-role SQL/Cypher schedule and exact top five; no labels; `--first-pass-state` records the operator's restart state. | `service-samples.jsonl`, `exact-memberships.json`, `retrieval-report.{json,md}` |
 | `replacement` | One first pass, checked hash-for-hash against `measure`. | `replacement-service-samples.jsonl`, `replacement-first-pass.json` |
 | `audit` | Read-only `du` of every volume mounted by matching containers, plus optional cgroup counters. | `resource-reconciliation-LABEL.json`, `cgroup-LABEL.json` |
 | `report` | Offline evaluator assembly; joins query labels only after retrieval. | `--output` prefix `.json` and `.md` |
+
+`measure` and `replacement` connect with `--runtime-role` (default
+`reckoner_runner`) applied through libpq `options`, record the session's
+`current_user`, `session_user` and `oracle` schema usage in the observation or
+receipt, and refuse to run if the active role differs or can use schema `oracle`.
+Every store step first checks that all of its outputs are absent and runs the
+resource guard before any timed or committed work (and again afterwards); for
+`measure` and `replacement` that pre-flight guard sends no database query, so the
+first timed pass still follows the restart. A failed service sample is raised,
+not silently lost. `prepare` runs the guard, which may size volumes, at the start,
+every `--guard-every` batches (default 10) and at the end. Candidate and stored ID
+lists are ordered in Python, not by database collation, before any hash, and a
+transaction ID appearing under two tenants is refused because the frozen union
+hash is over transaction IDs. New protocols record the candidate-eligibility
+policy (`simulated-seven-days-v1` resolutions, 90-day window, same tenant, strict
+occurred/resolved cutoffs, positive amounts) that the inventory query uses; the
+frozen Task 11 `protocol.json` predates that field and is unchanged.
+
+The Cypher neighbourhood query text and evidence reader are now loaded once when
+`CypherQueries` is constructed. The published first-pass and warm Cypher timings
+were measured with the earlier code, which imported the module and read the
+query file inside each timed call; they were not re-measured.
 
 Resource guards default to a 15 GiB free-disk floor and a 20 GiB derived-data cap
 (`--free-floor-bytes`, `--derived-cap-bytes`). Store sizes are either measured
@@ -249,15 +298,15 @@ reconciliation measured every mounted Phase 3 volume, including that store.
 Interpretation text (limitations, relevance interpretation, plan observation,
 resource accounting stage and replacement first-pass protocol) is an explicit
 input, `docs/evidence/phase-3-benchmark-annotations.json`, copied verbatim into
-report fields. Its Task 11 values were transcribed from the published report.
+report fields. It restates no numbers: every count lives in a computed field.
 `sql-inner-plan.json`, `sql-indexes.json` and `cgroup-lifetime.json` were
 diagnostic captures run by hand after measurement. They are pinned by hash in
 the report but are not regenerated by tracked code; `audit --cgroup-container`
 now covers the cgroup capture.
 
 The expensive store steps were not re-run for this reproduction: no vector
-re-preparation, database restart or new timing. The tracked `report` step was
-run once, offline, over the existing raw observation files into a fresh prefix:
+re-preparation, database restart or new timing. The tracked `report` step is
+run offline over the existing raw observation files into a fresh prefix:
 
 ```text
 UV_PYTHON_INSTALL_DIR=/private/tmp/touchstone-uv-python \
@@ -282,15 +331,32 @@ uv run --frozen --all-packages reckoner v1 benchmark report \
   --attach artifacts/phase3/task11/regression.log \
   --oracle-labels artifacts/phase3/data/frozen-v1/oracle_validation.jsonl \
   --annotations docs/evidence/phase-3-benchmark-annotations.json \
-  --output artifacts/phase3/task11-regenerated/benchmark-report
+  --output artifacts/phase3/task11-regenerated-r2/benchmark-report
 ```
 
-The regenerated report has the same content ID,
-`7b0325113e11fb42c7cdb04ba1eb9210e04834adfcdbd36ee69f0c0c267488ad`, and its JSON
-is byte-identical to the published file (SHA256
-`276eaac24e0f4a81b477f84fc3de4b209556e15a8f5e68a944bcb4a16fb26569`). The
-Markdown differs only in its heading and label: the published file reads
-"Simulated-data retrieval benchmark"; the regenerated file reads "Measured
-simulated-data retrieval benchmark" and adds the `measured-local-retrieval`
-label line (SHA256 `879a60acb9e05fd4668372379eb7d58913fcf0c08c80f3f99b79ce42a9bcabbb`).
-The published files are unchanged.
+First reproduction (fix round 1, annotations transcribed verbatim from the
+published report, output prefix `artifacts/phase3/task11-regenerated/`): same
+content ID `7b0325113e11fb42c7cdb04ba1eb9210e04834adfcdbd36ee69f0c0c267488ad`
+and byte-identical JSON (SHA256
+`276eaac24e0f4a81b477f84fc3de4b209556e15a8f5e68a944bcb4a16fb26569`). That proved
+the tracked assembly reproduces every computed field.
+
+Current reproduction (fix round 2, with the annotations above rewritten to restate
+no unchecked numbers, output prefix `artifacts/phase3/task11-regenerated-r2/`):
+content ID `4eb968125d729b4e2ea538da1f9d235b74041efecf17d9bbde5dc48eba892dcb`,
+JSON SHA256 `76d5ed6e07cefbe25c0207628aa99b36b40f3a25e24df81f7319308b6ad4d3f7`,
+Markdown SHA256 `8ee5ef353836e927b6466299627a5c983e1e0f75b1905ca69270cc1c69767eae`.
+Its field-level difference from the published report is exactly the annotation
+text and the resulting `report_id`; every measured or computed field is identical:
+
+| Field | Published | Regenerated |
+| --- | --- | --- |
+| `limitations[0..7]` | compressed wording with restated counts (for example "June1 2018 seven-query", "full1441-user", "frozen20iterations") | the same eight statements without restated numbers |
+| `plan_observation` | inner-plan row, lookup, spill and timing counts | points to the attached, hash-pinned `sql-inner-plan.json` |
+| `vector_relevance_proxy.interpretation` | "one fraud query/all5retrievedlegitimate" | diagnostic-only note; the adjacent computed counts carry the numbers |
+| `resources.accounting_stage` | same meaning, compressed wording | same meaning, full sentence |
+| `cache_protocol.first_pass` | same meaning, compressed wording | same meaning, full sentence |
+| `report_id` | `7b0325…7488ad` | `4eb968…892dcb` |
+
+The regenerated Markdown also carries the explicit `measured-local-retrieval`
+heading and label. The published files are unchanged.

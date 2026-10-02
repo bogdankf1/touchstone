@@ -25,3 +25,5 @@ select e.tenant_id, e.workflow_id, e.run_id, e.event_id,
         or e.simulated is distinct from (d.measurement_mode = 'fabricated')) as version_mismatch
 from {{ ref('stg_events') }} e
 left join attributes d using (tenant_id, workflow_id, run_id)
+-- Comparison attestations describe a run; they never enter its evidence or rollups.
+where e.event_kind <> 'comparison_attestation'

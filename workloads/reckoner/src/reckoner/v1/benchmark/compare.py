@@ -1,7 +1,7 @@
 """Workload arm provenance; no inference dispatch or calibration transfer."""
 
 from copy import deepcopy
-from decimal import Decimal
+from decimal import Decimal, localcontext
 
 PINNED = (
     "config_version",
@@ -22,6 +22,7 @@ INVARIANTS = (
     "currency",
     "business_config",
     "execution_mode",
+    "dataset_simulated",
     "generation",
 )
 # Must match the generic platform binding: a changed retrieval window changes model input.
@@ -60,10 +61,14 @@ def comparison_eligibility(baseline: dict, current: dict) -> dict:
     return {
         "eligible": not reasons,
         "reasons": sorted(set(reasons)),
-        "delta_cpst": str(Decimal(current["cpst"]) - Decimal(baseline["cpst"]))
-        if not reasons
-        else None,
+        "delta_cpst": _delta(baseline["cpst"], current["cpst"]) if not reasons else None,
     }
+
+
+def _delta(baseline, current):
+    with localcontext() as context:
+        context.prec = 76  # Exact for any two DECIMAL(38, *) values.
+        return str(Decimal(current) - Decimal(baseline))
 
 
 def compare_arms(results: list[dict], expected_ids: list[str]) -> dict:
@@ -74,13 +79,15 @@ def compare_arms(results: list[dict], expected_ids: list[str]) -> dict:
         raise ValueError("duplicate arm identity")
     calibrations = {}
     for arm in arms:
+        arm["membership_complete"] = sorted(arm.get("case_ids", [])) == sorted(expected_ids)
+        if arm.get("calibration_id") is None:
+            continue  # Missing provenance, reported by eligibility; not calibration reuse.
         binding = {k: arm.get(k) for k in BINDING}
         previous = calibrations.setdefault(arm.get("calibration_id"), binding)
         if previous != binding:
             raise ValueError("calibration identity reused across model-input arms")
         if any(arm.get("calibration_binding", {}).get(k) != arm.get(k) for k in BINDING):
             raise ValueError("calibration belongs to a different model-input arm")
-        arm["membership_complete"] = sorted(arm.get("case_ids", [])) == sorted(expected_ids)
     return {
         "schema_version": "reckoner-comparison-v1",
         "expected_ids": expected_ids,

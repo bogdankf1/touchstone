@@ -1,17 +1,17 @@
 {
   "schema_version": "retrieval-report-annotations-v1",
   "limitations": [
-    "Bounded June1 2018 seven-query snapshot, full1441-user manifest; not full validation/2019 operational coverage.",
-    "Cold means first pass after database restart; OS caches uncontrolled and not flushed.",
-    "Small population; p99 is nearest-rank maximum, not service-level tail prediction.",
-    "Label agreement is an enriched simulated-data diagnostic, not fraud utility.",
-    "GDS PageRank did not converge at frozen20iterations; communities include isolates; no tuned algorithm parameters.",
-    "No provider scores reused or generated; decision-impact/CPST unavailable pending Task13.",
-    "Resource samples are sampled observations, cgroup counters cover the latest container-start lifetime, including a later plan inspection; they are not per-query peaks.",
-    "Original contaminated first pass excluded; separate first-pass replacement occurred after all regression checks. Warm schedule unchanged."
+    "Bounded single-date query snapshot over the full retained entity manifest; it is not full validation-period or later-year operational coverage.",
+    "Cold means the first pass after a database-process restart. Operating-system caches were not controlled or flushed.",
+    "Small populations: the reported tail percentile is a nearest-rank maximum, not a service-level tail prediction.",
+    "Label agreement is a diagnostic on an enriched simulated cohort, not evidence of fraud utility.",
+    "The frozen graph PageRank projection did not converge at its declared iteration limit, and community detection includes isolates; no algorithm parameter was tuned.",
+    "No provider score was reused or generated, so decision impact and CPST remain unavailable pending the separately approved measured comparison.",
+    "Resource samples are coarse observations. Cgroup counters cover the latest container-start lifetime, including a later plan inspection; they are not per-query peaks.",
+    "The original contaminated first pass is excluded. A separate first-pass replacement ran after all regression checks; the warm schedule is unchanged."
   ],
-  "relevance_interpretation": "diagnostic only; one fraud query/all5retrievedlegitimate, not evidence of fraud utility",
-  "plan_observation": "First query inner plan:132709 history rows via v1_history_time,132709 merchant-PK lookups,128986 rows filtered,3723 emitted, sort spilled638blocks; execution522.666ms after timing. No index changes.",
-  "resource_accounting_stage": "after service shutdown, before final small JSON/Markdown publication; final publication byte count separately recorded",
-  "first_pass_protocol": "replacement after DB-process restart following all tests; no OS-cache flush"
+  "relevance_interpretation": "Diagnostic only: label agreement on an enriched simulated cohort is not evidence of fraud utility. The counts beside this note are computed from the evaluator label join.",
+  "plan_observation": "The first query's inner SQL plan was captured after the timed schedule and is attached as sql-inner-plan.json; it is not another benchmark pass. No index or query parameter changed after observing results.",
+  "resource_accounting_stage": "After service shutdown and before the final small JSON and Markdown publication; the publication byte count is recorded separately.",
+  "first_pass_protocol": "Replacement first pass after a database-process restart that followed all tests; no operating-system cache flush."
 }

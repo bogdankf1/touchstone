@@ -1,8 +1,8 @@
 import type { Comparison, Filters, Run } from '../lib/types';
 import { money } from '../lib/types';
 
-export function RunComparison({ comparison, changed, filters, runs, selected }: {
-  comparison: Comparison | null; changed: boolean; filters: Filters; runs: Run[]; selected: string;
+export function RunComparison({ comparison, changed, failed, filters, runs, selected }: {
+  comparison: Comparison | null; changed: boolean; failed: boolean; filters: Filters; runs: Run[]; selected: string;
 }) {
   const choices = [...new Set(runs.filter(r => r.run_id !== filters.run).map(r => r.run_id))];
   return <section aria-labelledby="comparison-title">
@@ -16,8 +16,12 @@ export function RunComparison({ comparison, changed, filters, runs, selected }: 
         {choices.map(id => <option key={id} value={id}>{id}</option>)}
       </select></label> <button type="submit">Compare runs</button>
     </form>
-    {changed ? <p>Comparison snapshot changed</p> : !comparison ? <p>No compatible comparison run</p> : <>
-      {comparison.baseline.measurement_mode === 'fabricated' && <p>Simulated comparison fixture</p>}
+    {failed ? <p role="alert">Comparison unavailable: the comparison could not be read from this snapshot.</p>
+      : changed ? <p>Comparison snapshot changed</p> : !comparison ? <p>No compatible comparison run</p> : <>
+      {[comparison.baseline, comparison.current].some(arm => arm.measurement_mode === 'fabricated')
+        ? <p>Simulated comparison fixture</p>
+        : [comparison.baseline, comparison.current].some(arm => arm.dataset_simulated !== false)
+          && <p>Simulated dataset comparison</p>}
       <table><thead><tr><th>Arm</th><th>Run</th><th>CPST</th><th>Evidence provenance</th></tr></thead>
         <tbody>{(['baseline','current'] as const).map(key => <tr key={key}>
           <th>{key}</th><td>{comparison[key].run_id}</td>

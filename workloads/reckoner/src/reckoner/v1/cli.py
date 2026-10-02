@@ -13,7 +13,10 @@ def register(commands):
     comparison.add_argument("--arms", type=Path, required=True)
     comparison.add_argument("--expected", type=Path, required=True)
     comparison.add_argument("--output", type=Path, required=True)
-    from reckoner.v1.benchmark.harness import register as register_benchmark
+    comparison.add_argument(
+        "--measurement-mode", choices=("measured-comparison", "synthetic-fixture"), required=True
+    )
+    from reckoner.v1.benchmark.steps import register as register_benchmark
 
     register_benchmark(subcommands)
     preparation = subcommands.add_parser("prepare")
@@ -59,9 +62,9 @@ def execute(args):
         result = compare_arms(
             json.loads(args.arms.read_text()), json.loads(args.expected.read_text())
         )
-        return write_report(result, args.output)
+        return write_report({**result, "measurement_mode": args.measurement_mode}, args.output)
     if args.v1_command == "benchmark":
-        from reckoner.v1.benchmark.harness import run
+        from reckoner.v1.benchmark.steps import run
 
         return run(args)
     if args.v1_command.startswith("telemetry-"):

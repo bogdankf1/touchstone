@@ -207,7 +207,7 @@ GIB = 1024**3
 def test_frozen_queries_select_declared_date_and_reject_duplicates():
     import json
 
-    from reckoner.v1.benchmark.harness import frozen_queries
+    from reckoner.v1.benchmark.protocol import frozen_queries
 
     rows = [
         {"transaction_id": "q1", "occurred_at": "2018-06-01T01:00:00Z"},
@@ -223,7 +223,7 @@ def test_frozen_queries_select_declared_date_and_reject_duplicates():
 
 
 def test_resource_guard_defaults_and_records_store_provenance():
-    from reckoner.v1.benchmark.harness import ResourceGuardError, parse_stores, resource_guard
+    from reckoner.v1.benchmark.resources import ResourceGuardError, parse_stores, resource_guard
 
     stores = parse_stores(["neo4j=100"], {"postgres": 50})
     assert stores == {
@@ -253,7 +253,7 @@ def test_resource_guard_defaults_and_records_store_provenance():
 
 def test_protocol_declaration_is_content_addressed_and_tamper_evident():
     from reckoner.contracts import content_id
-    from reckoner.v1.benchmark.harness import check_protocol, protocol_declaration
+    from reckoner.v1.benchmark.protocol import check_protocol, protocol_declaration
 
     queries = [{"transaction_id": "q1"}, {"transaction_id": "q2"}]
     protocol = protocol_declaration(
@@ -288,8 +288,11 @@ class FakeStore:
         return self.top[case["transaction_id"]]
 
 
+RUNTIME = {"current_user": "reckoner_runner", "session_user": "owner", "oracle_usage": False}
+
+
 def measured():
-    from reckoner.v1.benchmark.harness import measure_observation, protocol_declaration
+    from reckoner.v1.benchmark.protocol import measure_observation, protocol_declaration
 
     queries = [{"transaction_id": "q1"}, {"transaction_id": "q2"}]
     protocol = protocol_declaration(queries, {"q1": ["a"], "q2": ["a", "b"]}, "scaler", {})
@@ -309,6 +312,7 @@ def measured():
         exclusions=lambda case: {"q1": 1, "q2": 2}[case["transaction_id"]],
         resources=lambda: {"free_bytes": 1},
         first_pass_state="after both database processes restarted",
+        runtime=RUNTIME,
     )
     return protocol, observation, memberships
 
@@ -335,10 +339,11 @@ def test_measure_observation_is_labelled_runtime_only_and_splits_memberships():
     assert vector["candidate_coverage_complete"] is True and len(vector["latency_ms"]) == 6
     assert "query_label" not in vector and "label_agreement" not in vector
     assert observation["vector_latency_ms"]["warm"]["population"] == 10
+    assert observation["runtime_identity"] == RUNTIME
 
 
 def test_measure_observation_rejects_changed_vector_results():
-    from reckoner.v1.benchmark.harness import vector_observations
+    from reckoner.v1.benchmark.protocol import vector_observations
 
     class Unstable:
         calls = 0
@@ -353,11 +358,14 @@ def test_measure_observation_rejects_changed_vector_results():
 
 def test_replacement_receipt_requires_identical_memberships():
     from reckoner.contracts import content_id
-    from reckoner.v1.benchmark.harness import replacement_receipt
+    from reckoner.v1.benchmark.protocol import replacement_receipt
 
     protocol, observation, _ = measured()
     same = FakeStore({"q1": [{"t": "a"}], "q2": []}, {})
-    receipt = replacement_receipt(protocol, observation, same, same, reason="contaminated")
+    receipt = replacement_receipt(
+        protocol, observation, same, same, reason="contaminated", runtime=RUNTIME
+    )
+    assert receipt["runtime_identity"] == RUNTIME
     assert receipt["receipt_id"] == content_id(
         {k: v for k, v in receipt.items() if k != "receipt_id"}
     )
@@ -365,7 +373,9 @@ def test_replacement_receipt_requires_identical_memberships():
     assert receipt["warm_repeated"] is False and receipt["host_cold"] is False
     changed = FakeStore({"q1": [{"t": "z"}], "q2": []}, {})
     with pytest.raises(ValueError, match="membership"):
-        replacement_receipt(protocol, observation, changed, same, reason="contaminated")
+        replacement_receipt(
+            protocol, observation, changed, same, reason="contaminated", runtime=RUNTIME
+        )
 
 
 def annotations(**extra):
@@ -379,12 +389,15 @@ def annotations(**extra):
 
 def test_assemble_report_joins_labels_applies_replacement_and_resources():
     from reckoner.contracts import content_id
-    from reckoner.v1.benchmark.harness import assemble_report, replacement_receipt
+    from reckoner.v1.benchmark.assembly import assemble_report
+    from reckoner.v1.benchmark.protocol import replacement_receipt
 
     protocol, observation, _ = measured()
     observation = {**observation, "report_id": content_id(observation)}
     same = FakeStore({"q1": [{"t": "a"}], "q2": []}, {})
-    receipt = replacement_receipt(protocol, observation, same, same, reason="contaminated")
+    receipt = replacement_receipt(
+        protocol, observation, same, same, reason="contaminated", runtime=RUNTIME
+    )
     report = assemble_report(
         observation,
         protocol,
@@ -441,7 +454,7 @@ def test_assemble_report_joins_labels_applies_replacement_and_resources():
 )
 def test_assemble_report_fails_closed(case):
     from reckoner.contracts import content_id
-    from reckoner.v1.benchmark.harness import assemble_report
+    from reckoner.v1.benchmark.assembly import assemble_report
 
     protocol, observation, _ = measured()
     observation = {**observation, "report_id": content_id(observation)}
@@ -482,7 +495,8 @@ def test_assemble_report_fails_closed(case):
 def test_docker_memory_and_artifact_records(tmp_path):
     import hashlib
 
-    from reckoner.v1.benchmark.harness import artifact_record, memory_bytes, sample_maxima
+    from reckoner.v1.benchmark.assembly import artifact_record
+    from reckoner.v1.benchmark.resources import memory_bytes, sample_maxima
 
     assert memory_bytes("2.056GiB / 4GiB") == 2207613190
     assert memory_bytes("184.2MiB / 2GiB") == 193147699
@@ -552,7 +566,38 @@ def test_benchmark_report_cli_assembles_fresh_labelled_report_offline(tmp_path):
     assert main(argv) == 2  # never overwrites an existing report
 
 
-@pytest.mark.parametrize("step", ["inventory", "prepare", "verify", "measure", "replacement"])
+def step_argv(step, tmp_path):
+    common = ["--output-dir", str(tmp_path), "--scaler", str(tmp_path / "scaler.json")]
+    common += ["--pg-dsn-env", "TASK11_TEST_DSN", "--artifact-root", str(tmp_path)]
+    extra = {
+        "inventory": ["--bundle", str(tmp_path), "--query-date", "2018-06-01"],
+        "prepare": ["--bundle", str(tmp_path), "--source-dir", str(tmp_path)],
+        "verify": [],
+        "measure": ["--first-pass-state", "restarted"],
+        "replacement": ["--reason", "contaminated"],
+    }[step]
+    if step in ("measure", "replacement"):
+        extra += ["--neo4j-uri", "bolt://127.0.0.1:1", "--neo4j-user-env", "TASK11_TEST_USER"]
+        extra += ["--neo4j-password-env", "TASK11_TEST_PASSWORD"]
+    return ["v1", "benchmark", step, *common, *extra]
+
+
+STORE_STEPS = ["inventory", "prepare", "verify", "measure", "replacement"]
+STEP_OUTPUTS = {
+    "inventory": ["candidates.jsonl", "protocol.json", "sql-function-plan.json"],
+    "prepare": ["vectors.jsonl", "preparation.json"],
+    "verify": ["stored-verification.json"],
+    "measure": [
+        "service-samples.jsonl",
+        "exact-memberships.json",
+        "retrieval-report.json",
+        "retrieval-report.md",
+    ],
+    "replacement": ["replacement-service-samples.jsonl", "replacement-first-pass.json"],
+}
+
+
+@pytest.mark.parametrize("step", STORE_STEPS)
 def test_benchmark_store_steps_require_named_environment_variables(
     step, monkeypatch, tmp_path, capsys
 ):
@@ -560,29 +605,356 @@ def test_benchmark_store_steps_require_named_environment_variables(
 
     for name in ("TASK11_TEST_DSN", "TASK11_TEST_USER", "TASK11_TEST_PASSWORD"):
         monkeypatch.delenv(name, raising=False)
-    common = ["--output-dir", str(tmp_path), "--scaler", str(tmp_path / "scaler.json")]
-    common += ["--pg-dsn-env", "TASK11_TEST_DSN"]
-    extra = {
-        "inventory": ["--artifact-root", str(tmp_path), "--bundle", str(tmp_path)],
-        "prepare": ["--artifact-root", str(tmp_path), "--bundle", str(tmp_path)],
-        "verify": ["--artifact-root", str(tmp_path)],
-        "measure": ["--artifact-root", str(tmp_path), "--first-pass-state", "restarted"],
-        "replacement": ["--reason", "contaminated"],
-    }[step]
-    extra += {
-        "inventory": ["--query-date", "2018-06-01"],
-        "prepare": ["--source-dir", str(tmp_path)],
-    }.get(step, [])
-    if step in ("measure", "replacement"):
-        extra += ["--neo4j-uri", "bolt://127.0.0.1:1", "--neo4j-user-env", "TASK11_TEST_USER"]
-        extra += ["--neo4j-password-env", "TASK11_TEST_PASSWORD"]
-    assert main(["v1", "benchmark", step, *common, *extra]) == 2
+    assert main(step_argv(step, tmp_path)) == 2
     assert "environment variable TASK11_TEST_DSN is not set" in capsys.readouterr().err
     assert list(tmp_path.iterdir()) == []
 
 
+def step_inputs(step, tmp_path):
+    """Minimal valid inputs so a step reaches its pre-flight checks."""
+    import json
+
+    from reckoner.v1.benchmark.protocol import protocol_declaration
+
+    query = {"transaction_id": "q1", "tenant_id": "t", "occurred_at": "2018-06-01T00:00:00Z"}
+    (tmp_path / "scaler.json").write_text(json.dumps({"scaler_id": "s"}))
+    (tmp_path / "runtime_validation.jsonl").write_text(json.dumps(query) + "\n")
+    if step != "inventory":
+        protocol = protocol_declaration([query], {"q1": ["a"]}, "s", {})
+        (tmp_path / "protocol.json").write_text(json.dumps(protocol))
+        (tmp_path / "candidates.jsonl").write_text(
+            json.dumps({"tenant_id": "t", "transaction_id": "a"}) + "\n"
+        )
+        (tmp_path / "retrieval-report.json").write_text(json.dumps({"queries": []}))
+
+
+def no_store_connections(monkeypatch):
+    import neo4j
+    import psycopg
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("store contacted before pre-flight checks")
+
+    monkeypatch.setattr(psycopg, "connect", refuse)
+    monkeypatch.setattr(neo4j.GraphDatabase, "driver", refuse)
+    for name in ("TASK11_TEST_DSN", "TASK11_TEST_USER", "TASK11_TEST_PASSWORD"):
+        monkeypatch.setenv(name, "fabricated-test-value")
+
+
+@pytest.mark.parametrize(
+    "step,output", [(step, output) for step in STORE_STEPS for output in STEP_OUTPUTS[step]]
+)
+def test_store_steps_refuse_any_existing_output_before_store_work(
+    step, output, monkeypatch, tmp_path, capsys
+):
+    from reckoner.cli import main
+
+    no_store_connections(monkeypatch)
+    step_inputs(step, tmp_path)
+    if step == "measure" and output.startswith("retrieval-report"):
+        (tmp_path / "retrieval-report.json").unlink()
+    (tmp_path / output).write_text("existing evidence")
+    before = sorted(p.name for p in tmp_path.iterdir())
+    assert main(step_argv(step, tmp_path)) == 2
+    assert output in capsys.readouterr().err
+    assert sorted(p.name for p in tmp_path.iterdir()) == before
+    assert (tmp_path / output).read_text() == "existing evidence"
+
+
+@pytest.mark.parametrize("step", STORE_STEPS)
+def test_store_steps_run_resource_guard_before_store_work(step, monkeypatch, tmp_path, capsys):
+    from reckoner.cli import main
+    from reckoner.v1.benchmark import steps
+    from reckoner.v1.benchmark.resources import ResourceGuardError
+
+    no_store_connections(monkeypatch)
+    step_inputs(step, tmp_path)
+    if step == "measure":
+        (tmp_path / "retrieval-report.json").unlink()
+
+    class Refusing:
+        def __init__(self, args):
+            pass
+
+        def __call__(self, connection=None, volumes=True):
+            raise ResourceGuardError("free disk below floor: fabricated")
+
+    monkeypatch.setattr(steps, "Guard", Refusing)
+    before = sorted(p.name for p in tmp_path.iterdir())
+    assert main(step_argv(step, tmp_path)) == 2
+    assert "free disk below floor" in capsys.readouterr().err
+    assert sorted(p.name for p in tmp_path.iterdir()) == before
+
+
+def test_sampler_failure_is_raised_not_silently_lost(monkeypatch, tmp_path):
+    import subprocess
+
+    from reckoner.v1.benchmark import resources
+
+    def failing(*args, **kwargs):
+        raise subprocess.CalledProcessError(1, "docker stats")
+
+    monkeypatch.setattr(resources.subprocess, "check_output", failing)
+    with pytest.raises(RuntimeError, match="service sampling failed"):
+        with resources.Sampler(tmp_path / "samples.jsonl", ["container"], 0.01):
+            pass
+
+
+def test_runtime_conninfo_sets_role_and_keeps_existing_options():
+    from psycopg.conninfo import conninfo_to_dict
+    from reckoner.v1.benchmark.steps import runtime_conninfo
+
+    plain = conninfo_to_dict(runtime_conninfo("host=h dbname=d user=u", "reckoner_runner"))
+    assert plain["options"] == "-c role=reckoner_runner"
+    assert plain["user"] == "u" and plain["dbname"] == "d"
+    kept = conninfo_to_dict(
+        runtime_conninfo("host=h options='-c statement_timeout=5'", "reckoner_runner")
+    )
+    assert kept["options"] == "-c statement_timeout=5 -c role=reckoner_runner"
+    with pytest.raises(ValueError, match="role"):
+        runtime_conninfo("host=h", "bad role; drop")
+
+
+@pytest.mark.parametrize(
+    "identity,message",
+    [
+        ({"current_user": "reckoner_runner", "oracle_usage": True}, "oracle"),
+        ({"current_user": "postgres", "oracle_usage": False}, "runtime role"),
+    ],
+)
+def test_runtime_identity_fails_closed(identity, message):
+    from reckoner.v1.benchmark.steps import check_runtime_identity
+
+    with pytest.raises(ValueError, match=message):
+        check_runtime_identity({"session_user": "owner", **identity}, "reckoner_runner")
+    allowed = {"current_user": "reckoner_runner", "session_user": "o", "oracle_usage": False}
+    assert check_runtime_identity(allowed, "reckoner_runner") == allowed
+
+
+def test_store_construction_failure_closes_neo4j_driver(monkeypatch):
+    from argparse import Namespace
+
+    import neo4j
+    from reckoner.v1.benchmark import queries, steps
+
+    class Driver:
+        closed = False
+
+        def verify_connectivity(self):
+            pass
+
+        def close(self):
+            self.closed = True
+
+    driver = Driver()
+    monkeypatch.setattr(neo4j.GraphDatabase, "driver", lambda *a, **k: driver)
+
+    def broken(*args, **kwargs):
+        raise OSError("database unavailable")
+
+    monkeypatch.setattr(queries, "SQLQueries", broken)
+    args = Namespace(neo4j_uri="bolt://127.0.0.1:1", runtime_role="reckoner_runner")
+    with pytest.raises(OSError):
+        steps._stores(args, {"scaler_id": "s"}, ("host=h", ("u", "p")))
+    assert driver.closed
+
+
+def test_sql_queries_close_connection_when_setup_fails(monkeypatch):
+    import psycopg
+    from reckoner.v1.benchmark.queries import SQLQueries
+
+    class Connection:
+        closed = False
+
+        def execute(self, *args):
+            raise psycopg.OperationalError("setup failed")
+
+        def close(self):
+            self.closed = True
+
+    connection = Connection()
+    monkeypatch.setattr(psycopg, "connect", lambda *a, **k: connection)
+    with pytest.raises(psycopg.OperationalError):
+        SQLQueries("host=h", {"scaler_id": "s"})
+    assert connection.closed
+
+
+def test_guard_rejects_malformed_store_volume():
+    from argparse import Namespace
+
+    from reckoner.v1.benchmark.resources import Guard
+
+    with pytest.raises(ValueError, match="NAME=VOLUME"):
+        Guard(Namespace(store_volume=["neo4j"], du_image="image"))
+
+
+def test_cypher_query_text_is_loaded_before_the_timed_region(monkeypatch):
+    import json
+    from pathlib import Path
+
+    from reckoner.v1.benchmark.queries import CypherQueries
+    from reckoner.v1.evidence.neo4j import CYPHER
+
+    class Result(list):
+        def single(self):
+            return self[0] if self else None
+
+    class Session:
+        def __init__(self):
+            self.queries = []
+
+        def run(self, query, **params):
+            self.queries.append(query)
+            if "RETURN m.shared_identity" in query:
+                return Result([{"identity": "m"}])
+            if "EvidenceCoverage" in query:
+                start, end = "2018-01-01T00:00:00Z", "2018-07-01T00:00:00Z"
+                return Result([{"tenant": "t", "start": start, "end": end}])
+            return Result([{"document": json.dumps({"x": 1}), "merchant_identity": "m"}])
+
+        def close(self):
+            pass
+
+    session = Session()
+
+    class Driver:
+        def session(self, **kwargs):
+            return session
+
+    graph = CypherQueries(Driver())
+
+    def no_reads(self, *args, **kwargs):
+        raise AssertionError("file read inside the timed region")
+
+    monkeypatch.setattr(Path, "read_text", no_reads)
+    tx = {"tenant_id": "t", "merchant_id": "x", "card_id": "c"}
+    tx["occurred_at"] = "2018-06-01T00:00:00Z"
+    assert graph.neighbourhood(tx) == [{"transaction": {"x": 1}, "merchant_identity": "m"}]
+    monkeypatch.undo()
+    assert session.queries[-1] == (CYPHER / "neighbourhood.cypher").read_text()
+
+
+def test_inventory_population_sorts_in_python_and_keys_by_tenant():
+    from reckoner.v1.benchmark.protocol import inventory_population
+
+    rows = {
+        "q1": [{"tenant_id": "t", "transaction_id": i} for i in ("b", "a", "B")],
+        "q2": [{"tenant_id": "t", "transaction_id": "a"}],
+    }
+    candidate_ids, members = inventory_population(rows)
+    assert candidate_ids == {"q1": ["B", "a", "b"], "q2": ["a"]}
+    assert sorted(members) == [("t", "B"), ("t", "a"), ("t", "b")]
+    rows["q2"] = [{"tenant_id": "other", "transaction_id": "a"}]
+    with pytest.raises(ValueError, match="two tenants"):
+        inventory_population(rows)
+
+
+def test_stored_verification_sorts_in_python_before_hashing():
+    from reckoner.v1.benchmark.protocol import check_stored, protocol_declaration
+
+    protocol = protocol_declaration([{"transaction_id": "q1"}], {"q1": ["B", "a", "b"]}, "s", {})
+    coverage = [{"query_id": "q1", "complete": True}]
+    result = check_stored(["b", "a", "B"], coverage, protocol)
+    assert result["stored_count"] == 3
+    with pytest.raises(ValueError, match="coverage"):
+        check_stored(["b", "a", "B"], [{"query_id": "q1", "complete": False}], protocol)
+    with pytest.raises(ValueError, match="union"):
+        check_stored(["a", "b"], coverage, protocol)
+
+
+def test_vectors_copy_explicit_columns_single_commit_and_bounded_guard():
+    import io
+
+    from reckoner.v1.benchmark.steps import write_vectors
+
+    class Copy:
+        def __init__(self, sink):
+            self.sink = sink
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            pass
+
+        def write_row(self, row):
+            self.sink.append(row)
+
+    class Cursor:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def copy(self, statement):
+            self.connection.statements.append(statement)
+            return Copy(self.connection.rows)
+
+    class Connection:
+        def __init__(self):
+            self.statements, self.rows, self.commits = [], [], 0
+
+        def cursor(self):
+            return Cursor(self)
+
+        def commit(self):
+            self.commits += 1
+
+    connection, guards = Connection(), []
+    pairs = [({"tenant_id": "t", "transaction_id": str(i)}, [0.0]) for i in range(5)]
+    count, samples = write_vectors(
+        pairs,
+        io.StringIO(),
+        connection,
+        scaler_id="s",
+        batch_size=2,
+        guard=lambda c: guards.append(c) or {"n": len(guards)},
+        guard_every=2,
+    )
+    assert count == 5 and len(connection.rows) == 5
+    assert connection.commits == 1
+    assert set(connection.statements) == {
+        "COPY reckoner.v1_vectors (tenant_id, transaction_id, scaler_id, feature_version, "
+        "features) FROM STDIN"
+    }
+    assert samples == [{"n": 1}, {"n": 2}, {"n": 3}]  # start, every second batch, end
+
+
+def test_protocol_declaration_records_candidate_policy_used_by_inventory():
+    from reckoner.v1.benchmark.protocol import (
+        CANDIDATE_POLICY,
+        inventory_parameters,
+        protocol_declaration,
+    )
+
+    protocol = protocol_declaration([{"transaction_id": "q"}], {"q": []}, "s", {})
+    assert protocol["candidate_policy"] == CANDIDATE_POLICY
+    assert CANDIDATE_POLICY["resolution_policy_version"] == "simulated-seven-days-v1"
+    assert CANDIDATE_POLICY["resolution_window_days"] == 90
+    query = {"tenant_id": "t", "occurred_at": "2018-06-01T00:00:00Z"}
+    assert inventory_parameters(query) == (
+        "t",
+        "simulated-seven-days-v1",
+        "2018-06-01T00:00:00Z",
+        "2018-06-01T00:00:00Z",
+        90,
+        "2018-06-01T00:00:00Z",
+    )
+
+
+def test_tracked_annotations_restate_no_unchecked_numbers():
+    import json
+    import re
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[3] / "docs/evidence/phase-3-benchmark-annotations.json"
+    notes = json.loads(path.read_text())
+    texts = [*notes["limitations"]]
+    texts += [notes[k] for k in notes if k not in ("schema_version", "limitations")]
+    assert texts and not [t for t in texts if re.search(r"\d", t)]
+    assert not [t for t in texts if re.search(r"[a-z][0-9]|[0-9][a-z]|\w/\w", t)]
+
+
 def test_disk_reconciliation_counts_artifacts_and_every_volume():
-    from reckoner.v1.benchmark.harness import ResourceGuardError, disk_reconciliation
+    from reckoner.v1.benchmark.resources import ResourceGuardError, disk_reconciliation
 
     containers = [{"name": "/c", "state": "exited", "oom_killed": False, "restart_count": 0}]
     record = disk_reconciliation(
@@ -601,6 +973,22 @@ def test_disk_reconciliation_counts_artifacts_and_every_volume():
 
 
 def parse_du_rows(rows, volumes):
-    from reckoner.v1.benchmark.harness import parse_du
+    from reckoner.v1.benchmark.resources import parse_du
 
     return parse_du(rows, volumes)
+
+
+def test_report_prefix_with_dots_keeps_the_whole_name(tmp_path):
+    from reckoner.v1.benchmark.report import write_report
+
+    write_report(retrieval_body("synthetic-fixture"), tmp_path / "benchmark.v2")
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["benchmark.v2.json", "benchmark.v2.md"]
+
+
+def test_markdown_fence_cannot_be_closed_by_report_content(tmp_path):
+    from reckoner.v1.benchmark.report import write_report
+
+    body = {**retrieval_body("synthetic-fixture"), "note": "```\n# injected heading"}
+    write_report(body, tmp_path / "report")
+    markdown = (tmp_path / "report.md").read_text()
+    assert "\n````json\n" in markdown and markdown.rstrip().endswith("````")

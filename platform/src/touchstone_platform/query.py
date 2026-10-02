@@ -7,6 +7,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from decimal import Decimal, localcontext
 
+from touchstone_platform.comparison import attestation_envelope_matches, resolve_comparison
 from touchstone_platform.refresh import open_published_snapshot
 from touchstone_platform.settings import Settings
 from touchstone_platform.staging import exact_cpst
@@ -253,26 +254,32 @@ class SnapshotReader:
             "(select unnest(?))",
             [workflow_id, run_id, result["tenant_ids"]],
         )
+        versions = {}
+        for row in declarations:
+            versions[row["tenant_id"]] = versions.get(row["tenant_id"], 0) + 1
+        result["declaration_versions"] = (
+            max(versions.values()) if set(versions) == set(result["tenant_ids"]) else 0
+        )
         refs, configs = set(), set()
         for row in declarations:
             document = json.loads(row["document_json"])
             result["case_membership"].extend(
                 [row["tenant_id"], task] for task in document.get("expected_task_ids", [])
             )
-            from touchstone_platform.comparison import resolve_comparison
-
             companions = self._rows(
                 "select document_json,identity_conflict from stg_events where tenant_id=? and "
                 "workflow_id=? "
                 "and run_id=? and event_kind='comparison_attestation'",
                 [row["tenant_id"], workflow_id, run_id],
             )
+            events = [json.loads(item["document_json"]) for item in companions]
+            # Attestation integrity failures leave only the comparison unavailable.
             comparison = (
                 {}
-                if any(item["identity_conflict"] for item in companions)
-                else resolve_comparison(
-                    document, [json.loads(item["document_json"])["payload"] for item in companions]
-                )
+                if versions[row["tenant_id"]] != 1
+                or any(item["identity_conflict"] for item in companions)
+                or not all(attestation_envelope_matches(e, document) for e in events)
+                else resolve_comparison(document, [e["payload"] for e in events])
             )
             refs.add(comparison.get("reference_version"))
             configs.add(comparison.get("business_config_id"))
@@ -300,7 +307,9 @@ class SnapshotReader:
         where = f"tenant_id in ({placeholders}) and workflow_id = ? and run_id = ?"
         params = [*tenant_ids, workflow_id, run_id]
         identities = self.connection.execute(
-            f"select count(*) from stg_events where {where} and identity_conflict", params
+            f"select count(*) from stg_events where {where} and identity_conflict "
+            "and event_kind <> 'comparison_attestation'",
+            params,
         ).fetchone()[0]
         incomplete, unavailable = self.connection.execute(
             "select count(*) filter (where incomplete), "

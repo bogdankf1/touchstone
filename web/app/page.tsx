@@ -170,12 +170,13 @@ async function RunContent({
   if (changed) return <SnapshotChanged />;
   let comparison: Comparison | null = null;
   let comparisonChanged = false;
+  let comparisonFailed = false;
   if (comparisonRun && runs.some(r => r.run_id === comparisonRun)) {
     try {
       const response = await getComparison(filters, comparisonRun);
       comparisonChanged = response.metadata.generation !== generation;
       if (!comparisonChanged) comparison = response.data;
-    } catch { comparison = null; }
+    } catch { comparisonFailed = true; }
   }
   const run = summary.data;
   return (
@@ -213,7 +214,7 @@ async function RunContent({
         <p className="callout">Excluded incompatible tenants: {run.excluded_tenants!.join(', ')}</p>
       )}
       <MetricSummary run={run} />
-      <RunComparison comparison={comparison} changed={comparisonChanged} filters={filters} runs={runs} selected={comparisonRun} />
+      <RunComparison comparison={comparison} changed={comparisonChanged} failed={comparisonFailed} filters={filters} runs={runs} selected={comparisonRun} />
       <div className="content-grid">
         <CostTable run={run} tasks={tasks.data.items} />
         <EvaluationTable run={run} />

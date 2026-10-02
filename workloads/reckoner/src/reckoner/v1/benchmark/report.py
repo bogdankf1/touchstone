@@ -22,17 +22,29 @@ MEASUREMENT_MODES = {
         "Synthetic fixture: demonstrates plumbing only and cannot satisfy a measured gate.",
     ),
 }
+COMPARISON_MODES = {
+    "measured-comparison": (
+        "Measured Reckoner v1 arm comparison",
+        "Arms measured on the simulated dataset. Not production traffic.",
+    ),
+    "synthetic-fixture": (
+        "Synthetic-fixture Reckoner v1 arm comparison",
+        "Synthetic fixture: demonstrates plumbing only and cannot satisfy a measured gate.",
+    ),
+}
 
 
 def write_report(report: dict, output: Path) -> dict:
     output = Path(output)
-    json_path, markdown_path = output.with_suffix(".json"), output.with_suffix(".md")
-    if report.get("schema_version") != COMPARISON_SCHEMA and (
-        report.get("measurement_mode") not in MEASUREMENT_MODES
-    ):
+    # The whole prefix is kept: "report.v2" becomes report.v2.json, not report.json.
+    json_path = output.with_name(output.name + ".json")
+    markdown_path = output.with_name(output.name + ".md")
+    modes = (
+        COMPARISON_MODES if report.get("schema_version") == COMPARISON_SCHEMA else MEASUREMENT_MODES
+    )
+    if report.get("measurement_mode") not in modes:
         raise ValueError(
-            "benchmark report requires an explicit measurement_mode: "
-            + ", ".join(sorted(MEASUREMENT_MODES))
+            "report requires an explicit measurement_mode: " + ", ".join(sorted(modes))
         )
     if json_path.exists() or markdown_path.exists():
         raise FileExistsError("benchmark report already exists")
@@ -86,10 +98,17 @@ def _retrieval_markdown(body):
         f"{body.get('exact_candidate_matches', 'unavailable')}.\n\n"
         f"Decision impact: {body.get('decision_impact', {}).get('status', 'unavailable')}. "
         "No provider calls are performed by this report writer.\n\n"
-        "## Evidence and limits\n\n```json\n"
-        + json.dumps({k: v for k, v in body.items() if k != "queries"}, indent=2, sort_keys=True)
-        + "\n```\n"
+        "## Evidence and limits\n\n"
+        + _fenced(
+            json.dumps({k: v for k, v in body.items() if k != "queries"}, indent=2, sort_keys=True)
+        )
     )
+
+
+def _fenced(text):
+    """A fence longer than any backtick run in the content, so content cannot close it."""
+    fence = "`" * max(3, 1 + max((len(run) for run in re.findall(r"`+", text)), default=0))
+    return f"{fence}json\n{text}\n{fence}\n"
 
 
 def _cell(value):
@@ -141,13 +160,15 @@ def _comparison_markdown(body):
             )
             + " |"
         )
+    heading, label = COMPARISON_MODES[body["measurement_mode"]]
     return (
-        "# Reckoner v1 arm comparison\n\n"
+        f"# {heading}\n\n"
+        f"Measurement mode: `{body['measurement_mode']}`. {label}\n\n"
         f"Report `{body['report_id']}`. "
         f"Declared cases: {len(body.get('expected_ids', []))}. "
         "An ineligible comparison never shows a CPST delta. "
         "No provider calls are performed by this report writer.\n\n"
         "## Arms\n\n" + "\n".join(arms) + "\n\n"
         "## Comparisons\n\n" + "\n".join(comparisons) + "\n\n"
-        "## Full record\n\n```json\n" + json.dumps(body, indent=2, sort_keys=True) + "\n```\n"
+        "## Full record\n\n" + _fenced(json.dumps(body, indent=2, sort_keys=True))
     )

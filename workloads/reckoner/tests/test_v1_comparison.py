@@ -31,6 +31,7 @@ def arm():
         "retrieval_window": {"history_days": 30, "resolution_days": 90},
         "call_ids": ["call"],
         "execution_mode": "fabricated",
+        "dataset_simulated": True,
         "generation": "g",
         "refresh_state": "succeeded",
         "metrics_complete": True,
@@ -58,6 +59,7 @@ def arm():
         ("correct_tasks", 0),
         ("metrics_complete", False),
         ("oracle_version", "other-oracle"),
+        ("dataset_simulated", False),
     ],
 )
 def test_ineligible_has_no_delta(field, value):
@@ -106,6 +108,7 @@ def test_compare_cli_writes_immutable_versioned_artifact_without_provider(tmp_pa
             arms=tmp_path / "arms.json",
             expected=tmp_path / "ids.json",
             output=output,
+            measurement_mode="synthetic-fixture",
         )
     )
     assert result["comparisons"][0]["delta_cpst"] == "-0.5"
@@ -114,7 +117,8 @@ def test_compare_cli_writes_immutable_versioned_artifact_without_provider(tmp_pa
         == "reckoner-comparison-v1"
     )
     markdown = output.with_suffix(".md").read_text()
-    assert markdown.startswith("# Reckoner v1 arm comparison\n")
+    assert markdown.startswith("# Synthetic-fixture Reckoner v1 arm comparison\n")
+    assert "plumbing only" in markdown
     assert "Query count" not in markdown
     assert "| baseline | current | eligible | none | -0.5 |" in markdown
 
@@ -126,7 +130,8 @@ def test_comparison_markdown_shows_ineligibility_reasons_without_delta(tmp_path)
     a = arm()
     b = deepcopy(a)
     b.update(arm_id="current|<b>", currency="EUR")
-    write_report(compare_arms([a, b], ["a", "b"]), tmp_path / "comparison")
+    result = {**compare_arms([a, b], ["a", "b"]), "measurement_mode": "measured-comparison"}
+    write_report(result, tmp_path / "comparison")
     markdown = (tmp_path / "comparison.md").read_text()
     assert (
         "| baseline | current\\|\\<b\\> | ineligible | incompatible currency | unavailable |"
@@ -163,3 +168,65 @@ def test_compare_arms_rejects_duplicate_expected_ids():
 
     with pytest.raises(ValueError, match="invalid declared cases"):
         compare_arms([arm()], ["a", "a"])
+
+
+def test_comparison_report_requires_measurement_label(tmp_path):
+    from reckoner.v1.benchmark.compare import compare_arms
+    from reckoner.v1.benchmark.report import write_report
+
+    with pytest.raises(ValueError, match="measurement_mode"):
+        write_report(compare_arms([arm()], ["a", "b"]), tmp_path / "comparison")
+    assert list(tmp_path.iterdir()) == []
+    measured = {**compare_arms([arm()], ["a", "b"]), "measurement_mode": "measured-comparison"}
+    write_report(measured, tmp_path / "comparison")
+    markdown = (tmp_path / "comparison.md").read_text()
+    assert markdown.startswith("# Measured Reckoner v1 arm comparison\n")
+    assert "plumbing only" not in markdown
+
+
+def test_cpst_delta_keeps_full_decimal_precision():
+    from reckoner.v1.benchmark.compare import comparison_eligibility
+
+    baseline = arm()
+    current = deepcopy(baseline)
+    baseline["cpst"] = "0.000000000000000000000000000001"
+    current["cpst"] = "1234567890.123456789012345678901234"
+    delta = comparison_eligibility(baseline, current)["delta_cpst"]
+    assert delta == "1234567890.123456789012345678901233999999"
+
+
+def test_missing_calibration_ids_are_missing_provenance_not_reuse():
+    from reckoner.v1.benchmark.compare import compare_arms
+
+    a = arm()
+    b = deepcopy(a)
+    b.update(arm_id="current", model_version="other")
+    for item in (a, b):
+        item["calibration_id"] = None
+        item.pop("calibration_binding")
+    result = compare_arms([a, b], ["a", "b"])
+    assert result["comparisons"][0]["eligible"] is False
+    assert "missing arm provenance" in result["comparisons"][0]["reasons"]
+
+
+def test_workload_and_platform_eligibility_rules_correspond():
+    from reckoner.v1.benchmark import compare
+    from touchstone_platform import comparison
+
+    # Workload arm field -> generic platform field with the same meaning.
+    names = {
+        "workflow_id": "workflow_id",
+        "cohort_id": "cohort_version",
+        "oracle_version": "reference_version",
+        "business_config": "business_config_id",
+        "currency": "currency",
+        "execution_mode": "measurement_mode",
+        "dataset_simulated": "dataset_simulated",
+        "generation": "generation",
+    }
+    # The platform carries tenant assignment inside its (tenant, task) case membership.
+    workload_only = {"tenant_assignment"}
+    assert set(compare.INVARIANTS) - workload_only == set(names)
+    assert {names[k] for k in compare.INVARIANTS if k in names} == set(comparison.INVARIANTS)
+    assert compare.BINDING == comparison.BINDING
+    assert set(compare.PINNED) == set(comparison.PINS)

@@ -9,7 +9,7 @@ with declared as (
     select e.tenant_id, e.workflow_id, e.run_id,
         cast(null as json) as document_json, 0 as versions
     from {{ ref('stg_events') }} e
-    where not exists (
+    where e.event_kind <> 'comparison_attestation' and not exists (
         select 1 from declared d where d.tenant_id = e.tenant_id
             and d.workflow_id = e.workflow_id and d.run_id = e.run_id
     )
@@ -37,7 +37,8 @@ with declared as (
         max(cast(v.version_mismatch as integer)) as version_mismatch
     from {{ ref('stg_events') }} e
     join {{ ref('int_event_compat') }} v using (tenant_id, workflow_id, run_id, event_id)
-    where e.event_kind <> 'provider_usage' or e.cost_scope = 'online'
+    where e.event_kind <> 'comparison_attestation'
+        and (e.event_kind <> 'provider_usage' or e.cost_scope = 'online')
     group by 1, 2, 3, 4
 ), run_evidence as (
     select e.tenant_id, e.workflow_id, e.run_id,
@@ -46,6 +47,7 @@ with declared as (
     from {{ ref('stg_events') }} e
     join {{ ref('int_event_compat') }} v using (tenant_id, workflow_id, run_id, event_id)
     left join {{ ref('int_task_membership') }} m using (tenant_id, workflow_id, run_id, task_id)
+    where e.event_kind <> 'comparison_attestation'
     group by 1, 2, 3
 ), run_rejections as (
     select tenant_id, workflow_id, run_id, count(*) as rejected_calls

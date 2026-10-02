@@ -143,3 +143,14 @@ for (const scenario of ['comparison-ineligible','comparison-generation']) {
     await expect(page.getByText(scenario==='comparison-generation'?'Comparison snapshot changed':'Comparison ineligible')).toBeVisible();
   });
 }
+test('labels a comparison simulated when either arm is fabricated', async ({page, request}) => {
+  await request.get('http://127.0.0.1:8100/__scenario?name=comparison-mixed');
+  await page.goto('/?compare=reckoner-pilot');
+  await expect(page.getByText('Simulated comparison fixture')).toBeVisible();
+});
+test('shows a comparison API failure as an error, not as no compatible run', async ({page, request}) => {
+  await request.get('http://127.0.0.1:8100/__scenario?name=comparison-error');
+  await page.goto('/?compare=reckoner-pilot');
+  await expect(page.getByRole('alert')).toContainText('Comparison unavailable');
+  await expect(page.getByText('No compatible comparison run')).toHaveCount(0);
+});

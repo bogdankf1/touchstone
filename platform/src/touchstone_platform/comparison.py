@@ -1,6 +1,6 @@
 """Comparison eligibility over declared generic provenance and governed metrics."""
 
-from decimal import Decimal
+from decimal import Decimal, localcontext
 
 PINS = (
     "config_version",
@@ -13,35 +13,44 @@ PINS = (
     "execution_mode",
     "call_ids",
 )
+INVARIANTS = (
+    "workflow_id",
+    "cohort_version",
+    "reference_version",
+    "business_config_id",
+    "currency",
+    "measurement_mode",
+    "dataset_simulated",
+    "generation",
+)
+# A changed value of any of these is a changed model input that needs its own calibration.
+BINDING = (
+    "model_version",
+    "prompt_version",
+    "question_version",
+    "evidence_version",
+    "retrieval_window",
+)
+ENVELOPE = (
+    "experiment_version",
+    "cohort_version",
+    "config_version",
+    "code_revision",
+    "dataset_version",
+)
 
 
 def comparison_eligibility(baseline: dict, current: dict) -> dict:
     reasons = []
-    for key in (
-        "workflow_id",
-        "cohort_version",
-        "reference_version",
-        "business_config_id",
-        "currency",
-        "measurement_mode",
-        "dataset_simulated",
-        "generation",
-    ):
+    for key in INVARIANTS:
         if baseline.get(key) is None or baseline.get(key) != current.get(key):
             reasons.append("incompatible " + key)
     calibrations = {}
     for arm in (baseline, current):
         for provenance in arm.get("arm_provenance", []):
-            binding = tuple(
-                provenance.get(key)
-                for key in (
-                    "model_version",
-                    "prompt_version",
-                    "question_version",
-                    "evidence_version",
-                    "retrieval_window",
-                )
-            )
+            if provenance.get("calibration_id") is None:
+                continue  # Missing provenance, reported below; not calibration reuse.
+            binding = tuple(provenance.get(key) for key in BINDING)
             previous = calibrations.setdefault(provenance.get("calibration_id"), binding)
             if previous != binding:
                 reasons.append("calibration reused across model-input arms")
@@ -54,6 +63,8 @@ def comparison_eligibility(baseline: dict, current: dict) -> dict:
             or sorted(members) != expected
         ):
             reasons.append("incompatible case membership")
+        if arm.get("declaration_versions") != 1:
+            reasons.append("multiple declaration versions")
         if arm.get("excluded_tenants"):
             reasons.append("excluded tenants")
         if not arm.get("arm_provenance") or any(
@@ -66,15 +77,28 @@ def comparison_eligibility(baseline: dict, current: dict) -> dict:
             reasons.append("incomplete metrics or cost")
         if not arm.get("correct_tasks") or arm.get("cpst") is None:
             reasons.append("unavailable denominator")
+    delta = None
+    if not reasons:
+        with localcontext() as context:
+            context.prec = 76  # Exact for any two DECIMAL(38, *) values.
+            delta = str(Decimal(current["cpst"]) - Decimal(baseline["cpst"]))
     return {
         "eligible": not reasons,
         "reasons": sorted(set(reasons)),
-        "delta_cpst": str(Decimal(current["cpst"]) - Decimal(baseline["cpst"]))
-        if not reasons
-        else None,
+        "delta_cpst": delta,
         "baseline": baseline,
         "current": current,
     }
+
+
+def attestation_envelope_matches(event: dict, declaration: dict) -> bool:
+    """The attestation envelope must reproduce the attested run's declared identity exactly."""
+    reproducibility = event.get("reproducibility") or {}
+    return (
+        event.get("workflow_version") == declaration.get("workflow_version")
+        and all(reproducibility.get(key) == declaration.get(key) for key in ENVELOPE)
+        and event.get("simulated") is (declaration.get("measurement_mode") == "fabricated")
+    )
 
 
 def resolve_comparison(declaration: dict, attestations: list[dict]) -> dict:

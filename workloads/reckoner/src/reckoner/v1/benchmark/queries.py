@@ -1,5 +1,6 @@
 """Equal-work neighbourhood timings; eligible sets are a separate correctness check."""
 
+import json
 from collections import defaultdict
 from datetime import timedelta
 from math import ceil
@@ -138,7 +139,11 @@ class SQLQueries:
         import psycopg
 
         self.connection = psycopg.connect(dsn, autocommit=True)
-        self.connection.execute("SET default_transaction_read_only=on")
+        try:
+            self.connection.execute("SET default_transaction_read_only=on")
+        except BaseException:
+            self.connection.close()
+            raise
         self.scaler = scaler
 
     def close(self):
@@ -210,17 +215,18 @@ class SQLQueries:
 
 class CypherQueries:
     def __init__(self, driver):
+        # Imports and query text are loaded here, outside the timed neighbourhood region.
+        from reckoner.v1.evidence.neo4j import CYPHER, Neo4jEvidence
+
         self.driver = driver
+        self.neighbourhood_query = (CYPHER / "neighbourhood.cypher").read_text()
+        self.evidence = Neo4jEvidence(driver)
         self.session = driver.session(default_access_mode="READ")
 
     def close(self):
         self.session.close()
 
     def neighbourhood(self, tx):
-        import json
-
-        from reckoner.v1.evidence.neo4j import CYPHER
-
         merchant = self.session.run(
             "MATCH(m:MerchantIdentity {tenant_id:$tenant,merchant_id:$merchant}) RETURN "
             "m.shared_identity AS identity",
@@ -248,7 +254,7 @@ class CypherQueries:
         return [
             {"transaction": json.loads(r["document"]), "merchant_identity": r["merchant_identity"]}
             for r in self.session.run(
-                (CYPHER / "neighbourhood.cypher").read_text(),
+                self.neighbourhood_query,
                 query_time=tx["occurred_at"],
                 tenant_id=tx["tenant_id"],
                 card_id=tx["card_id"],
@@ -258,9 +264,4 @@ class CypherQueries:
         ]
 
     def candidates(self, tx):
-        from reckoner.v1.evidence.neo4j import Neo4jEvidence
-
-        return [
-            r["transaction_id"]
-            for r in Neo4jEvidence(self.driver).resolved_cases({"transaction": tx})
-        ]
+        return [r["transaction_id"] for r in self.evidence.resolved_cases({"transaction": tx})]

@@ -1,5 +1,6 @@
 """Generic published comparisons fail closed and do not mix generations."""
 
+import json
 from copy import deepcopy
 
 import pytest
@@ -23,6 +24,7 @@ def result():
         "correct_tasks": 2,
         "cpst": "2.5",
         "excluded_tenants": [],
+        "declaration_versions": 1,
         "arm_provenance": [
             {
                 "config_version": "cfg",
@@ -60,6 +62,8 @@ def result():
         ("arm_provenance", []),
         ("refresh_state", "failed"),
         ("excluded_tenants", ["other"]),
+        ("declaration_versions", 2),
+        ("declaration_versions", None),
     ],
 )
 def test_comparison_blocks_ineligible_delta(field, value):
@@ -237,7 +241,7 @@ def test_published_arms_cannot_reuse_calibration_across_changed_input():
     assert report["delta_cpst"] is None
 
 
-def _companion(declaration_document, task="a", **comparison_changes):
+def _companion(declaration_document, task="a", envelope=None, **comparison_changes):
     from touchstone_platform.contracts import canonical_sha256, validate_event
 
     from .test_metrics import RECEIVED, event
@@ -253,41 +257,49 @@ def _companion(declaration_document, task="a", **comparison_changes):
         )
     raw = event("execution", task).document
     raw.update(event_id="attestation", event_kind="comparison_attestation", payload=payload)
+    raw.update(envelope or {})
     return validate_event(raw, RECEIVED)
 
 
-def test_conflicting_companion_identity_surfaces_conflict_and_blocks_comparison(tmp_path):
+def _run_state(warehouse):
     import duckdb
     from touchstone_platform.query import SnapshotReader
+
+    with duckdb.connect(str(warehouse)) as c:
+        runs = c.execute("select * from mart_runs order by all").fetchall()
+        nodes = c.execute("select * from mart_nodes order by all").fetchall()
+        reader = SnapshotReader(c, {"generation": "same"}, {"state": "succeeded"})
+        summary = reader.summary("reckoner", "run-fixture-1", tenant_id="tenant-fixture-a")
+        arm = reader.comparison_arm("reckoner", "run-fixture-1", tenant_id="tenant-fixture-a")
+    return runs, nodes, summary, arm
+
+
+@pytest.mark.parametrize("scenario", ["valid", "conflict", "envelope"])
+def test_attestation_never_changes_attested_run_metrics(tmp_path, scenario):
+    from touchstone_platform.comparison import comparison_eligibility
 
     from .test_metrics import declaration, event
     from .test_semantics import build_marts
 
     d = declaration(("a",))
-    original = _companion(d.document)
-    conflicting = _companion(d.document, business_config_id="other-costs")
-    warehouse = build_marts(
-        tmp_path,
-        [
-            event("execution", "a"),
-            event("outcome", "a"),
-            event("provider_usage", "a"),
-            original,
-            conflicting,
-        ],
-        [d],
-    )
-    with duckdb.connect(str(warehouse)) as c:
-        reader = SnapshotReader(c, {"generation": "same"}, {"state": "succeeded"})
-        arm = reader.comparison_arm("reckoner", "run-fixture-1", tenant_id="tenant-fixture-a")
-        assert arm["quality"]["identity_conflicts"] > 0
-        assert arm["arm_provenance"] == []
-        assert arm["reference_version"] is None
-    from touchstone_platform.comparison import comparison_eligibility
-
-    report = comparison_eligibility(arm, arm)
-    assert report["eligible"] is False
-    assert "missing arm provenance" in report["reasons"]
+    run = [event("execution", "a"), event("outcome", "a"), event("provider_usage", "a")]
+    companions = [_companion(d.document)]
+    if scenario == "conflict":
+        companions.append(_companion(d.document, business_config_id="other-costs"))
+    if scenario == "envelope":
+        companions = [_companion(d.document, envelope={"workflow_version": "other-version"})]
+    plain = _run_state(build_marts(tmp_path / "plain", run, [d]))
+    attested = _run_state(build_marts(tmp_path / "attested", [*run, *companions], [d]))
+    assert attested[:3] == plain[:3]  # runs, nodes and summary are byte-for-byte unchanged
+    assert plain[2]["metrics_complete"] is True and plain[2]["cpst"] is not None
+    report = comparison_eligibility(attested[3], attested[3])
+    if scenario == "valid":
+        assert attested[3]["arm_provenance"][0]["call_ids"] == ["call-a"]
+        assert "missing arm provenance" not in report["reasons"]
+    else:
+        assert attested[3]["arm_provenance"] == []
+        assert report["eligible"] is False
+        assert "missing arm provenance" in report["reasons"]
 
 
 def test_companion_for_undeclared_task_is_rejected_not_counted_as_unexpected(tmp_path):
@@ -321,3 +333,64 @@ def test_companion_for_undeclared_task_is_rejected_not_counted_as_unexpected(tmp
         assert c.execute(
             "select unexpected_tasks from mart_runs where run_id='run-fixture-1'"
         ).fetchone() == (0,)
+
+
+def test_multiple_declaration_versions_are_their_own_reason():
+    from touchstone_platform.comparison import comparison_eligibility
+
+    a = result()
+    b = deepcopy(a)
+    b["declaration_versions"] = 2
+    assert "multiple declaration versions" in comparison_eligibility(a, b)["reasons"]
+
+
+def test_comparison_arm_reports_declaration_versions(tmp_path):
+    import duckdb
+    from touchstone_platform.query import SnapshotReader
+
+    from .test_metrics import declaration, event
+    from .test_semantics import build_marts
+
+    d = declaration(("a",))
+    changed = declaration(("a",))
+    document = {**changed.document, "code_revision": "other-revision"}
+    changed = type(changed)(
+        changed.identity,
+        changed.trace_id,
+        changed.span_id,
+        changed.received_at,
+        "f" * 64,
+        json.dumps(document),
+    )
+    warehouse = build_marts(
+        tmp_path, [event("execution", "a"), event("outcome", "a")], [d, changed]
+    )
+    with duckdb.connect(str(warehouse)) as c:
+        reader = SnapshotReader(c, {"generation": "same"}, {"state": "succeeded"})
+        arm = reader.comparison_arm("reckoner", "run-fixture-1", tenant_id="tenant-fixture-a")
+    from touchstone_platform.comparison import comparison_eligibility
+
+    assert arm["declaration_versions"] == 2
+    assert "multiple declaration versions" in comparison_eligibility(arm, arm)["reasons"]
+
+
+def test_platform_cpst_delta_keeps_full_decimal_precision():
+    from touchstone_platform.comparison import comparison_eligibility
+
+    a = result()
+    b = deepcopy(a)
+    a["cpst"] = "0.000000000000000000000000000001"
+    b["cpst"] = "1234567890.123456789012345678901234"
+    assert comparison_eligibility(a, b)["delta_cpst"] == "1234567890.123456789012345678901233999999"
+
+
+def test_platform_missing_calibration_ids_are_not_reuse():
+    from touchstone_platform.comparison import comparison_eligibility
+
+    a = result()
+    b = deepcopy(a)
+    a["arm_provenance"][0]["calibration_id"] = None
+    b["arm_provenance"][0].update(calibration_id=None, prompt_version="changed")
+    reasons = comparison_eligibility(a, b)["reasons"]
+    assert "missing arm provenance" in reasons
+    assert "calibration reused across model-input arms" not in reasons
