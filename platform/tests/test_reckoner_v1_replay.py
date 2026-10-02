@@ -506,3 +506,19 @@ def test_node_cost_never_sums_mixed_currencies(tmp_path):
         assert c.execute(
             "select model_cost,offline_model_cost,provider_spend from mart_nodes"
         ).fetchone() == (None, None, None)
+
+
+def test_unknown_online_amount_makes_node_cost_unknown_not_partial(tmp_path):
+    events = [
+        event("execution", "a"),
+        event("outcome", "a"),
+        scoped_call("score"),
+        scoped_call("note", amount=None),
+        *closures(online=("score", "note"), offline=()),
+    ]
+    warehouse = build_marts(tmp_path, events, [lifecycle()])
+    with duckdb.connect(str(warehouse)) as c:
+        assert c.execute(
+            "select model_cost,offline_model_cost,provider_spend,online_cost_complete "
+            "from mart_nodes"
+        ).fetchone() == (None, Decimal("0"), None, False)
