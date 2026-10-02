@@ -164,7 +164,7 @@ const server = createServer(async (request, response) => {
       retrieval_window:'30/90 days', execution_mode:'fabricated', call_ids:[]} ]});
     const data = {eligible:scenario!=='comparison-ineligible',
       reasons:scenario==='comparison-ineligible'?['incompatible case membership']:[],
-      delta_cpst:scenario==='comparison-ineligible'?null:'-0.500000',
+      delta_cpst:scenario==='comparison-ineligible'?null:'-0.5',
       baseline:arm('fixture-baseline','2.5','relational'), current:arm('fixture-current','2','gds-augmented')};
     response.end(JSON.stringify({metadata:{...metadata,generation:scenario==='comparison-generation'?'other':metadata.generation},data}));
     return;

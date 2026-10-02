@@ -188,8 +188,6 @@ def test_declared_compatible_comparison_is_served_from_real_snapshot(published):
 
     path = published.warehouse_dir / "generation-one.duckdb"
     with duckdb.connect(str(path)) as db:
-        db.execute("alter table int_calls add column call_id varchar")
-        db.execute("update int_calls set call_id='actual-source-call'")
         db.execute(
             "update mart_runs set metrics_complete=true where tenant_id='tenant-a' and run_id='run'"
         )

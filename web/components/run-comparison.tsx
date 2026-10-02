@@ -25,7 +25,7 @@ export function RunComparison({ comparison, changed, filters, runs, selected }: 
           <td><details><summary>Arm versions and call identities</summary><pre style={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{JSON.stringify(comparison[key].arm_provenance,null,2)}</pre></details></td>
         </tr>)}</tbody></table>
       {comparison.eligible && comparison.delta_cpst !== null
-        ? <p>CPST change: {comparison.current.currency} {comparison.delta_cpst}</p>
+        ? <p>CPST change: {money(comparison.delta_cpst, comparison.current.currency)}</p>
         : <><p>Comparison ineligible</p><p>{comparison.reasons.join('; ')}</p></>}
     </>}
   </section>;

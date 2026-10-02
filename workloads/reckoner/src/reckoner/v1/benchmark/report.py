@@ -1,21 +1,83 @@
 """Immutable JSON and readable Markdown; unavailable is never a fabricated zero."""
 
 import json
+import os
+import re
 from pathlib import Path
+from uuid import uuid4
 
 from reckoner.contracts import content_id
+
+RETRIEVAL_SCHEMA = "reckoner-retrieval-benchmark-v1"
+COMPARISON_SCHEMA = "reckoner-comparison-v1"
+# Measured runs and synthetic fixtures never share a heading or label.
+MEASUREMENT_MODES = {
+    "measured-local-retrieval": (
+        "Measured simulated-data retrieval benchmark",
+        "Measured locally against stores prepared from the simulated dataset. "
+        "Not production traffic.",
+    ),
+    "synthetic-fixture": (
+        "Synthetic-fixture retrieval benchmark",
+        "Synthetic fixture: demonstrates plumbing only and cannot satisfy a measured gate.",
+    ),
+}
 
 
 def write_report(report: dict, output: Path) -> dict:
     output = Path(output)
     json_path, markdown_path = output.with_suffix(".json"), output.with_suffix(".md")
+    if report.get("schema_version") != COMPARISON_SCHEMA and (
+        report.get("measurement_mode") not in MEASUREMENT_MODES
+    ):
+        raise ValueError(
+            "benchmark report requires an explicit measurement_mode: "
+            + ", ".join(sorted(MEASUREMENT_MODES))
+        )
     if json_path.exists() or markdown_path.exists():
         raise FileExistsError("benchmark report already exists")
     body = {**report, "report_id": content_id(report)}
+    markdown = (
+        _comparison_markdown(body)
+        if body.get("schema_version") == COMPARISON_SCHEMA
+        else _retrieval_markdown(body)
+    )
     output.parent.mkdir(parents=True, exist_ok=True)
-    json_path.write_text(json.dumps(body, indent=2, sort_keys=True) + "\n")
-    markdown_path.write_text(
-        "# Simulated-data retrieval benchmark\n\n"
+    _publish_pair(
+        [(json_path, json.dumps(body, indent=2, sort_keys=True) + "\n"), (markdown_path, markdown)]
+    )
+    return body
+
+
+def _publish_pair(files):
+    """Write temporaries beside the targets, then hard-link; link never replaces a file."""
+    temporaries = []
+    try:
+        for path, text in files:
+            temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+            descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+            temporaries.append(temporary)
+            with os.fdopen(descriptor, "w") as handle:
+                handle.write(text)
+        published = []
+        try:
+            for (path, _), temporary in zip(files, temporaries, strict=True):
+                os.link(temporary, path)
+                published.append(path)
+        except BaseException:
+            for path in published:
+                path.unlink()
+            raise
+    finally:
+        for temporary in temporaries:
+            temporary.unlink(missing_ok=True)
+
+
+def _retrieval_markdown(body):
+    heading, label = MEASUREMENT_MODES[body["measurement_mode"]]
+    return (
+        f"# {heading}\n\n"
+        f"Measurement mode: `{body['measurement_mode']}`. {label}\n\n"
         f"Report `{body['report_id']}`. "
         f"Query count: {body.get('query_count', 'unavailable')}.\n\n"
         "Exact neighbourhood matches: "
@@ -28,4 +90,64 @@ def write_report(report: dict, output: Path) -> dict:
         + json.dumps({k: v for k, v in body.items() if k != "queries"}, indent=2, sort_keys=True)
         + "\n```\n"
     )
-    return body
+
+
+def _cell(value):
+    text = value if isinstance(value, str) else json.dumps(value, sort_keys=True)
+    return re.sub(r"([\\`*_\[\]<>|#])", r"\\\1", " ".join(text.split()))
+
+
+def _comparison_markdown(body):
+    arms = [
+        "| Arm | Execution mode | Configuration | Model | Prompt | Question | Calibration "
+        "| Evidence | Retrieval window | Declared membership complete |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    for arm in body.get("arms", []):
+        arms.append(
+            "| "
+            + " | ".join(
+                _cell(arm.get(key, "unavailable"))
+                for key in (
+                    "arm_id",
+                    "execution_mode",
+                    "config_version",
+                    "model_version",
+                    "prompt_version",
+                    "question_version",
+                    "calibration_id",
+                    "evidence_version",
+                    "retrieval_window",
+                    "membership_complete",
+                )
+            )
+            + " |"
+        )
+    comparisons = [
+        "| Baseline | Current | Eligibility | Reasons | CPST delta |",
+        "| --- | --- | --- | --- | --- |",
+    ]
+    for item in body.get("comparisons", []):
+        comparisons.append(
+            "| "
+            + " | ".join(
+                [
+                    _cell(item["baseline"]),
+                    _cell(item["current"]),
+                    "eligible" if item["eligible"] else "ineligible",
+                    _cell("; ".join(item["reasons"]) or "none"),
+                    _cell(item["delta_cpst"]) if item["delta_cpst"] is not None else "unavailable",
+                ]
+            )
+            + " |"
+        )
+    return (
+        "# Reckoner v1 arm comparison\n\n"
+        f"Report `{body['report_id']}`. "
+        f"Declared cases: {len(body.get('expected_ids', []))}. "
+        "An ineligible comparison never shows a CPST delta. "
+        "No provider calls are performed by this report writer.\n\n"
+        "## Arms\n\n" + "\n".join(arms) + "\n\n"
+        "## Comparisons\n\n" + "\n".join(comparisons) + "\n\n"
+        "## Full record\n\n```json\n" + json.dumps(body, indent=2, sort_keys=True) + "\n```\n"
+    )

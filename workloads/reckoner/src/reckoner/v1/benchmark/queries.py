@@ -50,6 +50,13 @@ def distribution(values):
     }
 
 
+def _duplicates(ids):
+    seen, repeated = set(), set()
+    for item in ids:
+        (repeated if item in seen else seen).add(item)
+    return sorted(repeated)
+
+
 def benchmark_queries(cases: list[dict], relational, graph) -> dict:
     ids = [c["transaction_id"] for c in cases]
     if not ids or len(ids) != len(set(ids)):
@@ -78,7 +85,16 @@ def benchmark_queries(cases: list[dict], relational, graph) -> dict:
             "sql_only": sorted(set(sql or []) - set(cypher or [])),
             "cypher_only": sorted(set(cypher or []) - set(sql or [])),
         }
-        report["exact_candidates"] = sql is not None and cypher is not None and sql == cypher
+        report["candidate_duplicates"] = {
+            "sql": _duplicates(sql or []),
+            "cypher": _duplicates(cypher or []),
+        }
+        report["exact_candidates"] = (
+            sql is not None
+            and cypher is not None
+            and set(sql) == set(cypher)
+            and not any(report["candidate_duplicates"].values())
+        )
         report["exact_neighbourhood"] = (
             report["sql_members"] is not None
             and report["cypher_members"] is not None

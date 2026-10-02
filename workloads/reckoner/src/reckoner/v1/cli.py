@@ -13,6 +13,9 @@ def register(commands):
     comparison.add_argument("--arms", type=Path, required=True)
     comparison.add_argument("--expected", type=Path, required=True)
     comparison.add_argument("--output", type=Path, required=True)
+    from reckoner.v1.benchmark.harness import register as register_benchmark
+
+    register_benchmark(subcommands)
     preparation = subcommands.add_parser("prepare")
     preparation.add_argument("--source", type=Path, required=True)
     preparation.add_argument("--baseline-bundle", type=Path, required=True)
@@ -57,6 +60,10 @@ def execute(args):
             json.loads(args.arms.read_text()), json.loads(args.expected.read_text())
         )
         return write_report(result, args.output)
+    if args.v1_command == "benchmark":
+        from reckoner.v1.benchmark.harness import run
+
+        return run(args)
     if args.v1_command.startswith("telemetry-"):
         return _telemetry(args)
     if args.v1_command == "review-simulated":

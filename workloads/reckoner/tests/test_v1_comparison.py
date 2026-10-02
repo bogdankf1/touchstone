@@ -26,6 +26,7 @@ def arm():
             "prompt_version": "prompt",
             "question_version": "question",
             "evidence_version": "relational",
+            "retrieval_window": {"history_days": 30, "resolution_days": 90},
         },
         "retrieval_window": {"history_days": 30, "resolution_days": 90},
         "call_ids": ["call"],
@@ -55,6 +56,8 @@ def arm():
         ("online_cost_complete", False),
         ("graph_coverage", "unavailable"),
         ("correct_tasks", 0),
+        ("metrics_complete", False),
+        ("oracle_version", "other-oracle"),
     ],
 )
 def test_ineligible_has_no_delta(field, value):
@@ -110,6 +113,26 @@ def test_compare_cli_writes_immutable_versioned_artifact_without_provider(tmp_pa
         json.loads(output.with_suffix(".json").read_text())["schema_version"]
         == "reckoner-comparison-v1"
     )
+    markdown = output.with_suffix(".md").read_text()
+    assert markdown.startswith("# Reckoner v1 arm comparison\n")
+    assert "Query count" not in markdown
+    assert "| baseline | current | eligible | none | -0.5 |" in markdown
+
+
+def test_comparison_markdown_shows_ineligibility_reasons_without_delta(tmp_path):
+    from reckoner.v1.benchmark.compare import compare_arms
+    from reckoner.v1.benchmark.report import write_report
+
+    a = arm()
+    b = deepcopy(a)
+    b.update(arm_id="current|<b>", currency="EUR")
+    write_report(compare_arms([a, b], ["a", "b"]), tmp_path / "comparison")
+    markdown = (tmp_path / "comparison.md").read_text()
+    assert (
+        "| baseline | current\\|\\<b\\> | ineligible | incompatible currency | unavailable |"
+        in (markdown)
+    )
+    assert "<b>" not in markdown.split("## Full record")[0]
 
 
 def test_changed_input_cannot_reuse_same_calibration_identity():
@@ -121,3 +144,22 @@ def test_changed_input_cannot_reuse_same_calibration_identity():
     b["calibration_binding"]["prompt_version"] = "new"
     with pytest.raises(ValueError, match="calibration"):
         compare_arms([a, b], ["a", "b"])
+
+
+def test_changed_retrieval_window_cannot_reuse_same_calibration_identity():
+    from reckoner.v1.benchmark.compare import compare_arms
+
+    a = arm()
+    b = deepcopy(a)
+    window = {"history_days": 60, "resolution_days": 90}
+    b.update(arm_id="changed", retrieval_window=window)
+    b["calibration_binding"]["retrieval_window"] = window
+    with pytest.raises(ValueError, match="calibration"):
+        compare_arms([a, b], ["a", "b"])
+
+
+def test_compare_arms_rejects_duplicate_expected_ids():
+    from reckoner.v1.benchmark.compare import compare_arms
+
+    with pytest.raises(ValueError, match="invalid declared cases"):
+        compare_arms([arm()], ["a", "a"])

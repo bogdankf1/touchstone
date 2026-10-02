@@ -120,11 +120,40 @@ def build_snapshot(
             )
             rejected += 1
 
+        def insert(item: ValidatedEvent, document: dict, cost, review, error) -> None:
+            nonlocal accepted_events
+            connection.execute(
+                "insert into raw_measurements values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    item.tenant_id,
+                    item.workflow_id,
+                    item.run_id,
+                    item.task_id,
+                    item.identity.event_id,
+                    document["event_kind"],
+                    document["node_name"],
+                    item.trace_id,
+                    item.span_id,
+                    item.received_at,
+                    item.content_sha256,
+                    item._document_json,
+                    cost,
+                    review,
+                    error,
+                ],
+            )
+            accepted_events += 1
+
+        # Attestations bind to declared root tasks; they wait until declarations are staged.
+        attestations: list[ValidatedEvent] = []
         for item in events:
             if isinstance(item, RejectedEvent):
                 reject(item)
                 continue
             document = item.document
+            if document["event_kind"] == "comparison_attestation":
+                attestations.append(item)
+                continue
             payload = document["payload"]
             try:
                 cost = None
@@ -148,31 +177,15 @@ def build_snapshot(
                     trusted=item,
                 )
                 continue
-            connection.execute(
-                "insert into raw_measurements values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                [
-                    item.tenant_id,
-                    item.workflow_id,
-                    item.run_id,
-                    item.task_id,
-                    item.identity.event_id,
-                    document["event_kind"],
-                    document["node_name"],
-                    item.trace_id,
-                    item.span_id,
-                    item.received_at,
-                    item.content_sha256,
-                    item._document_json,
-                    cost,
-                    review,
-                    error,
-                ],
-            )
-            accepted_events += 1
+            insert(item, document, cost, review, error)
+        declared: dict[tuple[str, str, str], list[set[str]]] = {}
         for item in declarations:
             if isinstance(item, RejectedEvent):
                 reject(item)
                 continue
+            declared.setdefault(
+                (item.identity.tenant_id, item.identity.workflow_id, item.identity.run_id), []
+            ).append(set(item.document["expected_task_ids"]))
             connection.execute(
                 "insert into raw_declarations values (?, ?, ?, ?, ?, ?, ?)",
                 [
@@ -186,5 +199,21 @@ def build_snapshot(
                 ],
             )
             accepted_declarations += 1
+        for item in attestations:
+            versions = declared.get((item.tenant_id, item.workflow_id, item.run_id), [])
+            if not versions or any(item.task_id not in tasks for tasks in versions):
+                reject(
+                    RejectedEvent(
+                        item.received_at,
+                        item.trace_id,
+                        item.span_id,
+                        "comparison_attestation",
+                        "comparison attestation task is not a declared root task",
+                        item.tenant_id,
+                    ),
+                    trusted=item,
+                )
+                continue
+            insert(item, item.document, None, None, None)
         connection.checkpoint()
     return StagingReceipt(cutoff, accepted_events, accepted_declarations, rejected)

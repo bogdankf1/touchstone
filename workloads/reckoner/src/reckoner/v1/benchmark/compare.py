@@ -24,7 +24,14 @@ INVARIANTS = (
     "execution_mode",
     "generation",
 )
-BINDING = ("model_version", "prompt_version", "question_version", "evidence_version")
+# Must match the generic platform binding: a changed retrieval window changes model input.
+BINDING = (
+    "model_version",
+    "prompt_version",
+    "question_version",
+    "evidence_version",
+    "retrieval_window",
+)
 
 
 def comparison_eligibility(baseline: dict, current: dict) -> dict:

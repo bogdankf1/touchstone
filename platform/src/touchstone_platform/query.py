@@ -277,12 +277,6 @@ class SnapshotReader:
             refs.add(comparison.get("reference_version"))
             configs.add(comparison.get("business_config_id"))
             if comparison.get("arm"):
-                columns = {
-                    item[1]
-                    for item in self.connection.execute("pragma table_info('int_calls')").fetchall()
-                }
-                if "call_id" not in columns:
-                    continue
                 calls = self._rows(
                     "select distinct call_id from int_calls where "
                     "tenant_id=? and workflow_id=? and run_id=? order by call_id",

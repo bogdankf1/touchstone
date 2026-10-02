@@ -90,10 +90,21 @@ unchanged. All measured and fixture volumes are preserved.
 - `candidate_vectors(candidates, history, scaler)` requires the complete declared
   candidate population and a full source-backed history reader.
 - `compare_arms(results, expected_ids)` keeps treatments separate and rejects
-  calibration transfer across model-input arms. `comparison_eligibility` suppresses
-  deltas for incomplete or incompatible membership, provenance, costs or refresh.
+  calibration transfer across model-input arms. Its calibration binding is model,
+  prompt, question, evidence and retrieval window, identical to the generic
+  platform binding: a changed retrieval window changes model input, so it needs
+  its own calibration. `comparison_eligibility` suppresses deltas for incomplete
+  or incompatible membership, provenance, costs or refresh. Exact eligible-set
+  agreement compares SQL/Cypher candidate IDs as sets and reports duplicates;
+  any duplicate blocks agreement.
 - `reckoner v1 compare --arms ARMS.json --expected IDS.json --output PREFIX`
-  writes immutable, versioned JSON and Markdown without dispatching inference.
+  writes immutable, versioned JSON and a comparison Markdown (arms, eligibility,
+  reasons, CPST delta or `unavailable`) without dispatching inference.
+- `write_report` refuses a retrieval report without an explicit `measurement_mode`.
+  `measured-local-retrieval` and `synthetic-fixture` receive different headings
+  and labels. Both files are written to temporary names in the target directory
+  and hard-linked into place; an existing file is never replaced, and a failed
+  second link removes the first, so a failure leaves no partial pair.
 - Generic `run-declaration-v1.comparison` is optional. Old declarations remain
   valid and have unavailable comparison provenance. It declares reference/version,
   business-cost identity and model/input/evidence arm versions. `/v1/comparisons`
@@ -120,6 +131,9 @@ add missing claims.
 Task 13 may emit an additive `measurement-v1` event with event kind
 `comparison_attestation`, through the existing OTLP exporter/Collector path.
 The event uses its original run/tenant/workflow and an existing declared root task.
+Staging rejects (into `raw_rejections`) any attestation whose task is not an
+expected root task of every staged declaration for that run, so it can neither
+attach to an undeclared task nor inflate `unexpected_tasks`.
 Its payload contains:
 
 ```text
@@ -203,3 +217,80 @@ Postgres. These coarse observations miss peaks. Latest-start cgroup peaks are
 2,556,063,744 and 672,550,912 bytes respectively, including the replacement pass
 and later plan inspection; OOM counters are zero. These are not query-specific
 peaks and do not replace earlier Task3 failure/import resource receipts.
+
+## Tracked harness and offline reproduction
+
+The original Task 11 measurement ran from preserved, untracked scratch scripts.
+The same logic is now tracked in `reckoner.v1.benchmark.harness` and exposed as
+`reckoner v1 benchmark STEP`. Every step takes explicit paths; database URLs and
+Neo4j credentials come only from environment variables whose NAMES are passed
+(`--pg-dsn-env`, `--neo4j-user-env`, `--neo4j-password-env`). No environment
+file is read, no credential is embedded, and no provider is called.
+
+| Step | Role | Writes (never overwrites) |
+| --- | --- | --- |
+| `inventory` | Evaluator-side preparation. The only step that reads privileged `oracle.v1_resolutions`, to freeze each query's eligible candidate population. Read-only session. | `candidates.jsonl`, `protocol.json`, `sql-function-plan.json` |
+| `prepare` | Candidate vectors from complete source history; preparation-role DSN; no oracle reads. | `vectors.jsonl`, `preparation.json` |
+| `verify` | Stored vector count/hash equals the frozen union; strict coverage for every query. Read-only session. | `stored-verification.json` |
+| `measure` | Runtime-role SQL/Cypher schedule and exact top five; no labels; `--first-pass-state` records the operator's restart state. | `service-samples.jsonl`, `exact-memberships.json`, `retrieval-report.{json,md}` |
+| `replacement` | One first pass, checked hash-for-hash against `measure`. | `replacement-service-samples.jsonl`, `replacement-first-pass.json` |
+| `audit` | Read-only `du` of every volume mounted by matching containers, plus optional cgroup counters. | `resource-reconciliation-LABEL.json`, `cgroup-LABEL.json` |
+| `report` | Offline evaluator assembly; joins query labels only after retrieval. | `--output` prefix `.json` and `.md` |
+
+Resource guards default to a 15 GiB free-disk floor and a 20 GiB derived-data cap
+(`--free-floor-bytes`, `--derived-cap-bytes`). Store sizes are either measured
+from named volumes (`--store-volume NAME=VOLUME --du-image IMAGE`, read-only
+mount) or explicit operator inputs (`--store-bytes NAME=BYTES`); each guard
+record states which. Disclosure: the frozen Task 11 `protocol.json` resource
+record carries a Neo4j store size of 3,789,230,080 bytes that the scratch script
+took from the final Task 3 receipt rather than measuring. The final
+reconciliation measured every mounted Phase 3 volume, including that store.
+
+Interpretation text (limitations, relevance interpretation, plan observation,
+resource accounting stage and replacement first-pass protocol) is an explicit
+input, `docs/evidence/phase-3-benchmark-annotations.json`, copied verbatim into
+report fields. Its Task 11 values were transcribed from the published report.
+`sql-inner-plan.json`, `sql-indexes.json` and `cgroup-lifetime.json` were
+diagnostic captures run by hand after measurement. They are pinned by hash in
+the report but are not regenerated by tracked code; `audit --cgroup-container`
+now covers the cgroup capture.
+
+The expensive store steps were not re-run for this reproduction: no vector
+re-preparation, database restart or new timing. The tracked `report` step was
+run once, offline, over the existing raw observation files into a fresh prefix:
+
+```text
+UV_PYTHON_INSTALL_DIR=/private/tmp/touchstone-uv-python \
+UV_CACHE_DIR=/private/tmp/touchstone-uv-cache \
+uv run --frozen --all-packages reckoner v1 benchmark report \
+  --protocol artifacts/phase3/task11/protocol.json \
+  --observation artifacts/phase3/task11/retrieval-report.json \
+  --replacement artifacts/phase3/task11/replacement-first-pass.json \
+  --resources artifacts/phase3/task11/resource-reconciliation-final.json \
+  --cgroup artifacts/phase3/task11/cgroup-lifetime.json \
+  --samples artifacts/phase3/task11/service-samples.jsonl \
+  --samples artifacts/phase3/task11/replacement-service-samples.jsonl \
+  --attach artifacts/phase3/task11/candidates.jsonl \
+  --attach artifacts/phase3/task11/vectors.jsonl \
+  --attach artifacts/phase3/task11/preparation.json \
+  --attach artifacts/phase3/task11/stored-verification.json \
+  --attach artifacts/phase3/task11/exact-memberships.json \
+  --attach artifacts/phase3/task11/controlled-retrieval-report.json \
+  --attach artifacts/phase3/task11/sql-function-plan.json \
+  --attach artifacts/phase3/task11/sql-inner-plan.json \
+  --attach artifacts/phase3/task11/sql-indexes.json \
+  --attach artifacts/phase3/task11/regression.log \
+  --oracle-labels artifacts/phase3/data/frozen-v1/oracle_validation.jsonl \
+  --annotations docs/evidence/phase-3-benchmark-annotations.json \
+  --output artifacts/phase3/task11-regenerated/benchmark-report
+```
+
+The regenerated report has the same content ID,
+`7b0325113e11fb42c7cdb04ba1eb9210e04834adfcdbd36ee69f0c0c267488ad`, and its JSON
+is byte-identical to the published file (SHA256
+`276eaac24e0f4a81b477f84fc3de4b209556e15a8f5e68a944bcb4a16fb26569`). The
+Markdown differs only in its heading and label: the published file reads
+"Simulated-data retrieval benchmark"; the regenerated file reads "Measured
+simulated-data retrieval benchmark" and adds the `measured-local-retrieval`
+label line (SHA256 `879a60acb9e05fd4668372379eb7d58913fcf0c08c80f3f99b79ce42a9bcabbb`).
+The published files are unchanged.
