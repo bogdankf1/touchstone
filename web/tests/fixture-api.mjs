@@ -289,7 +289,18 @@ const server = createServer(async (request, response) => {
           task_id: 'synthetic-001',
           nodes: [],
         }
-      : task;
+      : scenario === 'offline-pending'
+        ? {
+            ...task,
+            nodes: task.nodes.map((node) => ({
+              ...node,
+              offline_model_cost: null,
+              provider_spend: null,
+              online_cost_complete: true,
+              offline_cost_complete: false,
+            })),
+          }
+        : task;
     response.end(JSON.stringify(wrap({ items: [item], page: 1, page_size: 25, total: 1 }, 'tasks')));
     return;
   }

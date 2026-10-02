@@ -4,6 +4,8 @@ with costs as (
         count(distinct c.currency) as currencies,
         sum(case when c.cost_scope='online' then c.cost_amount else 0 end) as online_cost,
         sum(case when c.cost_scope='offline' then c.cost_amount else 0 end) as offline_cost,
+        bool_or(c.cost_scope='online' and c.cost_amount is null) as online_unknown,
+        bool_or(c.cost_scope='offline' and c.cost_amount is null) as offline_unknown,
         bool_and(coalesce(o.complete,true)) as online_cost_complete,
         bool_and(coalesce(f.complete,true)) as offline_cost_complete,
         count(*) as call_count, bool_or(c.incomplete) as incomplete,
@@ -18,9 +20,12 @@ with costs as (
         and f.cost_scope='offline'
     group by 1, 2, 3, 4, 5
 )
-select * exclude (online_cost,offline_cost,currencies),
-    case when online_cost_complete then online_cost end as model_cost,
-    case when offline_cost_complete then offline_cost end as offline_model_cost,
+-- Node amounts are observed evidence: run-level scope completeness withholds run totals
+-- and provider spend, never a node's observed cost. An unknown amount is never zero, and
+-- amounts in different currencies are never summed under one currency label.
+select * exclude (online_cost,offline_cost,currencies,online_unknown,offline_unknown),
+    case when not online_unknown and currencies <= 1 then online_cost end as model_cost,
+    case when not offline_unknown and currencies <= 1 then offline_cost end as offline_model_cost,
     case when online_cost_complete and offline_cost_complete and currencies <= 1
         then online_cost + offline_cost end as provider_spend
 from costs

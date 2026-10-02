@@ -122,7 +122,11 @@ The additional `measurement-v1` event kinds are:
 Online `model_cost` and CPST exclude offline calls. `offline_model_cost`, `provider_spend`,
 `online_cost_complete`, and `offline_cost_complete` are additional generic run/API fields.
 The same fields appear on task node rows; node `model_cost` is online, while the dashboard
-node table labels total `provider_spend` explicitly. Provider spend requires both scopes
+node table labels total `provider_spend` explicitly. Node `model_cost` and
+`offline_model_cost` are the node's observed scope costs: run-level scope incompleteness
+withholds run totals and provider spend but not observed node cost, and the completeness flags
+stay on the node row. A node scope amount is null when any of its calls in that scope has an
+unknown amount or the node mixes currencies. Provider spend requires both scopes
 complete and compatible currencies. An uncertain offline
 judge leaves online model cost available independently; required missing quality checks still
 leave overall metrics incomplete. Calls retain their original task/run/provider identities,

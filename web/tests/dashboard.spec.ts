@@ -124,6 +124,11 @@ test('keeps online cost visible when offline billing is incomplete', async ({ pa
   await expect(page.getByText('USD 0.458940', { exact: true }).first()).toBeVisible();
   await expect(page.getByRole('row', { name: /Offline model cost/ })).toContainText('Unavailable');
   await expect(page.getByRole('row', { name: /Total provider spend/ })).toContainText('Unavailable');
+  await expect(page.getByRole('columnheader', { name: 'Attributed online cost' })).toBeVisible();
+  await expect(page.getByRole('columnheader', { name: 'Node provider spend' })).toBeVisible();
+  const node = page.getByRole('row', { name: /provider_call/ });
+  await expect(node.getByRole('cell').nth(2)).toHaveText('USD 0.000459');
+  await expect(node.getByRole('cell').nth(3)).toHaveText('Unavailable');
 });
 
 test('shows compatible simulated comparison and arm provenance', async ({page, request}) => {

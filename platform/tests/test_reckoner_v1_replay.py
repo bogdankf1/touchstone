@@ -447,3 +447,62 @@ def test_scope_closure_requires_unambiguous_terminal_root(tmp_path, root_state):
             assert c.execute(
                 "select online_cost_complete,offline_cost_complete from mart_runs"
             ).fetchone() == (True, True)
+
+
+def test_withheld_run_cost_keeps_observed_node_scope_costs_visible(tmp_path):
+    def unexpected_call(call_id, *, scope, amount):
+        return event(
+            "provider_usage",
+            "unexpected",
+            event_id=call_id,
+            call_id=call_id,
+            provider="one",
+            model="model-one",
+            price_table_version="price-one",
+            cost_scope=scope,
+            cost_amount=amount,
+            cost_status="actual" if amount is not None else "unavailable",
+            currency="USD" if amount is not None else None,
+        )
+
+    events = [
+        event("execution", "a"),
+        event("outcome", "a"),
+        scoped_call("score"),
+        # Observed offline call outside the closed offline scope.
+        scoped_call("judge", scope="offline", amount="0.2"),
+        unexpected_call("stray-online", scope="online", amount="0.7"),
+        unexpected_call("stray-offline", scope="offline", amount=None),
+        *closures(online=("score",), offline=()),
+    ]
+    warehouse = build_marts(tmp_path, events, [lifecycle()])
+    with duckdb.connect(str(warehouse)) as c:
+        assert c.execute(
+            "select model_cost,offline_model_cost,provider_spend,online_cost_complete,"
+            "offline_cost_complete from mart_runs"
+        ).fetchone() == (None, None, None, False, False)
+        assert c.execute(
+            "select task_id,model_cost,offline_model_cost,provider_spend,online_cost_complete,"
+            "offline_cost_complete from mart_nodes order by task_id"
+        ).fetchall() == [
+            ("a", Decimal("0.1"), Decimal("0.2"), None, False, False),
+            # An unknown amount is never reported as zero.
+            ("unexpected", Decimal("0.7"), None, None, False, False),
+        ]
+
+
+def test_node_cost_never_sums_mixed_currencies(tmp_path):
+    other = scoped_call("note").document
+    other["payload"]["currency"] = "EUR"
+    events = [
+        event("execution", "a"),
+        event("outcome", "a"),
+        scoped_call("score"),
+        validate_event(other, RECEIVED),
+        *closures(online=("score", "note"), offline=()),
+    ]
+    warehouse = build_marts(tmp_path, events, [lifecycle()])
+    with duckdb.connect(str(warehouse)) as c:
+        assert c.execute(
+            "select model_cost,offline_model_cost,provider_spend from mart_nodes"
+        ).fetchone() == (None, None, None)
