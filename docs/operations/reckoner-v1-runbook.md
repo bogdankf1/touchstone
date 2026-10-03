@@ -222,13 +222,30 @@ figures), and Docker build cache grew by about 7 GB across all Task 12 builds. T
 profile shut down in 3.4 s (other shutdowns were not timed); every readable cgroup reported
 `oom 0` and `oom_kill 0`.
 
-Estimates, not measurements: the profile ceilings above; that the online and refresh
-profiles fit the 8 GB allocation at full archive scale; and the kind node storage, which would
-hold another copy of the four loaded images (about 4.3 GB of image content, plus unpacked
-snapshots).
+Estimates, not measurements: the profile ceilings above, and that the online and refresh
+profiles fit the 8 GB allocation at full archive scale.
 
-kind status: **not run.** The approved disk budget caps newly derived Phase 3 data at
-20 GiB. Before kind, derived data measured 17.64 GiB (artifacts 7.28, Phase 3 volumes 7.77,
-new images 2.59). Loading the images into a kind node would exceed the cap, so the kind
-smoke awaits an owner decision; the manifests and the script's kind path are statically
-tested only.
+kind (owner-approved one-time overage to at most 26 GiB derived, hard 15 GiB free floor,
+run with `--cleanup`): instance `touchstone-phase3-v1-kind-fe4ec3`, kind v0.33.0 (checksum
+verified), dedicated kubeconfig, context `kind-touchstone-phase3-v1-kind-fe4ec3`, namespace
+`touchstone-phase3-v1-smoke`, same images as the Compose smoke. All Jobs succeeded:
+
+| Step | Result |
+| --- | --- |
+| Cluster create / image load | 9.5 s / 29.0 s for four arm64 archives |
+| Stores ready | Postgres and Neo4j StatefulSets on local-path PVCs, 27.9 s (non-root UIDs 999/7474) |
+| Prepare Job | migrate, seed, graph + GDS, graph evidence (4/4 available), fingerprint: 37.0 s; graph source, relationships and deterministic projection fields equal the Compose run's |
+| Online | Neo4j scaled to 0; API and web ready 6.2 s; worker Job 4/4 degraded escalations, zero provider calls (12.3 s); online verification Job succeeded |
+| Restart / stopped | Postgres pod replaced on its PVC, API ready again 1.4 s, online verification 20/20 with 2 cases per tenant; Postgres scaled to 0: stopped verification 5/5 |
+| Final fingerprint | 50 tables; 4 decisions and 4 cases persisted across the pod replacement |
+
+Free disk was 29,398,966,272 bytes before the cluster and fell to a minimum of
+24,090,963,968 bytes at a checkpoint (an independent 15 s sampler saw 23,487,376 KiB), so
+the kind node used about 5 GiB transiently and Phase 3 derived data peaked near 22.6 GiB,
+below the approved 26 GiB. No checkpoint was near the floor. After the sentinel-checked
+cleanup the cluster and its node volume were gone, free disk was 28,832,496 KiB (pre-kind
+28,710,164 KiB), and derived data was back to 17.64 GiB. The whole node's sampled memory
+maximum was 2,983,928,528 bytes; an end-of-run `crictl` snapshot showed API 130,617,344 and
+web 101,011,456 working-set bytes. Two evidence defects found by this run were fixed
+afterwards (stderr interleaved into stdout receipts; the first online receipt overwritten);
+the job results themselves were unaffected. The kind run was not repeated.
