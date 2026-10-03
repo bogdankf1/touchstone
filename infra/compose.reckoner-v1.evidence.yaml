@@ -7,6 +7,10 @@
 # the immutable inputs; copying them into RECKONER_V1_DATA_DIR would add about 8.4 GB.
 services:
   owner:
+    # Chosen per pass within the 7 GiB prepare profile: Pass R runs without Neo4j (Postgres
+    # 2g + job 3g); Pass G runs with it (RECKONER_V1_POSTGRES_MEMORY=1g + Neo4j 4g + job 2g).
+    # Each day's assembly runs in a short-lived child whose transient is returned on exit.
+    mem_limit: ${RECKONER_V1_EVIDENCE_JOB_MEMORY:?set the evidence job memory for this pass}
     volumes:
       - ${RECKONER_V1_BUNDLE_DIR:?set the frozen Phase 3 preparation bundle directory}:/inputs/bundle:ro
       - ${RECKONER_V1_SOURCE_DIR:?set the immutable simulated source archive directory}:/inputs/source:ro

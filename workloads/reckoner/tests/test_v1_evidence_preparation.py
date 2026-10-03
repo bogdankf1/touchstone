@@ -794,3 +794,14 @@ def test_incremental_card_history_vectors_equal_complete_source_vectors(inputs):
             compared += len(actual)
         days.close()
     assert compared > 500
+
+
+def test_isolated_calls_run_in_a_fresh_child_process_and_propagate_failures():
+    """Assembly runs per day in a spawned child so its native memory returns on exit."""
+    import os
+
+    from reckoner.v1.evidence.rolling import isolated
+
+    assert isolated(os.getpid) != os.getpid()
+    with pytest.raises(ValueError):
+        isolated(int, "not a number")

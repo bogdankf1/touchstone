@@ -244,14 +244,20 @@ export RECKONER_V1_BASELINE_DIR=<phase-1 worktree>/artifacts/phase1/data
 export RECKONER_V1_SCALER_DIR="$PWD/artifacts/phase3/task3"
 export RECKONER_V1_IMAGE=<Reckoner image built from the evidence commit>
 export RECKONER_V1_NEO4J_TX_LOG_RETENTION="512M size"     # graph pass only
+export RECKONER_V1_EVIDENCE_JOB_MEMORY=3g   # Pass R; Pass G: 2g with RECKONER_V1_POSTGRES_MEMORY=1g
 e() { docker compose -p "$RECKONER_V1_INSTANCE-prepare" --profile prepare \
   -f infra/compose.reckoner-v1.yaml -f infra/compose.reckoner-v1.evidence.yaml "$@"; }
 v1e() { e run --rm --no-deps -T -e RECKONER_SOURCE_DIR=/inputs/source \
   -e RECKONER_BASELINE_BUNDLE=/inputs/baseline owner reckoner v1 evidence "$@" --env-file -; }
 ```
 
-`compose.reckoner-v1.evidence.yaml` adds four read-only binds to the `owner` job. Compose
-interpolates every loaded file, so those variables are required only when it is loaded.
+`compose.reckoner-v1.evidence.yaml` adds four read-only binds to the `owner` job and sets its
+memory per pass. Compose interpolates every loaded file, so those variables are required only
+when it is loaded. Pass R runs without Neo4j: Postgres 2 GiB plus a 3 GiB job. Pass G runs
+Postgres at 1 GiB, Neo4j at 4 GiB and a 2 GiB job, so both stay within the 7 GiB prepare
+profile. Each day's assembly runs in a short-lived child process: the adapters read full
+neighbour and resolution documents (hundreds of megabytes transiently on popular shared
+merchants), and a long-lived process would retain native memory for every assembled case.
 `--env-file -` takes only `RECKONER_OWNER_DSN`, `RECKONER_RUNNER_DSN`,
 `RECKONER_SOURCE_DIR`, `RECKONER_BASELINE_BUNDLE` and `RECKONER_NEO4J_{URI,USER,PASSWORD}`;
 an environment file naming anything else is refused.
@@ -274,6 +280,7 @@ v1e publish --declaration $P --pass relational   # refuses until every case is p
 v1e run --declaration $P --pass relational --through 2019-12-30 $G   # Stage 2
 v1e publish --declaration $P --pass relational
 v1e drop-working-set --declaration $P            # name and comment must match (ruling R3)
+export RECKONER_V1_POSTGRES_MEMORY=1g RECKONER_V1_EVIDENCE_JOB_MEMORY=2g   # graph pass
 e stop postgres && e up -d --wait postgres neo4j
 v1e run --declaration $P --pass graph --through 2018-01-31 $G        # Stage 3 (gate)
 v1e run --declaration $P --pass graph --through 2019-12-30 $G        # Stage 4

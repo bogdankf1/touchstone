@@ -1312,13 +1312,22 @@ def test_evidence_inputs_are_required_read_only_binds_only_when_the_override_is_
     assert set(override) == {"services"} and set(override["services"]) == {"owner"}
     mounts = override["services"]["owner"]["volumes"]
     assert len(mounts) == len(EVIDENCE_INPUTS)
+    assert set(override["services"]["owner"]) == {"volumes", "mem_limit"}
     for mount in mounts:
         match = re.fullmatch(r"\$\{([A-Z0-9_]+):\?[^}]+\}:(/inputs/[a-z]+):ro", mount)
         assert match, mount
         assert EVIDENCE_INPUTS[match.group(1)] == match.group(2)
+    # The job's memory is chosen per pass: Pass R runs without Neo4j (Postgres 2g + job 3g),
+    # Pass G with it (Postgres 1g + Neo4j 4g + job 2g), both within the 7 GiB profile.
+    assert re.fullmatch(
+        r"\$\{RECKONER_V1_EVIDENCE_JOB_MEMORY:\?[^}]+\}",
+        override["services"]["owner"]["mem_limit"],
+    )
     # The base file never names these inputs, so every other profile renders without them.
     base = COMPOSE.read_text()
-    assert not [name for name in EVIDENCE_INPUTS if name in base]
+    assert not [
+        name for name in [*EVIDENCE_INPUTS, "RECKONER_V1_EVIDENCE_JOB_MEMORY"] if name in base
+    ]
     _, services = compose()
     assert "prepare" in services["owner"]["profiles"] and services["owner"]["mem_limit"] == "1g"
 

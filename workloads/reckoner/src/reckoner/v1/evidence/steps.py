@@ -419,8 +419,7 @@ def _referenced(runner):
 
 def _run_graph(context: Context, guard) -> dict:
     from reckoner.v1.data.history import SourceHistory
-    from reckoner.v1.evidence.assemble import assemble_evidence
-    from reckoner.v1.evidence.neo4j import Neo4jEvidence
+    from reckoner.v1.evidence import rolling
     from reckoner.v1.evidence.rolling import (
         PersistedRelational,
         SourceDays,
@@ -428,7 +427,7 @@ def _run_graph(context: Context, guard) -> dict:
         persist_documents,
         persisted_summaries,
     )
-    from reckoner.v1.evidence.rolling_graph import RollingGraph
+    from reckoner.v1.evidence.rolling_graph import RollingGraph, gds_documents
 
     owner, runner, source, baseline = _require(
         context.environment,
@@ -442,7 +441,14 @@ def _run_graph(context: Context, guard) -> dict:
     with RunLock(owner, declaration["preparation_id"]), _driver(context.environment) as driver:
         schedule = context.schedule(baseline)
         entries = {entry["day"]: entry for entry in schedule}
-        base = PersistedRelational(runner, _relational_manifests(context))
+        manifests = _relational_manifests(context)
+        PersistedRelational(runner, manifests)  # identity checks before any graph work
+        neo4j = _require(
+            context.environment,
+            "RECKONER_NEO4J_URI",
+            "RECKONER_NEO4J_USER",
+            "RECKONER_NEO4J_PASSWORD",
+        )
         graph = RollingGraph(
             driver,
             preparation_id=declaration["preparation_id"],
@@ -463,7 +469,6 @@ def _run_graph(context: Context, guard) -> dict:
             _append(
                 receipts_path, prep.reconstruct_receipt(entries[day], known, mode="gds-augmented")
             )
-        evidence = Neo4jEvidence(driver)
         with SourceHistory(context.bundle, Path(source)) as history:
             days = SourceDays(history, context.bundle)
             for day in plan["pending"]:
@@ -475,12 +480,14 @@ def _run_graph(context: Context, guard) -> dict:
                 receipt = graph.projection_for(day, referenced=_referenced(runner))
                 projection_seconds = perf_counter() - started
                 started = perf_counter()
-                documents = [
-                    assemble_evidence(
-                        {"transaction": c["transaction"]}, context.config, base, evidence
-                    )
-                    for c in cases
-                ]
+                documents = rolling.isolated(
+                    gds_documents,
+                    neo4j,
+                    runner,
+                    manifests,
+                    [c["transaction"] for c in cases],
+                    context.config,
+                )
                 assembly_seconds = perf_counter() - started
                 summary = prep.check_documents(
                     day, [(c, "gds-augmented", d) for c, d in zip(cases, documents, strict=True)]

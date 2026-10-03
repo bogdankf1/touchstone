@@ -456,3 +456,17 @@ class RollingGraph:
             "card_merchant_id": content_id(edges),
             "directed_edge_count": 2 * (owns + shared + len(edges)),
         }
+
+
+def gds_documents(neo4j, runner_dsn, manifests, transactions, config) -> list[dict]:
+    """GDS-augmented documents over the persisted relational base (run via `isolated`)."""
+    from neo4j import GraphDatabase
+
+    from reckoner.v1.evidence.assemble import assemble_evidence
+    from reckoner.v1.evidence.rolling import PersistedRelational
+
+    uri, user, password = neo4j
+    driver = GraphDatabase.driver(uri, auth=(user, password), warn_notification_severity="OFF")
+    with driver:
+        base, graph = PersistedRelational(runner_dsn, manifests), Neo4jEvidence(driver)
+        return [assemble_evidence({"transaction": tx}, config, base, graph) for tx in transactions]

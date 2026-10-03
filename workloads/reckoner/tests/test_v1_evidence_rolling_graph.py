@@ -322,7 +322,7 @@ def test_graph_pass_end_to_end_and_an_unreachable_graph_fails_the_day(
     evidence_graph, inputs, pg, tmp_path, monkeypatch
 ):
     from neo4j.exceptions import ServiceUnavailable
-    from reckoner.v1.evidence import steps
+    from reckoner.v1.evidence import rolling, steps
     from reckoner.v1.evidence.neo4j import Neo4jEvidence
     from reckoner.v1.evidence.preparation import PreparationFault
     from reckoner.v1.evidence.rolling import drop_working_set
@@ -393,6 +393,8 @@ def test_graph_pass_end_to_end_and_an_unreachable_graph_fails_the_day(
             raise ServiceUnavailable("graph stopped")
 
         monkeypatch.setattr(Neo4jEvidence, "for_task", unreachable)
+        # Assembly normally runs in a spawned child; run it inline so the patch applies.
+        monkeypatch.setattr(rolling, "isolated", lambda function, *args: function(*args))
         with pytest.raises(PreparationFault) as raised:
             graph_run("2019-01-04")
         assert raised.value.failures and all(

@@ -99,6 +99,24 @@ def drop_working_set(owner_dsn: str, preparation_id: str, name: str | None = Non
     return {"dropped": name, "comment": WS_COMMENT + preparation_id}
 
 
+def isolated(function, *args):
+    """Run one call in a freshly spawned process and return its result.
+
+    Assembly reads full neighbour and resolution documents, a transient of several hundred
+    megabytes per day, and a long-lived process retains about 2.5 MB of native memory per
+    assembled case. A child that exits returns all of it, so a multi-day pass stays flat.
+    """
+    import multiprocessing
+
+    with multiprocessing.get_context("spawn").Pool(1) as pool:
+        return pool.apply(function, args)
+
+
+def relational_documents(runner_dsn: str, transactions, config) -> list[dict]:
+    relational = PostgresEvidence(runner_dsn)
+    return [relational.for_task({"transaction": tx}, config) for tx in transactions]
+
+
 class StoreGuard:
     """In-band check run before every commit: free disk floor and cluster byte budget."""
 
@@ -495,8 +513,7 @@ class RollingStore:
     def evidence(self, transactions, config) -> list[dict]:
         # A query evicted with its day must still assemble, as explicitly unavailable.
         import_queries(self.owner_dsn, transactions)
-        relational = PostgresEvidence(self.runner_dsn)
-        return [relational.for_task({"transaction": tx}, config) for tx in transactions]
+        return isolated(relational_documents, self.runner_dsn, transactions, config)
 
 
 # --- operational database ---------------------------------------------------------
