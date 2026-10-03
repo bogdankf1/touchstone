@@ -229,8 +229,9 @@ kubectl --kubeconfig artifacts/phase3/task12/kind-<id>.kubeconfig \
   --context kind-touchstone-phase3-v1-kind-<id> -n touchstone-phase3-v1-smoke get pods
 ```
 
-It refuses the ambient `~/.kube/config`, a `KUBECONFIG` pointing elsewhere and an existing
-kubeconfig file. Cleanup checks that the ledger kubeconfig names the cluster and that the
+It refuses the ambient `~/.kube/config`, a `KUBECONFIG` pointing elsewhere, an existing
+kubeconfig file, and a kubeconfig outside the evidence directory or its parent (the only
+locations `cleanup --evidence-dir` accepts). Cleanup checks that the ledger kubeconfig names the cluster and that the
 node carries the run's sentinel label, runs `kind delete cluster --kubeconfig <dedicated>`
 (never the ambient configuration), then deletes that kubeconfig file. Optional
 `--derived-baseline-bytes` and `--derived-cap-bytes` make the disk guard abort above an

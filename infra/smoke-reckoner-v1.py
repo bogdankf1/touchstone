@@ -279,7 +279,8 @@ def _project_sentinels(runner, project: str) -> set[str]:
             '{{.Label "' + SENTINEL + '"}}',
         ]
     )
-    return {row.strip() for row in rows.splitlines() if row.strip()}
+    # One row per container; an unlabelled container yields an empty row, which must refuse.
+    return {row.strip() for row in rows.splitlines()}
 
 
 def cleanup(runner, ledger: Ledger, kind_bin=None):
@@ -379,8 +380,11 @@ def verify_file(path: Path, expected: str):
     return digest
 
 
-def validate_kubeconfig(path: Path, environ) -> Path:
+def validate_kubeconfig(path: Path, environ, evidence: Path | None = None) -> Path:
     path = Path(path).expanduser().absolute()
+    if evidence is not None and path.parent not in {evidence, evidence.parent}:
+        # Ledger.load accepts only these locations, so `cleanup` could not remove the cluster.
+        raise Refused(f"kubeconfig {path} must be in the evidence directory or its parent")
     ambient = (Path(environ.get("HOME", "~")) / ".kube/config").expanduser().absolute()
     if path == ambient:
         raise Refused("refusing the ambient kubeconfig; pass a dedicated new file")
@@ -1338,9 +1342,9 @@ def kind_smoke(
     budget: DerivedBudget | None = None,
 ) -> dict:
     instance = validate_instance(options.instance)
-    kubeconfig = validate_kubeconfig(kubeconfig, os.environ)
-    verify_file(kind_bin, kind_sha256)
     evidence = validate_evidence_dir(options.evidence)
+    kubeconfig = validate_kubeconfig(kubeconfig, os.environ, evidence)
+    verify_file(kind_bin, kind_sha256)
     ledger = Ledger.create(evidence, instance)
     verify_file(Path(options.plugin_dir) / GDS_JAR, options.plugin_sha256)
     if preflight:
@@ -1361,6 +1365,19 @@ def kind_smoke(
         steps += _kind_steps(
             options, runner, ledger, evidence, config, kubeconfig, kind_bin, budget
         )
+        _disk(runner, evidence, "after")
+        summary = {
+            "schema_version": "reckoner-v1-kind-smoke-v1",
+            "dataset": "fabricated simulated; no provider calls",
+            "instance": instance,
+            "kubeconfig": str(kubeconfig),
+            "context": f"kind-{instance}",
+            "steps": steps,
+            # Inside the try: a failed scan still triggers the --cleanup path below.
+            "secret_scan": scan_receipts(evidence, created["secret_values"]),
+            "resources": resource_summary(evidence),
+        }
+        _write(evidence / "summary.json", json.dumps(summary, indent=2, sort_keys=True))
     except BaseException as error:
         _kind_diagnostics(runner, kubeconfig, instance, evidence)
         if options.cleanup or isinstance(error, DiskFloor):
@@ -1370,18 +1387,6 @@ def kind_smoke(
                 # Ownership unproven (for example a half-created cluster): nothing is deleted.
                 _write(evidence / "kind-cleanup-refused.txt", repr(failed))
         raise
-    _disk(runner, evidence, "after")
-    summary = {
-        "schema_version": "reckoner-v1-kind-smoke-v1",
-        "dataset": "fabricated simulated; no provider calls",
-        "instance": instance,
-        "kubeconfig": str(kubeconfig),
-        "context": f"kind-{instance}",
-        "steps": steps,
-        "secret_scan": scan_receipts(evidence, created["secret_values"]),
-        "resources": resource_summary(evidence),
-    }
-    _write(evidence / "summary.json", json.dumps(summary, indent=2, sort_keys=True))
     if options.cleanup:
         cleanup(runner, ledger, kind_bin)
         guard_disk(evidence, "after-cleanup", budget)

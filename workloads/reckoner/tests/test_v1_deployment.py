@@ -1201,3 +1201,88 @@ def test_runbook_volume_creation_checks_every_name_before_creating_any():
     body = commands[commands.index("create_v1_volumes()") :]
     assert "|| return 1" in body and "exit 1" not in body
     assert body.index("docker volume inspect") < body.index("docker volume create")
+
+
+@pytest.mark.parametrize("listing", ["\n", "SENTINEL\n\n", "\nSENTINEL\n"])
+def test_cleanup_refuses_project_containers_without_any_sentinel_label(tmp_path, listing):
+    """An unlabelled container is not ours: an empty label must refuse, never vanish."""
+    module, evidence = write_ledger(tmp_path)
+    ledger = module.Ledger.load(evidence)
+    project = ledger.data["instance"] + "-online"
+    ledger.add("projects", project)
+    calls = []
+
+    def runner(command, **kwargs):
+        calls.append(" ".join(map(str, command)))
+        if command[:3] == ["docker", "ps", "-a"]:
+            return listing.replace("SENTINEL", ledger.sentinel)
+        return ""
+
+    with pytest.raises(module.Refused, match="sentinel"):
+        module.cleanup(runner, ledger)
+    assert not [c for c in calls if " down" in c]
+
+
+def kind_inputs(module, tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("KUBECONFIG", raising=False)
+    monkeypatch.setattr(module, "free_bytes", lambda: 30 * GIB)
+    monkeypatch.setattr(module.time, "sleep", lambda _: None)
+    kind = tmp_path / "kind"
+    kind.write_bytes(b"fabricated kind")
+    plugin = tmp_path / "plugins"
+    plugin.mkdir()
+    (plugin / module.GDS_JAR).write_bytes(b"fabricated")
+    return kind, plugin
+
+
+def test_kind_refuses_a_kubeconfig_that_cleanup_could_not_later_accept(tmp_path, monkeypatch):
+    module = script()
+    kind, plugin = kind_inputs(module, tmp_path, monkeypatch)
+    elsewhere = tmp_path / "elsewhere" / "nested" / "kubeconfig"
+    calls = []
+    with pytest.raises(module.Refused, match="kubeconfig"):
+        module.kind_smoke(
+            module.Options(
+                "touchstone-phase3-v1-kind-ab12cd",
+                tmp_path / "evidence",
+                plugin,
+                hashlib.sha256(b"fabricated").hexdigest(),
+                sample_interval=0,
+            ),
+            elsewhere,
+            kind,
+            hashlib.sha256(b"fabricated kind").hexdigest(),
+            runner=lambda command, **k: calls.append(command) or "",
+            preflight=False,
+        )
+    assert calls == [] and not (tmp_path / "evidence").exists()
+
+
+def test_a_failed_receipt_scan_still_deletes_the_cluster_with_cleanup(tmp_path, monkeypatch):
+    module = script()
+    kind, plugin = kind_inputs(module, tmp_path, monkeypatch)
+    instance = "touchstone-phase3-v1-kind-ab12cd"
+    runner, calls = full_kind_runner(tmp_path, instance, [])
+
+    def leak(evidence, values):
+        raise module.Refused("leak.txt contains a generated credential")
+
+    monkeypatch.setattr(module, "scan_receipts", leak)
+    with pytest.raises(module.Refused, match="leak.txt"):
+        module.kind_smoke(
+            module.Options(
+                instance,
+                tmp_path / "evidence",
+                plugin,
+                hashlib.sha256(b"fabricated").hexdigest(),
+                cleanup=True,
+                sample_interval=0,
+            ),
+            tmp_path / "kubeconfig",
+            kind,
+            hashlib.sha256(b"fabricated kind").hexdigest(),
+            runner=runner,
+            preflight=False,
+        )
+    assert [c for c in calls if c[0] == str(kind) and "delete" in c]
