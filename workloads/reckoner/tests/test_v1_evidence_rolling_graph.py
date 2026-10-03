@@ -446,3 +446,27 @@ def test_graph_check_reconciles_against_a_bounded_canonical_import(
     assert result["released_metrics"] == result["projection"]["node_count"]
     assert (declaration.parent / f"graph-check-{day}.json").exists()
     assert content_id(result["edge_summary"]) and result["dataset_simulated"] is True
+
+
+def _operators(plan):
+    found = [plan["operatorType"]]
+    for child in plan.get("children", []):
+        found += _operators(child)
+    return found
+
+
+def test_seed_and_import_lookups_seek_the_unique_entity_key_index(evidence_graph, manifest):
+    """At archive scale a label scan per row never finishes (124,930 merchants)."""
+    from reckoner.v1.evidence.neo4j import CYPHER
+    from reckoner.v1.evidence.rolling_graph import SEED_OWNS, SEED_SHARED
+
+    graph(evidence_graph).seed(manifest)
+    for query in (SEED_OWNS, SEED_SHARED, (CYPHER / "import.cypher").read_text()):
+        with evidence_graph.session() as session:
+            plan = session.run("EXPLAIN " + query, rows=[]).consume().plan
+        operators = _operators(plan)
+        assert not [o for o in operators if "LabelScan" in o or o.startswith("AllNodesScan")], (
+            query,
+            operators,
+        )
+        assert any("NodeUniqueIndexSeek" in o for o in operators), (query, operators)

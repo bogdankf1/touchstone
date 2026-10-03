@@ -30,6 +30,19 @@ TIME_INDEX = (
     "CREATE INDEX evidence_transaction_time IF NOT EXISTS FOR (t:Transaction) ON (t.occurred_at)"
 )
 LABELS = {"account": "Account", "card": "Card", "merchant": "Merchant"}
+# Lookups go through the unique Entity.key constraint: a per-row label scan over 124,930
+# merchants never finishes at archive scale.
+SEED_OWNS = (
+    "UNWIND $rows AS e MATCH (a:Entity {key:e.account_key}) WHERE a:Account "
+    "MATCH (c:Entity {key:e.key}) WHERE c:Card MERGE (a)-[r:OWNS]->(c) "
+    "SET r.tenant_id=e.tenant_id, r.occurred_at=datetime(e.first_observed_at)"
+)
+SEED_SHARED = (
+    "UNWIND $rows AS p MATCH (l:Entity {key:p.left}) WHERE l:Merchant "
+    "MATCH (r:Entity {key:p.right}) WHERE r:Merchant MERGE (l)-[s:SHARED_IDENTITY]->(r) "
+    "SET s.tenant_id=l.tenant_id, s.other_tenant_id=r.tenant_id, "
+    "s.occurred_at=datetime(p.occurred_at)"
+)
 
 
 def graph_rows(pairs, identities: dict) -> list[dict]:
@@ -162,9 +175,7 @@ class RollingGraph:
             ]
             for offset in range(0, len(cards), BATCH):
                 session.run(
-                    "UNWIND $rows AS e MATCH (a:Account {key:e.account_key}) "
-                    "MATCH (c:Card {key:e.key}) MERGE (a)-[r:OWNS]->(c) "
-                    "SET r.tenant_id=e.tenant_id, r.occurred_at=datetime(e.first_observed_at)",
+                    SEED_OWNS,
                     rows=cards[offset : offset + BATCH],
                 ).consume()
             for offset in range(0, len(merchants), BATCH):
@@ -193,10 +204,7 @@ class RollingGraph:
                             )
             for offset in range(0, len(pairs), BATCH):
                 session.run(
-                    "UNWIND $rows AS p MATCH (l:Merchant {key:p.left}) "
-                    "MATCH (r:Merchant {key:p.right}) MERGE (l)-[s:SHARED_IDENTITY]->(r) "
-                    "SET s.tenant_id=l.tenant_id, s.other_tenant_id=r.tenant_id, "
-                    "s.occurred_at=datetime(p.occurred_at)",
+                    SEED_SHARED,
                     rows=pairs[offset : offset + BATCH],
                 ).consume()
             session.run(
