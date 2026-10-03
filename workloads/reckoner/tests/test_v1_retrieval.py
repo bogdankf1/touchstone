@@ -239,3 +239,35 @@ def test_shared_merchant_scope_incomplete_does_not_claim_totals_or_exposure(pg, 
     assert "neighbourhood" not in result
     assert "merchant-exposure" not in {x["indicator_id"] for x in result["risk_indicators"]}
     assert result["features"]["prior_30d_count"] == before["features"]["prior_30d_count"]
+
+
+def test_unreachable_graph_service_degrades_to_marked_unavailable_graph_evidence():
+    """A configured graph that is down must not abort the relational arm or look complete."""
+    import neo4j
+    from reckoner.v1.evidence.assemble import document
+    from test_v1_history import transaction
+
+    tx = transaction()
+
+    class Relational:
+        def for_task(self, task, config):
+            available = {"status": "available", "missing": []}
+            return document(tx, "b" * 64, available, {"amount_usd": "20.00"})
+
+    class Down:
+        def for_task(self, task, config):
+            raise neo4j.exceptions.ServiceUnavailable("connection refused")
+
+    result = assemble_evidence({"transaction": tx}, {}, Relational(), Down())
+    assert result["coverage"]["status"] == "partial"
+    assert "graph unavailable: service unreachable" in result["coverage"]["missing"]
+    assert "graph_projection" not in result
+    assert result["source_snapshot_ids"]["graph"] is None
+    assert result["features"] == {"amount_usd": "20.00"}
+
+    class Broken:
+        def for_task(self, task, config):
+            raise ValueError("graph adapter defect")
+
+    with pytest.raises(ValueError, match="defect"):
+        assemble_evidence({"transaction": tx}, {}, Relational(), Broken())

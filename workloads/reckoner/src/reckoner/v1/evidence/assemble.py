@@ -1,5 +1,7 @@
 """Common bounded display and schema-valid evidence assembly."""
 
+from neo4j.exceptions import ServiceUnavailable, SessionExpired
+
 from reckoner.contracts import content_id
 from reckoner.v1.contracts import validate_v1
 from reckoner.v1.data.history import instant
@@ -98,9 +100,17 @@ def document(
 def assemble_evidence(task: dict, config: dict, relational, graph) -> dict:
     tx = query_transaction(task)
     base = relational.for_task(task, config)
-    extra = graph.for_task(task, config) if graph is not None else None
+    unreachable = False
+    try:
+        extra = graph.for_task(task, config) if graph is not None else None
+    except (ServiceUnavailable, SessionExpired):
+        # A configured but stopped graph service degrades to explicit partial evidence;
+        # the relational arm continues and a GDS-augmented run cannot present as complete.
+        extra, unreachable = None, True
     missing = list(base["coverage"]["missing"])
-    if extra is None:
+    if unreachable:
+        missing.append("graph unavailable: service unreachable")
+    elif extra is None:
         missing.append("graph unavailable")
     else:
         missing.extend(extra["coverage"]["missing"])
