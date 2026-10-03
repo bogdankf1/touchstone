@@ -9,11 +9,12 @@ Run from the repository root with the host Python (standard library only):
   python3 infra/smoke-reckoner-v1.py kind --instance touchstone-phase3-v1-kind-<id> \\
       --evidence-dir artifacts/phase3/task12/kind-<id> --plugin-dir ... \\
       --kubeconfig artifacts/phase3/task12/kind-<id>.kubeconfig --kind-bin PATH --kind-sha256 HEX
-  python3 infra/smoke-reckoner-v1.py cleanup --evidence-dir DIR
+  python3 infra/smoke-reckoner-v1.py cleanup --evidence-dir DIR [--kind-bin PATH --kind-sha256 HEX]
 
-Every resource this script creates is written to DIR/ledger.json BEFORE creation and labelled
-with a random sentinel. Cleanup removes only ledger resources whose labels carry that exact
-sentinel; preserved Phase 1-3 identifiers are refused outright. It never prunes, never removes
+Every volume, project and cluster is written to DIR/ledger.json BEFORE creation; volumes, every
+Compose container and the kind node carry a random sentinel. Loading a ledger re-validates it,
+and cleanup checks every resource for that exact sentinel before stopping or deleting any of
+them; preserved Phase 1-3 identifiers are refused outright. It never prunes, never removes
 images, never uses `down --volumes`, and never reads the repository `.env` or a provider key:
 all credentials are freshly generated, fabricated and disposable. Compose and kind never run
 together, and neither runs alongside the preserved Phase 2 stack.
