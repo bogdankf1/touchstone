@@ -50,6 +50,10 @@ jobs:
     env:
       RECKONER_TEST_OWNER_DSN: postgresql://postgres:reckoner-test-only@127.0.0.1:55433/postgres
       RECKONER_TEST_NEO4J_URI: bolt://127.0.0.1:57687
+      # Docker names of the test project's stores for the benchmark sampler/audit steps.
+      RECKONER_TEST_SAMPLE_CONTAINERS: touchstone-phase3-task3-postgres-1,touchstone-phase3-task3-neo4j-1
+      RECKONER_TEST_AUDIT_PREFIX: touchstone-phase3-task3-
+      RECKONER_TEST_DU_IMAGE: pgvector/pgvector:0.8.6-pg17-bookworm@sha256:cf134a767f474095eeba57e0117be8e568e011a63f33fbf252f14c9b760f8e6f
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
@@ -61,7 +65,10 @@ jobs:
       - run: bash infra/prepare-reckoner-v1-test.sh
       - run: docker compose -f infra/compose.reckoner-v1.test.yaml up -d --wait
       # Unavailable services fail; no integration skip path exists.
-      - run: uv run --frozen --all-packages pytest workloads/reckoner/tests/test_v1_graph.py -m neo4j_integration -q
+      - run: >-
+          uv run --frozen --all-packages pytest workloads/reckoner/tests/test_v1_graph.py
+          workloads/reckoner/tests/test_v1_smoke.py workloads/reckoner/tests/test_v1_benchmark_stores.py
+          -m neo4j_integration -q
       - if: always()
         run: docker compose -f infra/compose.reckoner-v1.test.yaml down --volumes
   frontend:
