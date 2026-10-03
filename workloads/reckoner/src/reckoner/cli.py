@@ -25,6 +25,7 @@ from reckoner.storage.budget import BudgetExceeded, RunBusy
 from reckoner.storage.migrate import migrate, provision_roles
 from reckoner.storage.postgres import PostgresRepository
 from reckoner.telemetry.otlp import export_evaluations, export_run, replay
+from reckoner.v1.benchmark.resources import ResourceSamplingError
 from reckoner.v1.cli import execute as execute_v1
 from reckoner.v1.cli import register as register_v1
 
@@ -273,7 +274,7 @@ def main(argv: list[str] | None = None) -> int:
     except psycopg.Error:
         print(f"{args.command} failed: database unavailable", file=sys.stderr)
         return 2
-    except (OSError, UnicodeError, ValueError) as error:
+    except (OSError, UnicodeError, ValueError, ResourceSamplingError) as error:
         print(f"{args.command} failed: {error}", file=sys.stderr)
         return 2
     except RunBusy:

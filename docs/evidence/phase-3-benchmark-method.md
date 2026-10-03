@@ -262,17 +262,21 @@ file is read, no credential is embedded, and no provider is called.
 | `measure` | Runtime-role SQL/Cypher schedule and exact top five; no labels; `--first-pass-state` records the operator's restart state. | `service-samples.jsonl`, `exact-memberships.json`, `retrieval-report.{json,md}` |
 | `replacement` | One first pass, checked hash-for-hash against `measure`. | `replacement-service-samples.jsonl`, `replacement-first-pass.json` |
 | `audit` | Read-only `du` of every volume mounted by matching containers, plus optional cgroup counters. | `resource-reconciliation-LABEL.json`, `cgroup-LABEL.json` |
-| `report` | Offline evaluator assembly; joins query labels only after retrieval. | `--output` prefix `.json` and `.md` |
+| `report` | Offline evaluator assembly; joins query labels only after retrieval. | `--output` prefix `.json` and `.md`; a prefix that already ends in `.json` or `.md` is refused |
 
 `measure` and `replacement` connect with `--runtime-role` (default
 `reckoner_runner`) applied through libpq `options`, record the session's
 `current_user`, `session_user` and `oracle` schema usage in the observation or
 receipt, and refuse to run if the active role differs or can use schema `oracle`.
+They also record the Neo4j user reported by the server (`neo4j_user`; the pinned
+Community edition has a single database user, so this is identity, not a role).
 Every store step first checks that all of its outputs are absent and runs the
 resource guard before any timed or committed work (and again afterwards); for
 `measure` and `replacement` that pre-flight guard sends no database query, so the
-first timed pass still follows the restart. A failed service sample is raised,
-not silently lost. `prepare` runs the guard, which may size volumes, at the start,
+first timed pass still follows the restart. A failed service sample is never
+silently lost: `measure` and `replacement` first write their finished one-shot
+observation or receipt with `resource_samples_complete: false`, then exit with
+an error. A complete sampler records `true`. `prepare` runs the guard, which may size volumes, at the start,
 every `--guard-every` batches (default 10) and at the end. Candidate and stored ID
 lists are ordered in Python, not by database collation, before any hash, and a
 transaction ID appearing under two tenants is refused because the frozen union
@@ -360,3 +364,19 @@ text and the resulting `report_id`; every measured or computed field is identica
 
 The regenerated Markdown also carries the explicit `measured-local-retrieval`
 heading and label. The published files are unchanged.
+
+## Real-store execution of the store steps (Task 12)
+
+`workloads/reckoner/tests/test_v1_benchmark_stores.py` (markers `integration` and
+`neo4j_integration`) runs `inventory`, a deliberately guard-failed `prepare`,
+`prepare`, `verify`, a refused `measure`, `measure`, `replacement`, `audit` and
+`report` once through the CLI against a disposable Postgres and Neo4j/GDS fixture
+loaded from a tiny fabricated simulated source. It checks the active
+`reckoner_runner` role and Neo4j user, refusal of an oracle-capable session,
+pre-flight refusal of existing output, that a guard failure after the first `COPY`
+batch leaves zero stored vectors, Python-sorted population hashes, stored-vector
+reconciliation, sampler completeness and report assembly. It needs
+`RECKONER_TEST_OWNER_DSN`, `RECKONER_TEST_NEO4J_URI`,
+`RECKONER_TEST_SAMPLE_CONTAINERS` (comma-separated Docker names),
+`RECKONER_TEST_AUDIT_PREFIX` and `RECKONER_TEST_DU_IMAGE`; it fails rather than skips
+without them. This is fixture plumbing evidence, not a new measurement.

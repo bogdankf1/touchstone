@@ -36,6 +36,9 @@ COMPARISON_MODES = {
 
 def write_report(report: dict, output: Path) -> dict:
     output = Path(output)
+    if output.suffix.lower() in (".json", ".md"):
+        # A file name here would otherwise publish report.json.json and report.json.md.
+        raise ValueError("report output is a prefix; omit the .json/.md extension")
     # The whole prefix is kept: "report.v2" becomes report.v2.json, not report.json.
     json_path = output.with_name(output.name + ".json")
     markdown_path = output.with_name(output.name + ".md")

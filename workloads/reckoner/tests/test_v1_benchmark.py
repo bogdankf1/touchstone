@@ -884,6 +884,12 @@ def test_vectors_copy_explicit_columns_single_commit_and_bounded_guard():
         def __init__(self, connection):
             self.connection = connection
 
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            pass
+
         def copy(self, statement):
             self.connection.statements.append(statement)
             return Copy(self.connection.rows)
@@ -992,3 +998,165 @@ def test_markdown_fence_cannot_be_closed_by_report_content(tmp_path):
     write_report(body, tmp_path / "report")
     markdown = (tmp_path / "report.md").read_text()
     assert "\n````json\n" in markdown and markdown.rstrip().endswith("````")
+
+
+class PermissiveGuard:
+    def __init__(self, args):
+        pass
+
+    def __call__(self, connection=None):
+        return {"free_bytes": 1}
+
+
+def test_sampler_failure_keeps_the_finished_one_shot_observation(monkeypatch, tmp_path, capsys):
+    import json
+    import subprocess
+
+    from reckoner.cli import main
+    from reckoner.v1.benchmark import resources, steps
+
+    step_inputs("measure", tmp_path)
+    (tmp_path / "retrieval-report.json").unlink()
+    for name in ("TASK11_TEST_DSN", "TASK11_TEST_USER", "TASK11_TEST_PASSWORD"):
+        monkeypatch.setenv(name, "fabricated-test-value")
+
+    class Closable:
+        connection = None
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(steps, "Guard", PermissiveGuard)
+    monkeypatch.setattr(
+        steps, "_stores", lambda *a: (Closable(), Closable(), Closable(), dict(RUNTIME))
+    )
+    observation = {
+        "measurement_mode": "measured-local-retrieval",
+        "dataset_simulated": True,
+        "queries": [],
+        "latency_ms": {},
+    }
+    monkeypatch.setattr(steps, "measure_observation", lambda *a, **k: (dict(observation), []))
+
+    def failing(*args, **kwargs):
+        raise subprocess.CalledProcessError(1, "docker stats")
+
+    monkeypatch.setattr(resources.subprocess, "check_output", failing)
+    argv = step_argv("measure", tmp_path) + ["--sample-container", "c", "--interval", "0.01"]
+    assert main(argv) == 2
+    assert "service sampling failed" in capsys.readouterr().err
+    written = json.loads((tmp_path / "retrieval-report.json").read_text())
+    assert written["resource_samples_complete"] is False
+    assert (tmp_path / "exact-memberships.json").exists()
+
+
+def test_store_runtime_identity_records_the_neo4j_user(monkeypatch):
+    from argparse import Namespace
+
+    import neo4j
+    from reckoner.v1.benchmark import queries, steps
+
+    class Result:
+        def single(self):
+            return {"username": "neo4j"}
+
+    class Session:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            pass
+
+        def run(self, statement, **kwargs):
+            return Result()
+
+    class Driver:
+        def verify_connectivity(self):
+            pass
+
+        def session(self, **kwargs):
+            return Session()
+
+        def close(self):
+            pass
+
+    class SQL:
+        connection = None
+
+        def __init__(self, *args):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(neo4j.GraphDatabase, "driver", lambda *a, **k: Driver())
+    monkeypatch.setattr(queries, "SQLQueries", SQL)
+    monkeypatch.setattr(queries, "CypherQueries", lambda driver: object())
+    monkeypatch.setattr(steps, "runtime_identity", lambda connection: dict(RUNTIME))
+    args = Namespace(neo4j_uri="bolt://127.0.0.1:1", runtime_role="reckoner_runner")
+    *_, identity = steps._stores(args, {"scaler_id": "s"}, ("host=h", ("neo4j", "p")))
+    assert identity == {**RUNTIME, "neo4j_user": "neo4j"}
+
+
+@pytest.mark.parametrize("name", ["report.json", "report.md", "report.JSON"])
+def test_report_output_prefix_with_a_file_extension_is_rejected(tmp_path, name):
+    from reckoner.v1.benchmark.report import write_report
+
+    with pytest.raises(ValueError, match="prefix"):
+        write_report(retrieval_body("synthetic-fixture"), tmp_path / name)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_vector_copy_cursor_is_closed():
+    import io
+
+    from reckoner.v1.benchmark.steps import write_vectors
+
+    class Copy:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            pass
+
+        def write_row(self, row):
+            pass
+
+    class Cursor:
+        closed = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            self.close()
+
+        def copy(self, statement):
+            return Copy()
+
+        def close(self):
+            self.closed = True
+
+    class Connection:
+        def __init__(self):
+            self.cursors = []
+
+        def cursor(self):
+            self.cursors.append(Cursor())
+            return self.cursors[-1]
+
+        def commit(self):
+            pass
+
+    connection = Connection()
+    pairs = [({"tenant_id": "t", "transaction_id": str(i)}, [0.0]) for i in range(3)]
+    write_vectors(
+        pairs,
+        io.StringIO(),
+        connection,
+        scaler_id="s",
+        batch_size=2,
+        guard=lambda c: {},
+        guard_every=1,
+    )
+    assert len(connection.cursors) == 2 and all(c.closed for c in connection.cursors)

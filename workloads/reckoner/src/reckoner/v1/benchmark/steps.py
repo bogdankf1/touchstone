@@ -100,6 +100,9 @@ RUNTIME_IDENTITY_SQL = (
 )
 
 
+NEO4J_USER_CYPHER = "SHOW CURRENT USER YIELD user AS username"
+
+
 def runtime_identity(connection) -> dict:
     current, session, oracle = connection.execute(RUNTIME_IDENTITY_SQL).fetchone()
     return {"current_user": current, "session_user": session, "oracle_usage": oracle}
@@ -123,6 +126,9 @@ def _stores(args, scaler, credentials):
         driver.verify_connectivity()
         sql = queries.SQLQueries(runtime_conninfo(dsn, args.runtime_role), scaler)
         identity = check_runtime_identity(runtime_identity(sql.connection), args.runtime_role)
+        with driver.session() as session:
+            # Community edition has one database user; record the server-reported name.
+            identity["neo4j_user"] = session.run(NEO4J_USER_CYPHER).single()["username"]
         graph = queries.CypherQueries(driver)
     except BaseException:
         if sql is not None:
@@ -195,7 +201,7 @@ def write_vectors(pairs, handle, connection, *, scaler_id, batch_size, guard, gu
     samples, batch, batches, count = [guard(connection)], [], 0, 0
 
     def flush():
-        with connection.cursor().copy(VECTOR_COPY) as copy:
+        with connection.cursor() as cursor, cursor.copy(VECTOR_COPY) as copy:
             for row in batch:
                 copy.write_row(row)
         batch.clear()
@@ -318,8 +324,11 @@ def _measure(args):
     scaler, guard = _scaler(args, protocol), Guard(args)
     guard()  # No database query here: the first timed pass must follow the restart.
     driver, sql, graph, identity = _stores(args, scaler, credentials)
+    sampler = Sampler(
+        output / "service-samples.jsonl", args.sample_container, args.interval, raise_errors=False
+    )
     try:
-        with Sampler(output / "service-samples.jsonl", args.sample_container, args.interval):
+        with sampler:
             observation, memberships = measure_observation(
                 protocol,
                 sql,
@@ -336,9 +345,12 @@ def _measure(args):
         sql.close()
         graph.close()
         driver.close()
+    # A finished one-shot pass is never discarded; incomplete sampling is recorded, then raised.
+    observation["resource_samples_complete"] = sampler.complete
     with (output / "exact-memberships.json").open("x") as handle:
         json.dump(memberships, handle)
     report = write_report(observation, output / "retrieval-report")
+    sampler.raise_error()
     return {"report_id": report["report_id"], "latency_ms": report["latency_ms"]}
 
 
@@ -357,10 +369,14 @@ def _replacement(args):
     scaler, guard = _scaler(args, protocol), Guard(args)
     guard()
     driver, sql, graph, identity = _stores(args, scaler, credentials)
+    sampler = Sampler(
+        output / "replacement-service-samples.jsonl",
+        args.sample_container,
+        args.interval,
+        raise_errors=False,
+    )
     try:
-        with Sampler(
-            output / "replacement-service-samples.jsonl", args.sample_container, args.interval
-        ):
+        with sampler:
             receipt = replacement_receipt(
                 protocol,
                 observation,
@@ -374,7 +390,12 @@ def _replacement(args):
         sql.close()
         graph.close()
         driver.close()
+    # Sampling completeness is known only after the sampler stops; reseal the identity.
+    receipt = {k: v for k, v in receipt.items() if k != "receipt_id"}
+    receipt["resource_samples_complete"] = sampler.complete
+    receipt["receipt_id"] = content_id(receipt)
     _write_new(output / "replacement-first-pass.json", receipt)
+    sampler.raise_error()
     return {"receipt_id": receipt["receipt_id"]}
 
 

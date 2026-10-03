@@ -18,6 +18,10 @@ class ResourceGuardError(ValueError):
     pass
 
 
+class ResourceSamplingError(RuntimeError):
+    """Coarse service sampling failed; the resource evidence is incomplete."""
+
+
 def parse_stores(declared: list[str], measured: dict) -> dict:
     """Declared sizes are explicit operator inputs; measured sizes come from the volumes."""
     stores = {name: {"bytes": size, "source": "measured"} for name, size in measured.items()}
@@ -163,8 +167,11 @@ class Guard:
 class Sampler:
     """Coarse docker stats observations; they are samples, not exact peaks."""
 
-    def __init__(self, path: Path, containers: list[str], interval: float):
+    def __init__(self, path: Path, containers: list[str], interval: float, *, raise_errors=True):
         self.path, self.containers, self.interval = path, containers, interval
+        # Callers that must first persist a finished one-shot observation pass False and
+        # check `complete` afterwards; the failure is still raised by `raise_error()`.
+        self.raise_errors = raise_errors
         self.stop_event = threading.Event()
         self.thread = threading.Thread(target=self._run)
         self.started = time.perf_counter()
@@ -196,11 +203,19 @@ class Sampler:
             self.thread.start()
         return self
 
+    @property
+    def complete(self) -> bool:
+        return self.error is None
+
+    def raise_error(self):
+        if self.error is not None:
+            raise ResourceSamplingError(
+                "service sampling failed; resource evidence incomplete"
+            ) from self.error
+
     def __exit__(self, exc_type, *_):
         self.stop_event.set()
         if self.containers:
             self.thread.join()
-        if self.error is not None and exc_type is None:
-            raise RuntimeError("service sampling failed; resource evidence incomplete") from (
-                self.error
-            )
+        if self.raise_errors and exc_type is None:
+            self.raise_error()
