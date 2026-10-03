@@ -1,0 +1,678 @@
+"""`reckoner v1 evidence declare|run|publish|drop-working-set|graph-check`.
+
+Prepares relational and GDS-augmented evidence for the frozen simulated populations and
+persists it in the instance's operational database. Credentials come only from an
+allow-listed environment (`--env-file -` reads those names from the process environment).
+No provider is called and no provider key is ever read.
+"""
+
+import json
+import os
+import sys
+from pathlib import Path
+from time import perf_counter
+
+from reckoner.contracts import content_id
+from reckoner.data.artifacts import canonical_json
+from reckoner.v1.evidence import preparation as prep
+
+EVIDENCE_KEYS = frozenset(
+    {
+        "RECKONER_OWNER_DSN",
+        "RECKONER_RUNNER_DSN",
+        "RECKONER_SOURCE_DIR",
+        "RECKONER_BASELINE_BUNDLE",
+        "RECKONER_NEO4J_URI",
+        "RECKONER_NEO4J_USER",
+        "RECKONER_NEO4J_PASSWORD",
+    }
+)
+LOCK_SPACE = 0x3B
+
+
+def read_environment(env_file) -> dict:
+    """Only allow-listed names; an environment file naming anything else is refused."""
+    if str(env_file) == "-":
+        return {key: os.environ[key] for key in sorted(EVIDENCE_KEYS) if key in os.environ}
+    environment = {}
+    for raw in Path(env_file).read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        key, separator, value = line.partition("=")
+        if not separator or key not in EVIDENCE_KEYS:
+            raise ValueError("evidence environment file names a key outside the allowlist")
+        environment[key] = value
+    return environment
+
+
+def _require(environment, *keys):
+    missing = [key for key in keys if not environment.get(key)]
+    if missing:
+        raise ValueError("evidence preparation requires " + ", ".join(missing))
+    return [environment[key] for key in keys]
+
+
+def output_directory(root, declaration) -> Path:
+    """`<root>/<prep12>/`; an existing directory is reused only for the same preparation."""
+    path = Path(root) / declaration["preparation_id"][:12]
+    payload = canonical_json(declaration)
+    target = path / "declaration.json"
+    if declaration["preparation_id"] != content_id(
+        {k: v for k, v in declaration.items() if k != "preparation_id"}
+    ):
+        raise ValueError("declaration preparation identity mismatch")
+    if target.exists():
+        if target.read_bytes() != payload:
+            raise ValueError("output directory belongs to another preparation")
+        return path
+    path.mkdir(parents=True, exist_ok=True)
+    with target.open("xb") as handle:
+        handle.write(payload)
+    return path
+
+
+def _write_json_once(path: Path, value) -> None:
+    payload = canonical_json(value)
+    if path.exists():
+        if path.read_bytes() != payload:
+            raise ValueError(f"refusing to overwrite {path.name}")
+        return
+    with path.open("xb") as handle:
+        handle.write(payload)
+
+
+def _append(path: Path, record: dict) -> None:
+    with path.open("a") as handle:
+        handle.write(json.dumps(record, sort_keys=True, default=str) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def _jsonl(path: Path) -> list[dict]:
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text().splitlines() if line]
+
+
+def _log(message: str) -> None:
+    print(message, file=sys.stderr, flush=True)
+
+
+def _populations(values) -> dict:
+    if not values:
+        return dict(prep.DEFAULT_POPULATIONS)
+    populations = {}
+    for item in values:
+        name, separator, modes = item.partition("=")
+        if not separator or not modes:
+            raise ValueError("population must be NAME=MODE[,MODE]")
+        populations[name] = tuple(modes.split(","))
+    return populations
+
+
+def _schedule_summary(schedule) -> list[dict]:
+    return [
+        {
+            "day": entry["day"],
+            "cases": [
+                {k: c[k] for k in ("tenant_id", "transaction_id", "population", "modes", "pilot")}
+                for c in entry["cases"]
+            ],
+        }
+        for entry in schedule
+    ]
+
+
+# --- declare ----------------------------------------------------------------------
+
+
+def _declare(args):
+    from reckoner.v1.data.prepare import verify_preparation
+
+    environment = read_environment(args.env_file)
+    source, baseline = _require(environment, "RECKONER_SOURCE_DIR", "RECKONER_BASELINE_BUNDLE")
+    bundle = Path(args.bundle)
+    verify_preparation(bundle, Path(source))
+    scaler = json.loads(Path(args.scaler).read_text())
+    populations = _populations(args.population)
+    schedule = prep.query_schedule(bundle, Path(baseline), populations)
+    started = perf_counter()
+    manifest = prep.entity_manifest(bundle, Path(source))
+    manifest_seconds = perf_counter() - started
+    declaration = prep.declare_preparation(
+        bundle=bundle,
+        baseline_bundle=Path(baseline),
+        scaler=scaler,
+        entity_manifest_id=manifest["entity_manifest_id"],
+        schedule=schedule,
+        populations=populations,
+    )
+    output = output_directory(args.output_root, declaration)
+    _write_json_once(output / "entity-manifest.json", manifest)
+    _write_json_once(output / "schedule.json", _schedule_summary(schedule))
+    _write_json_once(
+        output / "inputs.json",
+        {
+            "bundle": str(bundle.resolve()),
+            "scaler": str(Path(args.scaler).resolve()),
+            "populations": {k: list(v) for k, v in sorted(populations.items())},
+        },
+    )
+    return {
+        "preparation_id": declaration["preparation_id"],
+        "source_snapshot_id": declaration["source_snapshot_id"],
+        "entity_manifest_id": manifest["entity_manifest_id"],
+        "entity_counts": manifest["counts"],
+        "entity_manifest_seconds": manifest_seconds,
+        "output": str(output),
+        "populations": declaration["populations"],
+    }
+
+
+class Context:
+    """Re-derives every declared identity before any store is touched."""
+
+    def __init__(self, args):
+        self.args = args
+        self.declaration = json.loads(Path(args.declaration).read_text())
+        self.output = Path(args.declaration).parent
+        if output_directory(self.output.parent, self.declaration) != self.output:
+            raise ValueError("declaration is not inside its preparation output directory")
+        self.environment = read_environment(args.env_file)
+        inputs = json.loads((self.output / "inputs.json").read_text())
+        self.bundle, self.scaler_path = Path(inputs["bundle"]), Path(inputs["scaler"])
+        self.populations = {k: tuple(v) for k, v in inputs["populations"].items()}
+        self.scaler = json.loads(self.scaler_path.read_text())
+        self.manifest = json.loads((self.output / "entity-manifest.json").read_text())
+        if self.manifest["entity_manifest_id"] != content_id(
+            {k: v for k, v in self.manifest.items() if k != "entity_manifest_id"}
+        ):
+            raise ValueError("entity manifest identity mismatch")
+
+    def schedule(self, baseline):
+        schedule = prep.query_schedule(self.bundle, Path(baseline), self.populations)
+        again = prep.declare_preparation(
+            bundle=self.bundle,
+            baseline_bundle=Path(baseline),
+            scaler=self.scaler,
+            entity_manifest_id=self.manifest["entity_manifest_id"],
+            schedule=schedule,
+            populations=self.populations,
+        )
+        if again != self.declaration:
+            raise ValueError("inputs no longer reproduce the declared preparation")
+        return schedule
+
+    @property
+    def snapshot(self):
+        return self.declaration["source_snapshot_id"]
+
+    @property
+    def config(self):
+        return {"scaler_id": self.scaler["scaler_id"], "scaler": self.scaler}
+
+    def identities(self):
+        return [
+            {
+                "tenant_id": e["tenant_id"],
+                "merchant_id": e["identity"],
+                "identity": e["shared_identity"],
+            }
+            for e in self.manifest["entities"]
+            if e["kind"] == "merchant"
+        ]
+
+
+class RunLock:
+    """One runner per preparation: a session advisory lock in the operational database."""
+
+    def __init__(self, owner_dsn, preparation_id):
+        import psycopg
+
+        self.connection = psycopg.connect(owner_dsn, autocommit=True)
+        key = int(preparation_id[:14], 16)
+        if not self.connection.execute(
+            "SELECT pg_try_advisory_lock(%s, %s)", (LOCK_SPACE, key & 0x7FFFFFFF)
+        ).fetchone()[0]:
+            self.connection.close()
+            raise RuntimeError("another evidence run holds this preparation's lock")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.connection.close()
+
+
+def _guard(args, output):
+    from reckoner.v1.evidence.rolling import StoreGuard
+
+    return StoreGuard(
+        free_path=args.free_path or output,
+        free_floor_bytes=args.free_floor_bytes,
+        max_store_bytes=args.max_store_bytes,
+    )
+
+
+# --- relational pass ------------------------------------------------------------------
+
+
+def _run_relational(context: Context, guard) -> dict:
+    from reckoner.v1.data.history import SourceHistory
+    from reckoner.v1.evidence.rolling import (
+        RollingStore,
+        SourceDays,
+        ensure_working_set,
+        facts,
+        import_queries,
+        persist_documents,
+        persisted_summaries,
+        with_database,
+        working_set_name,
+    )
+
+    owner, runner, source, baseline = _require(
+        context.environment,
+        "RECKONER_OWNER_DSN",
+        "RECKONER_RUNNER_DSN",
+        "RECKONER_SOURCE_DIR",
+        "RECKONER_BASELINE_BUNDLE",
+    )
+    declaration, through = context.declaration, context.args.through
+    receipts_path = context.output / "days-relational.jsonl"
+    with RunLock(owner, declaration["preparation_id"]):
+        schedule = context.schedule(baseline)
+        entries = {entry["day"]: entry for entry in schedule}
+        ws_owner = ensure_working_set(owner, declaration["preparation_id"])
+        ws_runner = with_database(runner, working_set_name(declaration["preparation_id"]))
+        with SourceHistory(context.bundle, Path(source)) as history:
+            days = SourceDays(history, context.bundle)
+            store = RollingStore(
+                ws_owner,
+                ws_runner,
+                source=days,
+                scaler=context.scaler,
+                snapshot_id=context.snapshot,
+                guard=guard,
+            )
+            store.initialize(context.identities())
+            identity = store.runtime_identity()
+            known = facts(persisted_summaries(runner, context.snapshot))
+            plan = prep.plan_run(
+                schedule,
+                known,
+                receipts=_jsonl(receipts_path),
+                mode="relational",
+                through=through,
+                snapshot=context.snapshot,
+            )
+            for day in plan["reconstruct"]:
+                _append(
+                    receipts_path, prep.reconstruct_receipt(entries[day], known, mode="relational")
+                )
+            for day in plan["pending"]:
+                cases = [c for c in entries[day]["cases"] if "relational" in c["modes"]]
+                transactions = [c["transaction"] for c in cases]
+                timings, began = {}, perf_counter()
+                store.verify_queries(transactions)
+                timings["verify_seconds"] = perf_counter() - began
+                started = perf_counter()
+                imported = store.advance_to(day)
+                timings["advance_seconds"] = perf_counter() - started
+                started = perf_counter()
+                evicted = store.evict_before(prep.window(day)[0])
+                timings["evict_seconds"] = perf_counter() - started
+                started = perf_counter()
+                previous = store.import_previous_cards(transactions)
+                timings["previous_card_seconds"] = perf_counter() - started
+                started = perf_counter()
+                documents = store.evidence(transactions, context.config)
+                timings["assembly_seconds"] = perf_counter() - started
+                summary = prep.check_documents(
+                    day, [(c, "relational", d) for c, d in zip(cases, documents, strict=True)]
+                )
+                started = perf_counter()
+                import_queries(owner, transactions)
+                ids = persist_documents(runner, documents)
+                timings["persist_seconds"] = perf_counter() - started
+                receipt = {
+                    "day": day,
+                    "pass": "relational",
+                    "cases": len(cases),
+                    "evidence_ids": sorted(ids),
+                    "document_json_bytes": sum(len(json.dumps(d)) for d in documents),
+                    "imported_days": len(imported),
+                    "imported_rows": sum(i["rows"] for i in imported),
+                    "imported_vectors": sum(i["vectors"] for i in imported),
+                    "import_read_seconds": sum(i["read_seconds"] for i in imported),
+                    "import_vector_seconds": sum(i["vector_seconds"] for i in imported),
+                    "import_write_seconds": sum(i["write_seconds"] for i in imported),
+                    "evicted_rows": evicted["rows"],
+                    "evicted_vectors": evicted["vectors"],
+                    "evict_delete_seconds": evicted["delete_seconds"],
+                    "vacuum_seconds": evicted["vacuum_seconds"],
+                    "previous_card_rows": previous["rows"],
+                    "coverage": summary,
+                    "guard": evicted["guard"],
+                    "seconds": perf_counter() - began,
+                    **timings,
+                    "receipt_reconstructed": False,
+                }
+                _append(receipts_path, receipt)
+                _log(
+                    f"relational {day}: {len(cases)} cases, {receipt['imported_rows']} rows in, "
+                    f"{receipt['evicted_rows']} out, {receipt['seconds']:.1f}s"
+                )
+            days.close()
+    return {
+        "preparation_id": declaration["preparation_id"],
+        "through": through,
+        "runtime_identity": identity,
+        "complete_days": len(plan["complete"]),
+        "processed_days": len(plan["pending"]),
+        "reconstructed_receipts": len(plan["reconstruct"]),
+    }
+
+
+# --- graph pass ---------------------------------------------------------------------
+
+
+def _driver(environment):
+    from neo4j import GraphDatabase
+
+    uri, user, password = _require(
+        environment, "RECKONER_NEO4J_URI", "RECKONER_NEO4J_USER", "RECKONER_NEO4J_PASSWORD"
+    )
+    driver = GraphDatabase.driver(uri, auth=(user, password), warn_notification_severity="OFF")
+    driver.verify_connectivity()
+    return driver
+
+
+def _relational_manifests(context) -> list[dict]:
+    manifests = []
+    for name, modes in sorted(context.populations.items()):
+        if "gds-augmented" not in modes:
+            continue
+        path = context.output / "manifests" / f"{name}-relational.json"
+        if not path.exists():
+            raise ValueError(f"publish the {name} relational manifest before the graph pass")
+        manifests.append(json.loads(path.read_text()))
+    return manifests
+
+
+def _referenced(runner):
+    import psycopg
+
+    from reckoner.v1.evidence.rolling import runtime_dsn
+
+    def referenced(projection_id):
+        with psycopg.connect(runtime_dsn(runner)) as connection:
+            return connection.execute(
+                "SELECT EXISTS (SELECT 1 FROM reckoner.v1_evidence "
+                "WHERE document->'source_snapshot_ids'->>'graph' = %s)",
+                (projection_id,),
+            ).fetchone()[0]
+
+    return referenced
+
+
+def _run_graph(context: Context, guard) -> dict:
+    from reckoner.v1.data.history import SourceHistory
+    from reckoner.v1.evidence.assemble import assemble_evidence
+    from reckoner.v1.evidence.neo4j import Neo4jEvidence
+    from reckoner.v1.evidence.rolling import (
+        PersistedRelational,
+        SourceDays,
+        facts,
+        persist_documents,
+        persisted_summaries,
+    )
+    from reckoner.v1.evidence.rolling_graph import RollingGraph
+
+    owner, runner, source, baseline = _require(
+        context.environment,
+        "RECKONER_OWNER_DSN",
+        "RECKONER_RUNNER_DSN",
+        "RECKONER_SOURCE_DIR",
+        "RECKONER_BASELINE_BUNDLE",
+    )
+    declaration, through = context.declaration, context.args.through
+    receipts_path = context.output / "days-graph.jsonl"
+    with RunLock(owner, declaration["preparation_id"]), _driver(context.environment) as driver:
+        schedule = context.schedule(baseline)
+        entries = {entry["day"]: entry for entry in schedule}
+        base = PersistedRelational(runner, _relational_manifests(context))
+        graph = RollingGraph(
+            driver,
+            preparation_id=declaration["preparation_id"],
+            snapshot_id=context.snapshot,
+            guard=guard,
+        )
+        seeded = graph.seed(context.manifest)
+        known = facts(persisted_summaries(runner, context.snapshot))
+        plan = prep.plan_run(
+            schedule,
+            known,
+            receipts=_jsonl(receipts_path),
+            mode="gds-augmented",
+            through=through,
+            snapshot=context.snapshot,
+        )
+        for day in plan["reconstruct"]:
+            _append(
+                receipts_path, prep.reconstruct_receipt(entries[day], known, mode="gds-augmented")
+            )
+        evidence = Neo4jEvidence(driver)
+        with SourceHistory(context.bundle, Path(source)) as history:
+            days = SourceDays(history, context.bundle)
+            for day in plan["pending"]:
+                cases = [c for c in entries[day]["cases"] if "gds-augmented" in c["modes"]]
+                began = perf_counter()
+                imported = graph.advance_to(day, days)
+                evicted = graph.evict_before(prep.window(day)[0])
+                started = perf_counter()
+                receipt = graph.projection_for(day, referenced=_referenced(runner))
+                projection_seconds = perf_counter() - started
+                started = perf_counter()
+                documents = [
+                    assemble_evidence(
+                        {"transaction": c["transaction"]}, context.config, base, evidence
+                    )
+                    for c in cases
+                ]
+                assembly_seconds = perf_counter() - started
+                summary = prep.check_documents(
+                    day, [(c, "gds-augmented", d) for c, d in zip(cases, documents, strict=True)]
+                )
+                ids = persist_documents(runner, documents)
+                released = graph.release(receipt["projection_id"])
+                record = {
+                    "day": day,
+                    "pass": "gds-augmented",
+                    "cases": len(cases),
+                    "evidence_ids": sorted(ids),
+                    "imported_rows": sum(i["rows"] for i in imported),
+                    "import_seconds": sum(i["seconds"] + i["read_seconds"] for i in imported),
+                    "evicted_rows": evicted["rows"],
+                    "evict_seconds": evicted["seconds"],
+                    "projection_id": receipt["projection_id"],
+                    "projection_action": receipt["action"],
+                    "projection_seconds": projection_seconds,
+                    "assembly_seconds": assembly_seconds,
+                    "released_metrics": released,
+                    "coverage": summary,
+                    "seconds": perf_counter() - began,
+                    "receipt_reconstructed": False,
+                }
+                _append(context.output / "projections.jsonl", receipt)
+                _append(receipts_path, record)
+                _log(f"graph {day}: {len(cases)} cases, {record['seconds']:.1f}s")
+            days.close()
+    return {
+        "preparation_id": declaration["preparation_id"],
+        "through": through,
+        "seed": seeded,
+        "complete_days": len(plan["complete"]),
+        "processed_days": len(plan["pending"]),
+    }
+
+
+def _graph_check(context: Context, guard) -> dict:
+    """Dedicated reconciliation day in a separate 3b-owned store (never the pass store)."""
+    from reckoner.v1.data.history import SourceHistory
+    from reckoner.v1.evidence.rolling import SourceDays
+    from reckoner.v1.evidence.rolling_graph import RollingGraph, reference_summary
+
+    (source,) = _require(context.environment, "RECKONER_SOURCE_DIR")
+    day, cutoff = context.args.day, prep.iso(prep.day_start(context.args.day))
+    with _driver(context.environment) as driver:
+        graph = RollingGraph(
+            driver,
+            preparation_id=context.declaration["preparation_id"],
+            snapshot_id=context.snapshot,
+            purpose="graph-check",
+            guard=guard,
+        )
+        started = perf_counter()
+        seeded = graph.seed(context.manifest)
+        with SourceHistory(context.bundle, Path(source)) as history:
+            days = SourceDays(history, context.bundle)
+            imported = graph.advance_to(day, days)
+            days.close()
+        import_seconds = perf_counter() - started
+        receipt = graph.projection_for(day, referenced=lambda _: False)
+        summary = graph.edge_summary(cutoff)
+        with driver.session() as session:
+            retention = session.run(
+                "SHOW SETTINGS YIELD name, value WHERE name = "
+                "'db.tx_log.rotation.retention_policy' RETURN value"
+            ).single()
+        result = {
+            "schema_version": "reckoner-graph-check-v1",
+            "dataset_simulated": True,
+            "preparation_id": context.declaration["preparation_id"],
+            "entity_manifest_id": context.manifest["entity_manifest_id"],
+            "day": day,
+            "seed": seeded,
+            "imported_days": len(imported),
+            "imported_rows": sum(i["rows"] for i in imported),
+            "import_seconds": import_seconds,
+            "projection": receipt,
+            "edge_summary": summary,
+            "tx_log_retention_policy": retention["value"] if retention else None,
+        }
+        if context.args.reference_records:
+            rows = (
+                json.loads(line)
+                for line in Path(context.args.reference_records).open()
+                if line.strip()
+            )
+            reference = reference_summary((row.get("transaction", row) for row in rows), cutoff)
+            result["reference"] = reference
+            result["reconciliation"] = {
+                "card_merchant_equal": reference["card_merchant_id"] == summary["card_merchant_id"],
+                "owns_delta": summary["owns"] - reference["owns"],
+            }
+        if context.args.reference_receipt:
+            prior = json.loads(Path(context.args.reference_receipt).read_text())["projection"]
+            reconciliation = result.setdefault("reconciliation", {})
+            reconciliation["node_count_equal"] = prior["node_count"] == receipt["node_count"]
+            reconciliation["prior_node_count"] = prior["node_count"]
+            reconciliation["prior_edge_count"] = prior["edge_count"]
+            if "reference" in result:
+                prior_shared = (
+                    prior["edge_count"] // 2
+                    - result["reference"]["owns"]
+                    - result["reference"]["card_merchant_edges"]
+                )
+                reconciliation["prior_shared_identity_implied"] = prior_shared
+                reconciliation["shared_identity_delta"] = summary["shared_identity"] - prior_shared
+        result["released_metrics"] = graph.release(receipt["projection_id"])
+    _write_json_once(context.output / f"graph-check-{day}.json", result)
+    return result
+
+
+# --- publish and cleanup -------------------------------------------------------------
+
+
+def _publish(context: Context) -> dict:
+    from reckoner.v1.evidence.rolling import persisted_summaries
+
+    runner, baseline = _require(
+        context.environment, "RECKONER_RUNNER_DSN", "RECKONER_BASELINE_BUNDLE"
+    )
+    mode = {"relational": "relational", "graph": "gds-augmented"}[context.args.evidence_pass]
+    schedule = context.schedule(baseline)
+    summaries = persisted_summaries(runner, context.snapshot)
+    written = prep.publish(context.declaration, schedule, summaries, context.output, mode=mode)
+    return {
+        "manifests": written,
+        "persisted_document_bytes": sum(s["bytes"] for s in summaries),
+    }
+
+
+def _drop(context: Context) -> dict:
+    from reckoner.v1.evidence.rolling import drop_working_set
+
+    (owner,) = _require(context.environment, "RECKONER_OWNER_DSN")
+    return drop_working_set(owner, context.declaration["preparation_id"])
+
+
+def run(args):
+    if args.evidence_step == "declare":
+        return _declare(args)
+    context = Context(args)
+    if args.evidence_step == "publish":
+        return _publish(context)
+    if args.evidence_step == "drop-working-set":
+        return _drop(context)
+    guard = _guard(args, context.output)
+    if args.evidence_step == "graph-check":
+        return _graph_check(context, guard)
+    if args.evidence_pass == "relational":
+        return _run_relational(context, guard)
+    return _run_graph(context, guard)
+
+
+def register(subcommands):
+    from reckoner.v1.benchmark.resources import FREE_FLOOR
+
+    group = subcommands.add_parser("evidence")
+    steps = group.add_subparsers(dest="evidence_step", required=True)
+
+    def guarded(parser):
+        parser.add_argument("--free-floor-bytes", type=int, default=FREE_FLOOR)
+        parser.add_argument("--max-store-bytes", type=int)
+        parser.add_argument("--free-path", type=Path)
+
+    declare = steps.add_parser("declare")
+    declare.add_argument("--bundle", type=Path, required=True)
+    declare.add_argument("--scaler", type=Path, required=True)
+    declare.add_argument("--output-root", type=Path, required=True)
+    declare.add_argument("--population", action="append", metavar="NAME=MODE[,MODE]")
+    declare.add_argument("--env-file", required=True)
+    runner = steps.add_parser("run")
+    runner.add_argument("--declaration", type=Path, required=True)
+    runner.add_argument(
+        "--pass", dest="evidence_pass", choices=("relational", "graph"), required=True
+    )
+    runner.add_argument("--through", required=True, metavar="YYYY-MM-DD")
+    runner.add_argument("--env-file", required=True)
+    guarded(runner)
+    publisher = steps.add_parser("publish")
+    publisher.add_argument("--declaration", type=Path, required=True)
+    publisher.add_argument(
+        "--pass", dest="evidence_pass", choices=("relational", "graph"), required=True
+    )
+    publisher.add_argument("--env-file", required=True)
+    drop = steps.add_parser("drop-working-set")
+    drop.add_argument("--declaration", type=Path, required=True)
+    drop.add_argument("--env-file", required=True)
+    check = steps.add_parser("graph-check")
+    check.add_argument("--declaration", type=Path, required=True)
+    check.add_argument("--day", required=True, metavar="YYYY-MM-DD")
+    check.add_argument("--reference-records", type=Path)
+    check.add_argument("--reference-receipt", type=Path)
+    check.add_argument("--env-file", required=True)
+    guarded(check)

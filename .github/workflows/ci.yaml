@@ -76,6 +76,14 @@ jobs:
           uv run --frozen --all-packages pytest workloads/reckoner/tests/test_v1_graph.py
           workloads/reckoner/tests/test_v1_smoke.py workloads/reckoner/tests/test_v1_benchmark_stores.py
           -m neo4j_integration -q
+      # The rolling evidence graph refuses stores carrying test markers: recreate it empty.
+      - run: docker compose -f infra/compose.reckoner-v1.test.yaml down --volumes
+      - run: docker compose -f infra/compose.reckoner-v1.test.yaml up -d --wait
+      - run: >-
+          uv run --frozen --all-packages pytest
+          workloads/reckoner/tests/test_v1_evidence_rolling_graph.py -m neo4j_integration -q
+        env:
+          RECKONER_TEST_EVIDENCE_NEO4J_URI: bolt://127.0.0.1:57687
       - if: always()
         run: docker compose -f infra/compose.reckoner-v1.test.yaml down --volumes
   frontend:

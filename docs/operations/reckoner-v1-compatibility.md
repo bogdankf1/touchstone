@@ -412,3 +412,39 @@ Neo4j. `reckoner v1 smoke seed|graph|evidence|run` is a fabricated deployment ch
 to a `reckoner_smoke_` database (the graph step refuses a graph containing non-smoke tenants);
 it makes no provider call. The Reckoner image now installs only the `reckoner` package. See
 [reckoner-v1-runbook.md](reckoner-v1-runbook.md).
+
+## Real-archive evidence preparation (Task 3b)
+
+`reckoner v1 evidence declare|run|publish|drop-working-set|graph-check` prepares evidence
+for the frozen simulated populations; see the runbook. No migration was added: applied
+001–013 are unchanged. The command reuses `PostgresEvidence`, `Neo4jEvidence`,
+`assemble_evidence`, `candidate_vectors`, `SourceHistory`, `historical_resolution` and
+`V1Repository.persist_evidence` without changing them, the evidence schema, the algorithm
+parameters, `project.cypher` or the receipt shape.
+
+* **Graph semantics (ruling R1).** Entities, card→account ownership and cross-tenant
+  shared-merchant links are seeded from the complete source-backed history, each with its
+  first observation, and a projection admits only those first observed strictly before its
+  cutoff. Task 3's bounded June 1 graph instead created ownership and shared links only
+  from transactions inside its import window. Projections therefore differ from Task 3's
+  in those two edge types (the Stage 3 reconciliation reports the deltas); the node set and
+  the card-merchant 30-day weights are unchanged.
+* **Shared identity.** A merchant's tenant-free identity is
+  `content_id({dataset: "cctd", entity: "merchant", source_merchant})`, read from its
+  first-observation source row through the privileged source offset. Every entity's
+  tenant-scoped identity is recomputed from that row and must match the index.
+* **Identities.** Relational evidence is reproducible across reruns and staging (constant
+  snapshot identity). `gds-augmented` evidence is not byte-reproducible, because the
+  projection receipt records `build_seconds`.
+* **Stores.** The Postgres working set is a separate database `reckoner_ws_<prep12>`
+  migrated with the packaged migrations and marked by a database comment. The graph store
+  carries an `EvidenceStore` marker and gains one index on `Transaction.occurred_at` for
+  eviction. Smoke and disposable-test markers are refused.
+* **Compose.** `infra/compose.reckoner-v1.evidence.yaml` adds read-only input binds to the
+  `owner` job. The base file adds
+  `NEO4J_db_tx__log_rotation_retention__policy` defaulting to Neo4j's documented
+  `2 days 2G` (verified with `SHOW SETTINGS` on the pinned image); the graph pass sets
+  `512M size`.
+* **Audit.** `reckoner v1 benchmark audit --store-bytes NAME=BYTES` adds declared sizes
+  (for example preserved stores and images measured once at a stage start) to the derived
+  total, recorded separately as `declared_store_bytes`.

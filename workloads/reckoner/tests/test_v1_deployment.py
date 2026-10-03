@@ -1286,3 +1286,51 @@ def test_a_failed_receipt_scan_still_deletes_the_cluster_with_cleanup(tmp_path, 
             preflight=False,
         )
     assert [c for c in calls if c[0] == str(kind) and "delete" in c]
+
+
+EVIDENCE_COMPOSE = INFRA / "compose.reckoner-v1.evidence.yaml"
+EVIDENCE_INPUTS = {
+    "RECKONER_V1_BUNDLE_DIR": "/inputs/bundle",
+    "RECKONER_V1_SOURCE_DIR": "/inputs/source",
+    "RECKONER_V1_BASELINE_DIR": "/inputs/baseline",
+    "RECKONER_V1_SCALER_DIR": "/inputs/scaler",
+}
+
+
+def test_neo4j_transaction_log_retention_defaults_to_the_documented_neo4j_value():
+    _, services = compose()
+    environment = services["neo4j"]["environment"]
+    assert environment["NEO4J_db_tx__log_rotation_retention__policy"] == (
+        "${RECKONER_V1_NEO4J_TX_LOG_RETENTION:-2 days 2G}"
+    )
+
+
+def test_evidence_inputs_are_required_read_only_binds_only_when_the_override_is_loaded():
+    if not EVIDENCE_COMPOSE.exists():
+        pytest.fail("evidence preparation Compose override is not implemented")
+    override = yaml.safe_load(EVIDENCE_COMPOSE.read_text())
+    assert set(override) == {"services"} and set(override["services"]) == {"owner"}
+    mounts = override["services"]["owner"]["volumes"]
+    assert len(mounts) == len(EVIDENCE_INPUTS)
+    for mount in mounts:
+        match = re.fullmatch(r"\$\{([A-Z0-9_]+):\?[^}]+\}:(/inputs/[a-z]+):ro", mount)
+        assert match, mount
+        assert EVIDENCE_INPUTS[match.group(1)] == match.group(2)
+    # The base file never names these inputs, so every other profile renders without them.
+    base = COMPOSE.read_text()
+    assert not [name for name in EVIDENCE_INPUTS if name in base]
+    _, services = compose()
+    assert "prepare" in services["owner"]["profiles"] and services["owner"]["mem_limit"] == "1g"
+
+
+def test_ci_runs_the_rolling_evidence_graph_suite_on_an_empty_store():
+    jobs = yaml.safe_load((ROOT / ".github/workflows/ci.yaml").read_text())["jobs"]
+    steps = jobs["neo4j-integration"]["steps"]
+    runs = [step.get("run", "") for step in steps]
+    index = next(i for i, run in enumerate(runs) if "test_v1_evidence_rolling_graph.py" in run)
+    assert "-m neo4j_integration" in runs[index]
+    assert steps[index]["env"]["RECKONER_TEST_EVIDENCE_NEO4J_URI"].startswith("bolt://127.0.0.1")
+    # The rolling graph refuses the store the other suites mark: recreate it empty first.
+    assert any("down --volumes" in run for run in runs[:index])
+    assert "up -d --wait" in runs[index - 1]
+    assert "test_v1_evidence_rolling_graph.py" not in " ".join(runs[:index])

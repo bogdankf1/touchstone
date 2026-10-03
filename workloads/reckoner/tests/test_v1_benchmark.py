@@ -1160,3 +1160,62 @@ def test_vector_copy_cursor_is_closed():
         guard_every=1,
     )
     assert len(connection.cursors) == 2 and all(c.closed for c in connection.cursors)
+
+
+def test_audit_adds_declared_store_bytes_to_the_derived_total(tmp_path, monkeypatch):
+    """Preserved stores and images outside the audited project count toward the cap."""
+    import json
+    from argparse import Namespace
+
+    from reckoner.cli import _parser
+    from reckoner.v1.benchmark import steps
+    from reckoner.v1.benchmark.resources import ResourceGuardError
+
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    (artifacts / "a.bin").write_bytes(b"x" * 10)
+    monkeypatch.setattr(steps, "_docker", lambda *command: "")
+
+    def audit(label, cap, *stores):
+        return steps._audit(
+            Namespace(
+                output_dir=tmp_path,
+                artifact_root=artifacts,
+                container_prefix="p",
+                du_image="i",
+                label=label,
+                cgroup_container=[],
+                free_floor_bytes=0,
+                derived_cap_bytes=cap,
+                store_bytes=list(stores),
+            )
+        )
+
+    result = audit("a", 1000, "preserved-phase3=100", "phase3-images=50")
+    assert result["total_derived_bytes"] == 160
+    record = json.loads((tmp_path / "resource-reconciliation-a.json").read_text())
+    assert record["declared_store_bytes"] == {"phase3-images": 50, "preserved-phase3": 100}
+    with pytest.raises(ResourceGuardError):
+        audit("b", 150, "preserved-phase3=100", "phase3-images=50")
+    with pytest.raises(ValueError, match="NAME=BYTES"):
+        audit("c", 1000, "preserved-phase3")
+    parsed = _parser().parse_args(
+        [
+            "v1",
+            "benchmark",
+            "audit",
+            "--output-dir",
+            "o",
+            "--artifact-root",
+            "a",
+            "--container-prefix",
+            "p",
+            "--du-image",
+            "i",
+            "--label",
+            "l",
+            "--store-bytes",
+            "preserved-phase3=1",
+        ]
+    )
+    assert parsed.store_bytes == ["preserved-phase3=1"]

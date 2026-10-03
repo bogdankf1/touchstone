@@ -252,3 +252,36 @@ Current Task 5 checks use **fabricated** labeled prediction fixtures only, with
 run requesting `simulated-cctd`. No real Jev prediction export or calibration
 acceptance has been produced; those remain bounded, separately approved paid-run
 gates before the final 2019 experiment.
+
+## Prepared evidence for the frozen populations (Task 3b)
+
+Task 13 consumes persisted evidence; it never assembles evidence during a paid run.
+`reckoner v1 evidence` (runbook: "Real-archive evidence preparation") prepares:
+
+| Population | Cases | Modes |
+| --- | ---: | --- |
+| Development 2017 | 2,000 | relational |
+| Pilot (development subset) | 20 | relational (development documents) |
+| Validation 2018 | 2,000 | relational, gds-augmented |
+| 2019 cohort (100 fraud / 900 legitimate) | 1,000 | relational, gds-augmented |
+
+Development `gds-augmented` evidence is conditional (decision D4). It is prepared only if
+the paired validation comparison selects the GDS arm, because calibration uses the
+relational/vector arm and a changed input definition needs its own development and
+validation pass.
+
+Windows are unchanged: 30-day transaction evidence, a 90-day resolved-case window and
+seven-day simulated resolution, all strictly before the query. The working set for query
+day `D` is `[D - 97 days, D + 1 day)` plus previous-card rows. Graph projections are built
+at `D 00:00Z`, so snapshot age is below 24 hours and is recorded in every document.
+Comparable vectors exist for every eligible positive candidate, computed once from complete
+source history; a query whose vector coverage is incomplete fails its day instead of being
+persisted as partial.
+
+`publish` writes immutable, content-addressed manifests `manifests/<population>-<mode>.json`.
+Each lists every expected case exactly once, with `evidence_id`, coverage status, missing
+reasons, `projection_id`, `page_rank_converged` and `snapshot_age_seconds`, and publish
+refuses missing, extra or duplicate cases. Task 13 binds each run task to the `evidence_id`
+in these manifests and computes its protocol request hashes from those exact documents.
+Persisted counts, coverage and resource measurements are recorded when the stages run;
+nothing here claims a stage has run.

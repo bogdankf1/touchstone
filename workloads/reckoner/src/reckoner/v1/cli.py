@@ -19,6 +19,9 @@ def register(commands):
     from reckoner.v1.benchmark.steps import register as register_benchmark
 
     register_benchmark(subcommands)
+    from reckoner.v1.evidence.steps import register as register_evidence
+
+    register_evidence(subcommands)
     smoke = subcommands.add_parser("smoke")
     smoke.add_argument("smoke_step", choices=("seed", "graph", "evidence", "run"))
     smoke.add_argument("--env-file", type=Path, required=True)
@@ -70,6 +73,10 @@ def execute(args):
         from reckoner.v1.benchmark.steps import run
 
         return run(args)
+    if args.v1_command == "evidence":
+        from reckoner.v1.evidence.steps import run as run_evidence
+
+        return run_evidence(args)
     if args.v1_command == "smoke":
         return _smoke(args)
     if args.v1_command.startswith("telemetry-"):

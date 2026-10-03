@@ -44,6 +44,7 @@ from reckoner.v1.benchmark.resources import (
     Guard,
     Sampler,
     disk_reconciliation,
+    parse_stores,
     tree_bytes,
     volume_bytes,
 )
@@ -414,9 +415,14 @@ def _audit(args):
     ).splitlines()
     inspected = json.loads(_docker("inspect", *names)) if names else []
     volumes = sorted({m["Name"] for c in inspected for m in c["Mounts"] if m["Type"] == "volume"})
+    measured = volume_bytes({v: v for v in volumes}, args.du_image) if volumes else {}
+    # Declared sizes (e.g. preserved stores and images measured once at stage start) count
+    # toward the derived total; they are recorded separately from measured volumes.
+    stores = parse_stores(args.store_bytes, measured)
+    declared = {n: s["bytes"] for n, s in stores.items() if s["source"] == "declared"}
     result = disk_reconciliation(
-        artifact_bytes=tree_bytes(args.artifact_root),
-        volume_bytes=volume_bytes({v: v for v in volumes}, args.du_image) if volumes else {},
+        artifact_bytes=tree_bytes(args.artifact_root) + sum(declared.values()),
+        volume_bytes=measured,
         free_bytes=shutil.disk_usage(output).free,
         containers=[
             {
@@ -430,6 +436,8 @@ def _audit(args):
         free_floor=args.free_floor_bytes,
         derived_cap=args.derived_cap_bytes,
     )
+    result["artifact_bytes"] -= sum(declared.values())
+    result["declared_store_bytes"] = declared
     _write_new(output / f"resource-reconciliation-{args.label}.json", result)
     if args.cgroup_container:
         counters = {}
@@ -547,6 +555,7 @@ def register(subcommands):
     audit.add_argument("--du-image", required=True)
     audit.add_argument("--label", required=True)
     audit.add_argument("--cgroup-container", action="append", default=[], metavar="NAME=CONTAINER")
+    audit.add_argument("--store-bytes", action="append", default=[], metavar="NAME=BYTES")
     limits(audit)
     report = steps.add_parser("report")
     for name in ("--protocol", "--observation", "--oracle-labels", "--annotations", "--output"):

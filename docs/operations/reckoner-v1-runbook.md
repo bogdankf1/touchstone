@@ -93,10 +93,10 @@ Phase 2 stack, another Phase 3 store or a kind cluster (8 GB Docker allocation).
 ```bash
 c() { docker compose -p "$RECKONER_V1_INSTANCE-$1" --profile "$1" -f infra/compose.reckoner-v1.yaml "${@:2}"; }
 
-# Preparation/GDS. Tracked commands today: migration and the Postgres import only.
-# Graph import, GDS projection and evidence assembly for the real archive have no tracked
-# command yet (see "Open preparation gate" below); only the fabricated smoke runs them.
-# `reckoner v1 import` was not executed in Task 12.
+# Preparation/GDS. Real-archive evidence uses `reckoner v1 evidence` (see "Real-archive
+# evidence preparation" below), never the union import below: `reckoner v1 import` loads
+# the whole multi-year union (~5.27M rows, ~23.5 GB estimated) and was not executed in
+# Task 12 or Task 3b.
 c prepare up -d --wait postgres neo4j
 c prepare run --rm --no-deps -T migrate
 c prepare run --rm --no-deps -T -e RECKONER_SOURCE_DIR=/data/source owner \
@@ -171,17 +171,149 @@ apply `globals.sql` without the `postgres` role lines, `pg_restore --exit-on-err
 Compare table fingerprints (`infra/verify_reckoner_v1_smoke.py fingerprint`) before serving.
 
 Graph: Neo4j is not backed up. It is reimported from the immutable source into a new
-volume. The smoke proves this for its fabricated source (`reckoner v1 smoke graph`): the
-reimported source graph and the deterministic projection fields equal the original. For the
-real simulated archive there is no tracked graph-import command yet; Task 3 used a bounded
-scratch procedure. Rebuilding the real graph therefore remains a pending delivery gate.
+volume. The smoke proves this for its fabricated source (`reckoner v1 smoke graph`). For the
+real simulated archive, `reckoner v1 evidence run --pass graph` rebuilds the graph from the
+checksum-pinned bundle, archive and entity manifest (below).
 
-**Open preparation gate (owned by a separate Stage A follow-up task).** For the real
-simulated archive there is no tracked command for (1) graph import into Neo4j, (2) GDS
-projection, or (3) evidence assembly into `reckoner.v1_evidence`. `assemble_evidence` and
-`import_graph` are called only by `reckoner v1 smoke` and the benchmark harness, and
-`reckoner v1 score` requires a pinned prepared evidence record. Until those commands exist,
-the prepare profile can run only the migration and the Postgres import shown above.
+## Real-archive evidence preparation (`reckoner v1 evidence`)
+
+Prepares evidence for the frozen simulated populations and persists it in the instance's
+operational database, where `reckoner v1 score` and the workflow consume it by
+`evidence_id`. No provider is called and no provider key is read. Two sequential rolling
+passes never peak together:
+
+* **Pass R (relational)** keeps a Postgres working-set database `reckoner_ws_<prep12>`
+  (comment `reckoner-evidence-working-set:<preparation_id>`) holding
+  `[D - 97 days, D + 1 day)` for each query day `D` in order, plus the previous-card rows
+  of `D`'s queries. It assembles relational evidence for every population (development,
+  validation and the 2019 cohort; the pilot is the development subset) as the runner role
+  and persists it. Each day import (rows, labels, vectors, then `history_until`) and each
+  eviction (`history_from` first, then deletes and `VACUUM (ANALYZE)`) is one transaction,
+  so coverage never claims an evicted row. An in-band guard checks free disk and the
+  cluster byte budget before every commit.
+* **Pass G (graph)** seeds entities, card ownership and cross-tenant shared-merchant links
+  from the full-history entity manifest, each with its first observation; a projection
+  admits only those first observed strictly before its cutoff. It rolls Transaction nodes
+  over `[D - 97 days, D + 1 day)`, builds one GDS projection at `D 00:00Z`, and assembles
+  `gds-augmented` evidence for 2018 validation and the 2019 cohort from the persisted
+  relational documents. It then deletes that day's `GDSMetric` nodes; receipts are kept and
+  appended to `projections.jsonl`. Development `gds-augmented` evidence is produced only if
+  Task 13's paired validation comparison selects the GDS arm (decision D4), through a new
+  declaration with `--population development=relational,gds-augmented`.
+
+Every expected (case, mode) ends with exactly one persisted document, or the day fails
+before anything is persisted. Only `query card absent from GDS projection` (a card first
+observed on the query day) is data-intrinsic and persisted. Missing coverage,
+shared-merchant scope or comparable vectors, a missing or wrong-day projection and an
+unreachable graph fail the day and list the case IDs. Runs resume from persisted facts
+(coverage rows/nodes and persisted documents); a missing day receipt is reconstructed and
+marked `receipt_reconstructed`. An advisory lock refuses a second concurrent run.
+
+Relational `evidence_id`s are reproducible. Their snapshot identity is
+`content_id({working_set: "rolling-97d-v1", bundle_id, source_sha256, entity_manifest_id,
+resolution_policy})`, which does not depend on populations, modes or staging.
+`gds-augmented` identities are not byte-reproducible, because each projection receipt
+records its build time.
+
+**Instance and inputs.** Use a dedicated instance, never a smoke instance, and an
+operational database whose name does not start with `reckoner_smoke_`:
+
+```bash
+export RECKONER_V1_INSTANCE=touchstone-phase3-v1-evidence
+export RECKONER_V1_POSTGRES_VOLUME="$RECKONER_V1_INSTANCE-postgres"
+export RECKONER_V1_NEO4J_VOLUME="$RECKONER_V1_INSTANCE-neo4j"
+create_v1_volumes                       # as above; refuses any existing volume
+export RECKONER_SECRET_DIR=/private/tmp/$RECKONER_V1_INSTANCE-secrets   # created 0700 below
+python3 - "$RECKONER_SECRET_DIR" <<'PY'
+import importlib.util, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("smoke", "infra/smoke-reckoner-v1.py")
+smoke = importlib.util.module_from_spec(spec)
+sys.modules["smoke"] = smoke
+spec.loader.exec_module(smoke)
+smoke.DATABASE = "reckoner_v1"          # smoke commands only ever write reckoner_smoke_ names
+smoke.write_secrets(Path(sys.argv[1]))  # fresh disposable credentials, files 0600
+PY
+set -a; . "$RECKONER_SECRET_DIR/clickhouse.env"; set +a   # TOUCHSTONE_CH_PASSWORD
+export RECKONER_V1_DATA_DIR="$PWD/artifacts/phase3/data"  # required by the base file
+export RECKONER_V1_EVIDENCE_DIR="$PWD/artifacts/phase3/evidence-v1"
+export RECKONER_GDS_PLUGIN_DIR="$PWD/artifacts/phase3/task3/plugins"
+export RECKONER_V1_BUNDLE_DIR="$PWD/artifacts/phase3/data/frozen-v1"
+export RECKONER_V1_SOURCE_DIR=<repository>/archive
+export RECKONER_V1_BASELINE_DIR=<phase-1 worktree>/artifacts/phase1/data
+export RECKONER_V1_SCALER_DIR="$PWD/artifacts/phase3/task3"
+export RECKONER_V1_IMAGE=<Reckoner image built from the evidence commit>
+export RECKONER_V1_NEO4J_TX_LOG_RETENTION="512M size"     # graph pass only
+e() { docker compose -p "$RECKONER_V1_INSTANCE-prepare" --profile prepare \
+  -f infra/compose.reckoner-v1.yaml -f infra/compose.reckoner-v1.evidence.yaml "$@"; }
+v1e() { e run --rm --no-deps -T -e RECKONER_SOURCE_DIR=/inputs/source \
+  -e RECKONER_BASELINE_BUNDLE=/inputs/baseline owner reckoner v1 evidence "$@" --env-file -; }
+```
+
+`compose.reckoner-v1.evidence.yaml` adds four read-only binds to the `owner` job. Compose
+interpolates every loaded file, so those variables are required only when it is loaded.
+`--env-file -` takes only `RECKONER_OWNER_DSN`, `RECKONER_RUNNER_DSN`,
+`RECKONER_SOURCE_DIR`, `RECKONER_BASELINE_BUNDLE` and `RECKONER_NEO4J_{URI,USER,PASSWORD}`;
+an environment file naming anything else is refused.
+
+**Stages.** Run one heavy profile at a time. Stage 0 and Stage 3 are gates: stop and report
+after each. Run the host audit between stages. It adds the preserved-store and image bytes,
+measured once at the start, to the derived total, and fails above the approved cap or below
+the 15 GiB free-disk floor:
+
+```bash
+e up -d --wait postgres
+e run --rm --no-deps -T migrate
+v1e declare --bundle /inputs/bundle --scaler /inputs/scaler/resource-scaler.json \
+  --output-root /evidence                       # prints preparation_id and output directory
+P=/evidence/<prep12>/declaration.json
+G="--free-path /evidence --max-store-bytes <budget>"
+v1e run --declaration $P --pass relational --through 2017-01-31 $G   # Stage 0 (gate)
+v1e run --declaration $P --pass relational --through 2017-12-24 $G   # Stage 1
+v1e publish --declaration $P --pass relational   # refuses until every case is present
+v1e run --declaration $P --pass relational --through 2019-12-30 $G   # Stage 2
+v1e publish --declaration $P --pass relational
+v1e drop-working-set --declaration $P            # name and comment must match (ruling R3)
+e stop postgres && e up -d --wait postgres neo4j
+v1e run --declaration $P --pass graph --through 2018-01-31 $G        # Stage 3 (gate)
+v1e run --declaration $P --pass graph --through 2019-12-30 $G        # Stage 4
+v1e publish --declaration $P --pass graph
+e down                                           # containers only; volumes persist
+uv run --frozen --all-packages reckoner v1 benchmark audit \
+  --output-dir artifacts/phase3/evidence-v1/<prep12>/audit --artifact-root artifacts/phase3 \
+  --container-prefix "$RECKONER_V1_INSTANCE-prepare" --du-image <pinned pgvector image> \
+  --label <stage> --store-bytes preserved-phase3=<bytes> --store-bytes phase3-images=<bytes> \
+  --derived-cap-bytes <approved cap> --cgroup-container postgres=<container>
+```
+
+The Task 3 June-1 reconciliation runs in a separate, disposable graph-check instance with
+its own volumes and marker, never in the pass store:
+`v1e graph-check --declaration $P --day 2018-06-01 --reference-records
+/inputs/scaler/source-records.jsonl --reference-receipt /inputs/scaler/resource-receipt.json`.
+It compares the projection node count with Task 3's receipt and the card-merchant 30-day
+weight multiset with Task 3's canonical rows, and reports the ownership and shared-link
+deltas that complete seeding implies.
+
+Graph ownership: a pass claims only an empty store, marking it with
+`EvidenceStore {preparation_id, purpose}`. It refuses any store carrying a `SmokeStore` or
+`DisposableStore` marker, another preparation's marker, or unmarked data. Each output
+directory (`artifacts/phase3/evidence-v1/<prep12>/`, ignored) holds `declaration.json`,
+`entity-manifest.json`, `schedule.json`, `days-*.jsonl`, `projections.jsonl` and the
+content-addressed `manifests/<population>-<mode>.json` that Task 13 binds to run tasks.
+
+**Cleanup (ruling R3), only after publish and a passing audit.** `drop-working-set` drops
+only `reckoner_ws_<prep12>` carrying this preparation's comment. Remove the instance's graph
+volume only by its exact name, after checking its owner label:
+
+```bash
+e down
+v="$RECKONER_V1_INSTANCE-neo4j"
+[ "$(docker volume inspect -f '{{ index .Labels "touchstone.smoke.instance" }}' "$v")" \
+  = "$RECKONER_V1_INSTANCE" ] && docker volume rm "$v"
+```
+
+Host free space can lag a drop until Docker Desktop discards the freed blocks. Measure and
+record it; do not force it.
 
 ClickHouse/collector: this runbook does not claim raw ClickHouse or collector-queue disaster
 recovery. Only the published-warehouse snapshot procedure in
