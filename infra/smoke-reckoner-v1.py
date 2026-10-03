@@ -883,20 +883,21 @@ def _wait_job(kube, name, timeout=900):
     raise TimeoutError(f"job {name} did not finish")
 
 
-def _job(kube, evidence: Path, manifest: str, stage: str, name: str, containers=None):
+def _job(kube, evidence: Path, manifest: str, stage: str, name: str, containers=None, label=None):
     kube("-n", NAMESPACE, "delete", "job", name, "--ignore-not-found", "--wait=true")
     kube("apply", "-f", K8S / manifest, "-l", f"touchstone.dev/stage={stage}")
     started = time.monotonic()
     passed = _wait_job(kube, name)
     for container in containers or [None]:
         args = ["-n", NAMESPACE, "logs", f"job/{name}"]
-        label = name if container is None else f"{name}-{container}"
+        stem = label or f"kind-{name}"
+        target = stem if container is None else f"{stem}-{container}"
         if container:
             args += ["-c", container]
         try:
-            _write(evidence / f"kind-{label}.json", kube(*args))
+            _write(evidence / f"{target}.json", kube(*args))
         except subprocess.CalledProcessError as error:
-            _write(evidence / f"kind-{label}.failed.txt", error.stderr or "")
+            _write(evidence / f"{target}.failed.txt", error.stderr or "")
     if not passed:
         raise RuntimeError(f"kind job {name} failed")
     return {"step": f"kind-{name}", "seconds": round(time.monotonic() - started, 3)}
@@ -991,7 +992,14 @@ def _kind_steps(options, runner, ledger, evidence, config, kubeconfig, kind_bin)
         guard_disk(evidence, "online-ready")
         steps.append(_job(kube, evidence, "worker.yaml", "online", "reckoner-v1-run"))
         steps.append(
-            _job(kube, evidence, "smoke-job.yaml", "verify-online", "reckoner-v1-verify-online")
+            _job(
+                kube,
+                evidence,
+                "smoke-job.yaml",
+                "verify-online",
+                "reckoner-v1-verify-online",
+                label="kind-online",
+            )
         )
         # Persistent storage and restart: the Postgres pod is replaced on its own volume.
         started = time.monotonic()
@@ -1012,10 +1020,14 @@ def _kind_steps(options, runner, ledger, evidence, config, kubeconfig, kind_bin)
         )
         _write(evidence / "kind-restart.marker", "after postgres pod replacement")
         steps.append(
-            _job(kube, evidence, "smoke-job.yaml", "verify-online", "reckoner-v1-verify-online")
-        )
-        (evidence / "kind-reckoner-v1-verify-online.json").rename(
-            evidence / "kind-online-after-restart.json"
+            _job(
+                kube,
+                evidence,
+                "smoke-job.yaml",
+                "verify-online",
+                "reckoner-v1-verify-online",
+                label="kind-online-after-restart",
+            )
         )
         kube("-n", NAMESPACE, "scale", "statefulset/postgres", "--replicas=0")
         kube("-n", NAMESPACE, "wait", "--for=delete", "pod/postgres-0", "--timeout=300s")

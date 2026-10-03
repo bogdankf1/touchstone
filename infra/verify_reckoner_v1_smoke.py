@@ -270,11 +270,13 @@ def main(argv=None):
     }
     text = json.dumps(result, indent=2, sort_keys=True, default=str) + "\n"
     if str(args.output) == "-":
-        sys.stdout.write(text)  # Captured by the orchestrator (kind logs or compose run).
+        # kind logs merge stdout and stderr, so a stdout receipt is the only output.
+        sys.stdout.write(text)
+        sys.stdout.flush()
     else:
         with args.output.open("x") as handle:
             handle.write(text)
-    print(json.dumps({"check": args.command, "failed": failed}, sort_keys=True), file=sys.stderr)
+        print(json.dumps({"check": args.command, "failed": failed}, sort_keys=True))
     return 1 if failed else 0
 
 

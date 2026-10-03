@@ -517,3 +517,44 @@ def test_kind_aborts_at_the_free_disk_floor_and_deletes_only_its_own_cluster(tmp
     assert not [t for t in text if "volume rm" in t or "prune" in t or " rmi " in t]
     guard = [json.loads(line) for line in (evidence / "disk-guard.jsonl").read_text().splitlines()]
     assert guard[-1]["free_bytes"] < module.FREE_FLOOR and guard[-1]["below_floor"] is True
+
+
+def test_verifier_receipt_on_stdout_is_one_json_document_without_interleaved_stderr(
+    monkeypatch, capsys
+):
+    """kind captures stdout and stderr together; a stdout receipt must stand alone."""
+    spec = importlib.util.spec_from_file_location(
+        "verify_v1", INFRA / "verify_reckoner_v1_smoke.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(module, "stopped", lambda args: {"checks": {"api_cases_503": True}})
+    assert module.main(["stopped", "--api", "http://a", "--web", "http://w", "--output", "-"]) == 0
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["failed"] == [] and captured.err == ""
+
+
+def test_repeated_kind_jobs_keep_every_receipt(tmp_path):
+    module = script()
+
+    class Kube:
+        def __call__(self, *args):
+            if "jsonpath={.status.succeeded},{.status.failed}" in args:
+                return "1,"
+            if "logs" in args:
+                return '{"check": "online", "failed": []}'
+            return ""
+
+    for label in ("kind-online", "kind-online-after-restart"):
+        module._job(
+            Kube(),
+            tmp_path,
+            "smoke-job.yaml",
+            "verify-online",
+            "reckoner-v1-verify-online",
+            label=label,
+        )
+    assert {p.name for p in tmp_path.iterdir()} == {
+        "kind-online.json",
+        "kind-online-after-restart.json",
+    }
