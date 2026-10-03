@@ -6,8 +6,10 @@
 # Every named volume is EXTERNAL and instance-scoped: Compose never creates, adopts or
 # deletes it. `infra/smoke-reckoner-v1.py` or the runbook creates them with an owner label.
 # Memory limits are ceilings taken from measured Phase 3 runs; see
-# docs/operations/reckoner-v1-runbook.md. Profile sums: prepare 7 GiB, online 4.5 GiB,
-# refresh 6.375 GiB (with RECKONER_V1_POSTGRES_MEMORY=512m as documented).
+# docs/operations/reckoner-v1-runbook.md. Resident services plus one one-shot job at a time:
+# prepare 7 GiB, online 4.5 GiB, refresh 5.875 GiB (RECKONER_V1_POSTGRES_MEMORY=512m; the
+# 2.5 GiB refresh job is the largest). Running the 512 MiB exporter concurrently with the
+# refresh job would make refresh 6.375 GiB; the smoke never does that.
 
 x-reckoner: &reckoner
   image: ${RECKONER_V1_IMAGE:-touchstone-reckoner:phase3}
@@ -193,21 +195,23 @@ services:
       - ${RECKONER_V1_EVIDENCE_DIR}:/evidence
 
 volumes:
+  # All names are required. Validation against the preserved Phase 1-3 volume names lives in
+  # infra/smoke-reckoner-v1.py (and the runbook procedure), not in Compose.
   postgres-data:
     external: true
-    name: ${RECKONER_V1_POSTGRES_VOLUME:-${RECKONER_V1_INSTANCE:?set RECKONER_V1_INSTANCE}-postgres}
+    name: ${RECKONER_V1_POSTGRES_VOLUME:?set RECKONER_V1_POSTGRES_VOLUME (normally INSTANCE-postgres)}
   neo4j-data:
     external: true
-    name: ${RECKONER_V1_NEO4J_VOLUME:-${RECKONER_V1_INSTANCE}-neo4j}
+    name: ${RECKONER_V1_NEO4J_VOLUME:?set RECKONER_V1_NEO4J_VOLUME (normally INSTANCE-neo4j)}
   neo4j-logs:
     external: true
-    name: ${RECKONER_V1_INSTANCE}-neo4j-logs
+    name: ${RECKONER_V1_INSTANCE:?set RECKONER_V1_INSTANCE}-neo4j-logs
   clickhouse-data:
     external: true
-    name: ${RECKONER_V1_INSTANCE}-clickhouse
+    name: ${RECKONER_V1_INSTANCE:?set RECKONER_V1_INSTANCE}-clickhouse
   collector-queue:
     external: true
-    name: ${RECKONER_V1_INSTANCE}-collector-queue
+    name: ${RECKONER_V1_INSTANCE:?set RECKONER_V1_INSTANCE}-collector-queue
   warehouse-data:
     external: true
-    name: ${RECKONER_V1_INSTANCE}-warehouse
+    name: ${RECKONER_V1_INSTANCE:?set RECKONER_V1_INSTANCE}-warehouse
