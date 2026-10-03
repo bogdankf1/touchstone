@@ -84,6 +84,25 @@ class Refused(RuntimeError):
     """A safety rule refused the operation before any change."""
 
 
+class DiskFloor(Refused):
+    """Free disk fell below the hard 15 GiB floor; the run aborts and cleans up."""
+
+
+def free_bytes() -> int:
+    return shutil.disk_usage(ROOT).free
+
+
+def guard_disk(evidence: Path, label: str) -> int:
+    """Record free disk at a checkpoint and abort below the floor."""
+    free = free_bytes()
+    record = {"label": label, "free_bytes": free, "below_floor": free < FREE_FLOOR}
+    with (Path(evidence) / "disk-guard.jsonl").open("a") as handle:
+        handle.write(json.dumps(record, sort_keys=True) + "\n")
+    if free < FREE_FLOOR:
+        raise DiskFloor(f"free disk {free} below the 15 GiB floor at {label}")
+    return free
+
+
 def validate_instance(name: str) -> str:
     if not INSTANCE.fullmatch(name or ""):
         raise Refused(f"instance must match {INSTANCE.pattern}: {name!r}")
@@ -883,38 +902,8 @@ def _job(kube, evidence: Path, manifest: str, stage: str, name: str, containers=
     return {"step": f"kind-{name}", "seconds": round(time.monotonic() - started, 3)}
 
 
-def kind_smoke(
-    options: Options,
-    kubeconfig: Path,
-    kind_bin: Path,
-    kind_sha256: str,
-    runner=run_command,
-    preflight=True,
-) -> dict:
-    instance = validate_instance(options.instance)
-    kubeconfig = validate_kubeconfig(kubeconfig, os.environ)
-    verify_file(kind_bin, kind_sha256)
-    evidence = Path(options.evidence).absolute()
-    ledger = Ledger.create(evidence, instance)
-    verify_file(Path(options.plugin_dir) / GDS_JAR, options.plugin_sha256)
-    if preflight:
-        preflight_docker(runner, instance, [IMAGES["reckoner"], IMAGES["web"], *PINNED.values()])
-        if instance in runner([str(kind_bin), "get", "clusters"]).split():
-            raise Refused(f"kind cluster {instance} already exists")
-    _disk(runner, evidence, "before")
-    write_secrets(evidence / "secrets")
-    config = evidence / "kind-config.json"
-    _write(config, json.dumps(kind_config(options.plugin_dir, ledger.sentinel), indent=2))
-    ledger.data["kubeconfig"] = str(kubeconfig)
-    ledger.save()
-    for tag, source in PINNED.items():
-        runner(["docker", "tag", source, tag])
-        if runner(["docker", "image", "inspect", "--format", "{{.Id}}", tag]) != runner(
-            ["docker", "image", "inspect", "--format", "{{.Id}}", source]
-        ):
-            raise Refused(f"{tag} is not the pinned image {source}")
-    steps = []
-    ledger.add("clusters", instance)
+def _kind_steps(options, runner, ledger, evidence, config, kubeconfig, kind_bin):
+    instance, steps = ledger.data["instance"], []
     started = time.monotonic()
     runner(
         [
@@ -930,6 +919,7 @@ def kind_smoke(
         ]
     )
     steps.append({"step": "kind-create", "seconds": round(time.monotonic() - started, 3)})
+    guard_disk(evidence, "after-cluster-create")
     kube = Kubectl(kubeconfig, instance, runner)
     with Sampler(runner, evidence / "stats-kind.jsonl", instance, options.sample_interval):
         started = time.monotonic()
@@ -939,9 +929,11 @@ def kind_smoke(
                 ["docker", "image", "save", "--platform", "linux/arm64", "-o", str(archive), image]
             )
             try:
+                guard_disk(evidence, f"archive-{image}")
                 runner([str(kind_bin), "load", "image-archive", "--name", instance, str(archive)])
             finally:
                 archive.unlink(missing_ok=True)
+            guard_disk(evidence, f"loaded-{image}")
         steps.append({"step": "kind-load-images", "seconds": round(time.monotonic() - started, 3)})
         kube("apply", "-f", K8S / "namespace.yaml")
         kube("label", "namespace", NAMESPACE, f"{SENTINEL}={ledger.sentinel}")
@@ -976,6 +968,7 @@ def kind_smoke(
         for name in ("postgres", "neo4j"):
             kube("-n", NAMESPACE, "rollout", "status", f"statefulset/{name}", "--timeout=600s")
         steps.append({"step": "kind-stores-ready", "seconds": round(time.monotonic() - started, 3)})
+        guard_disk(evidence, "stores-ready")
         steps.append(
             _job(
                 kube,
@@ -986,6 +979,7 @@ def kind_smoke(
                 ["migrate", "seed", "graph", "evidence", "fingerprint"],
             )
         )
+        guard_disk(evidence, "prepare-job")
         kube("-n", NAMESPACE, "scale", "statefulset/neo4j", "--replicas=0")
         kube("-n", NAMESPACE, "wait", "--for=delete", "pod/neo4j-0", "--timeout=300s")
         started = time.monotonic()
@@ -994,6 +988,7 @@ def kind_smoke(
         for name in ("api", "web"):
             kube("-n", NAMESPACE, "rollout", "status", f"deployment/{name}", "--timeout=600s")
         steps.append({"step": "kind-online-ready", "seconds": round(time.monotonic() - started, 3)})
+        guard_disk(evidence, "online-ready")
         steps.append(_job(kube, evidence, "worker.yaml", "online", "reckoner-v1-run"))
         steps.append(
             _job(kube, evidence, "smoke-job.yaml", "verify-online", "reckoner-v1-verify-online")
@@ -1052,6 +1047,68 @@ def kind_smoke(
             )
         except subprocess.CalledProcessError:
             pass
+    guard_disk(evidence, "end")
+    return steps
+
+
+def _kind_diagnostics(runner, kubeconfig, instance, evidence):
+    """Best-effort state capture before any cleanup; never raises."""
+    kube = Kubectl(kubeconfig, instance, runner)
+    for name, args in (
+        ("kind-failure-pods.txt", ("-n", NAMESPACE, "get", "pods,pvc,jobs", "-o", "wide")),
+        ("kind-failure-describe.txt", ("-n", NAMESPACE, "describe", "pods")),
+        ("kind-failure-events.txt", ("-n", NAMESPACE, "get", "events", "--sort-by=.lastTimestamp")),
+    ):
+        try:
+            _write(evidence / name, kube(*args))
+        except (subprocess.CalledProcessError, OSError):
+            pass
+
+
+def kind_smoke(
+    options: Options,
+    kubeconfig: Path,
+    kind_bin: Path,
+    kind_sha256: str,
+    runner=run_command,
+    preflight=True,
+) -> dict:
+    instance = validate_instance(options.instance)
+    kubeconfig = validate_kubeconfig(kubeconfig, os.environ)
+    verify_file(kind_bin, kind_sha256)
+    evidence = Path(options.evidence).absolute()
+    ledger = Ledger.create(evidence, instance)
+    verify_file(Path(options.plugin_dir) / GDS_JAR, options.plugin_sha256)
+    if preflight:
+        preflight_docker(runner, instance, [IMAGES["reckoner"], IMAGES["web"], *PINNED.values()])
+        if instance in runner([str(kind_bin), "get", "clusters"]).split():
+            raise Refused(f"kind cluster {instance} already exists")
+    _disk(runner, evidence, "before")
+    write_secrets(evidence / "secrets")
+    config = evidence / "kind-config.json"
+    _write(config, json.dumps(kind_config(options.plugin_dir, ledger.sentinel), indent=2))
+    ledger.data["kubeconfig"] = str(kubeconfig)
+    ledger.save()
+    for tag, source in PINNED.items():
+        runner(["docker", "tag", source, tag])
+        if runner(["docker", "image", "inspect", "--format", "{{.Id}}", tag]) != runner(
+            ["docker", "image", "inspect", "--format", "{{.Id}}", source]
+        ):
+            raise Refused(f"{tag} is not the pinned image {source}")
+    steps = []
+    guard_disk(evidence, "before-cluster")
+    ledger.add("clusters", instance)
+    try:
+        steps += _kind_steps(options, runner, ledger, evidence, config, kubeconfig, kind_bin)
+    except BaseException as error:
+        _kind_diagnostics(runner, kubeconfig, instance, evidence)
+        if options.cleanup or isinstance(error, DiskFloor):
+            try:
+                cleanup(runner, ledger, kind_bin)
+            except (Refused, subprocess.CalledProcessError) as failed:
+                # Ownership unproven (for example a half-created cluster): nothing is deleted.
+                _write(evidence / "kind-cleanup-refused.txt", repr(failed))
+        raise
     _disk(runner, evidence, "after")
     summary = {
         "schema_version": "reckoner-v1-kind-smoke-v1",
@@ -1064,7 +1121,8 @@ def kind_smoke(
     }
     _write(evidence / "summary.json", json.dumps(summary, indent=2, sort_keys=True))
     if options.cleanup:
-        runner([str(kind_bin), "delete", "cluster", "--name", instance])
+        cleanup(runner, ledger, kind_bin)
+        guard_disk(evidence, "after-cleanup")
     return summary
 
 

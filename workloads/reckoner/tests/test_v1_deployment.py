@@ -471,3 +471,49 @@ def test_resource_summary_sums_one_sample_round_and_keeps_cgroup_peaks(tmp_path)
     assert summary["stats-online"]["max_sampled_bytes_combined"] == 100 * 2**20 + 2**30
     assert summary["stats-online"]["max_sampled_bytes_per_container"]["a"] == 300 * 2**20
     assert summary["cgroup-online"] == {"a": 5, "collector": None}
+
+
+def test_kind_aborts_at_the_free_disk_floor_and_deletes_only_its_own_cluster(tmp_path, monkeypatch):
+    """Owner bound: free disk below 15 GiB aborts and runs the sentinel-only cleanup."""
+    module = script()
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("KUBECONFIG", raising=False)
+    kind = tmp_path / "kind"
+    kind.write_bytes(b"fabricated kind")
+    plugin = tmp_path / "plugins"
+    plugin.mkdir()
+    (plugin / module.GDS_JAR).write_bytes(b"fabricated")
+    evidence = tmp_path / "evidence"
+    instance = "touchstone-phase3-v1-kind-ab12cd"
+    readings = iter([30 * GIB, 30 * GIB, 14 * GIB])
+    monkeypatch.setattr(module, "free_bytes", lambda: next(readings, 14 * GIB))
+    calls = []
+
+    def runner(command, **kwargs):
+        calls.append([str(part) for part in command])
+        if any(str(part).startswith("jsonpath=") for part in command):
+            return json.loads((evidence / "ledger.json").read_text())["sentinel"]
+        return ""
+
+    with pytest.raises(module.DiskFloor):
+        module.kind_smoke(
+            module.Options(
+                instance=instance,
+                evidence=evidence,
+                plugin_dir=plugin,
+                plugin_sha256=hashlib.sha256(b"fabricated").hexdigest(),
+                cleanup=False,
+                sample_interval=0,
+            ),
+            tmp_path / "kubeconfig",
+            kind,
+            hashlib.sha256(b"fabricated kind").hexdigest(),
+            runner=runner,
+            preflight=False,
+        )
+    deleted = [c for c in calls if c[0] == str(kind) and "delete" in c]
+    assert deleted == [[str(kind), "delete", "cluster", "--name", instance]]
+    text = [" ".join(c) for c in calls]
+    assert not [t for t in text if "volume rm" in t or "prune" in t or " rmi " in t]
+    guard = [json.loads(line) for line in (evidence / "disk-guard.jsonl").read_text().splitlines()]
+    assert guard[-1]["free_bytes"] < module.FREE_FLOOR and guard[-1]["below_floor"] is True
