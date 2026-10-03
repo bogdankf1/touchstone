@@ -267,6 +267,38 @@ def seed_postgres(owner_dsn: str) -> dict:
     }
 
 
+def require_owned_graph(driver, *, claim=False) -> None:
+    """Neo4j has no smoke-database name: ownership is an explicit marker node.
+
+    tenant-a/tenant-b are also the real simulated-archive tenants, so a tenant name never
+    proves ownership. A store is owned only if it carries a SmokeStore marker (created by
+    this smoke on an empty graph) or a DisposableStore marker (created by the disposable
+    test fixture on an empty graph). Anything else is refused before any write or delete.
+    """
+    with driver.session() as session:
+        owned = session.run(
+            "MATCH (m) WHERE m:SmokeStore OR m:DisposableStore RETURN count(m) AS n"
+        ).single()["n"]
+        if owned:
+            return
+        if session.run("MATCH (n) RETURN count(n) AS n").single()["n"]:
+            raise ValueError("graph is not an owned smoke or disposable store; refusing")
+        if claim:
+            session.run(
+                "CREATE (:SmokeStore {source_id:$source})",
+                source=fabricated_source()["source_id"],
+            ).consume()
+
+
+def clear_smoke_graph(driver) -> None:
+    """Delete the fabricated tenants' nodes from an owned store; the marker stays."""
+    require_owned_graph(driver)
+    with driver.session() as session:
+        session.run(
+            "MATCH (n) WHERE n.tenant_id IN $tenants DETACH DELETE n", tenants=list(TENANTS)
+        ).consume()
+
+
 def _foreign_graph_nodes(driver) -> int:
     with driver.session() as session:
         return session.run(
@@ -280,6 +312,7 @@ def seed_graph(driver) -> dict:
     """Import the immutable fabricated source and build one declared GDS projection."""
     from reckoner.v1.evidence.neo4j import Neo4jEvidence, import_graph
 
+    require_owned_graph(driver, claim=True)
     if _foreign_graph_nodes(driver):
         raise ValueError("graph contains non-smoke tenants; refusing the smoke import")
     source = fabricated_source()
@@ -313,6 +346,7 @@ def graph_evidence(runner_dsn: str, driver) -> dict:
     from reckoner.v1.storage.repository import V1Repository
 
     _require_smoke(runner_dsn)
+    require_owned_graph(driver)
     scaler, results = smoke_scaler(), []
     relational, graph = PostgresEvidence(runner_dsn), Neo4jEvidence(driver)
     with V1Repository(runner_dsn) as repo:

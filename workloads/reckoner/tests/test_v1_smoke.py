@@ -76,10 +76,7 @@ def test_smoke_env_file_accepts_only_named_smoke_keys(tmp_path, capsys):
 
 
 def _clear(driver):
-    with driver.session() as session:
-        session.run(
-            "MATCH (n) WHERE n.tenant_id IN $tenants DETACH DELETE n", tenants=list(TENANTS)
-        ).consume()
+    smoke().clear_smoke_graph(driver)  # refuses any store that is not marked as owned
 
 
 def _source_graph(driver):
@@ -192,3 +189,60 @@ def test_smoke_refuses_foreign_experiments_and_foreign_graph_tenants(pg, graph_d
         repo.create_run(other, config["config_id"])
     with pytest.raises(ValueError, match="another experiment"):
         module.seed_postgres(pg.owner_dsn)
+
+
+class FakeGraph:
+    """Records every Cypher statement; answers the ownership and size probes."""
+
+    def __init__(self, owned=0, total=0):
+        self.owned, self.total, self.statements = owned, total, []
+
+    def session(self, **kwargs):
+        return self
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        pass
+
+    def run(self, statement, **params):
+        self.statements.append(statement)
+        graph = self
+
+        class Result:
+            def single(self):
+                if "SmokeStore OR" in statement:
+                    return {"n": graph.owned}
+                if statement.startswith("MATCH (n) RETURN count(n)"):
+                    return {"n": graph.total}
+                return {"n": 0}
+
+            def consume(self):
+                pass
+
+        return Result()
+
+
+WRITES = ("CREATE", "MERGE", "DELETE", "SET", "CALL gds")
+
+
+def test_seed_graph_refuses_an_unmarked_graph_holding_real_tenant_names_without_writing():
+    """tenant-a/tenant-b are also real simulated-archive tenants: a name is not ownership."""
+    module = smoke()
+    graph = FakeGraph(owned=0, total=124_000)
+    with pytest.raises(ValueError, match="not an owned"):
+        module.seed_graph(graph)
+    with pytest.raises(ValueError, match="not an owned"):
+        module.clear_smoke_graph(graph)
+    assert not [s for s in graph.statements if any(w in s for w in WRITES)]
+
+
+def test_seed_graph_claims_only_an_empty_graph():
+    module = smoke()
+    graph = FakeGraph(owned=0, total=0)
+    module.require_owned_graph(graph, claim=True)
+    assert any(s.startswith("CREATE (:SmokeStore") for s in graph.statements)
+    marked = FakeGraph(owned=1, total=500)
+    module.require_owned_graph(marked)
+    assert not [s for s in marked.statements if any(w in s for w in WRITES)]

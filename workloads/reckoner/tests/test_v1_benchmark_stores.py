@@ -25,6 +25,9 @@ def _required(name):
 
 
 def _clear_graph(driver):
+    from reckoner.v1.smoke import require_owned_graph
+
+    require_owned_graph(driver)  # tenant-a/b are real archive tenants: require a marked store
     with driver.session() as session:
         session.run(
             "MATCH(n) WHERE n.tenant_id IN $tenants DETACH DELETE n", tenants=list(TENANTS)

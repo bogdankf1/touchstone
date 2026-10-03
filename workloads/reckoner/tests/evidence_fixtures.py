@@ -94,6 +94,16 @@ def graph_driver():
         pytest.fail("neo4j integration requires RECKONER_TEST_NEO4J_URI")
     driver = GraphDatabase.driver(uri, auth=("neo4j", "reckoner-test-only"))
     driver.verify_connectivity()
+    with driver.session() as session:
+        # Only an empty store, or one this fixture already marked, is disposable. A
+        # preserved measured store (for example Task 3's, which shares this test
+        # credential) is non-empty and unmarked, so the tests refuse it.
+        marked = session.run("MATCH (m:DisposableStore) RETURN count(m) AS n").single()["n"]
+        if not marked:
+            if session.run("MATCH (n) RETURN count(n) AS n").single()["n"]:
+                driver.close()
+                pytest.fail("refusing a non-empty Neo4j store that is not marked disposable")
+            session.run("CREATE (:DisposableStore {created_by: 'reckoner-tests'})").consume()
     suffix = uuid.uuid4().hex
     driver.test_tenants = (f"test-{suffix}-a", f"test-{suffix}-b")
     yield driver
