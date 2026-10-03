@@ -234,11 +234,20 @@ def cleanup(runner, ledger: Ledger, kind_bin=None):
     for cluster in ledger.data["clusters"]:
         if cluster != ledger.data["instance"] or kind_bin is None:
             raise Refused(f"cluster {cluster} cannot be removed by this run")
-        kube = Kubectl(Path(ledger.data["kubeconfig"]), cluster, runner)
+        kubeconfig = Path(ledger.data["kubeconfig"])
+        # The dedicated kubeconfig was created by this run (validate_kubeconfig refused an
+        # existing file); it must still name this cluster's context before it is used.
+        if not kubeconfig.is_file() or f"kind-{cluster}" not in kubeconfig.read_text():
+            raise Refused(f"kubeconfig {kubeconfig} does not belong to cluster {cluster}")
+        kube = Kubectl(kubeconfig, cluster, runner)
         label = "{.items[0].metadata.labels." + NODE_SENTINEL.replace(".", "\\.") + "}"
         if kube("get", "nodes", "-o", "jsonpath=" + label).strip() != ledger.sentinel:
             raise Refused(f"cluster {cluster} does not carry this run's sentinel")
-        runner([str(kind_bin), "delete", "cluster", "--name", cluster])
+        # Never fall back to the ambient ~/.kube/config.
+        runner(
+            [str(kind_bin), "delete", "cluster", "--name", cluster, "--kubeconfig", str(kubeconfig)]
+        )
+        kubeconfig.unlink()
     for name in ledger.data["volumes"]:
         if _volume_labels(runner, name) is not None:
             runner(["docker", "volume", "rm", name])
@@ -512,6 +521,8 @@ def compose_smoke(options: Options, runner=run_command, preflight=True) -> dict:
     data.mkdir()
     env = {
         "RECKONER_V1_INSTANCE": instance,
+        "RECKONER_V1_POSTGRES_VOLUME": f"{instance}-postgres",
+        "RECKONER_V1_NEO4J_VOLUME": f"{instance}-neo4j",
         "RECKONER_SECRET_DIR": str(evidence / "secrets"),
         "RECKONER_V1_EVIDENCE_DIR": str(evidence / "container-output"),
         "RECKONER_V1_DATA_DIR": str(data),

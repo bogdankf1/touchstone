@@ -86,7 +86,10 @@ def test_every_service_is_profiled_and_volumes_are_external_instance_scoped():
     assert all(s.get("profiles") for s in services.values()), "no service may start implicitly"
     for name, volume in document["volumes"].items():
         assert volume["external"] is True, name
-        assert "${RECKONER_V1_INSTANCE" in volume["name"], name
+        # Required, never defaulted: the script validates names against preserved volumes.
+        assert re.fullmatch(
+            r"\$\{RECKONER_V1_[A-Z0-9_]+:\?[^}]+\}(-[a-z0-9-]+)?", volume["name"]
+        ), name
         assert not any(p in volume["name"] for p in PRESERVED)
     profiles = {p for s in services.values() for p in s["profiles"]}
     assert profiles == {"prepare", "online", "refresh"}
@@ -106,7 +109,7 @@ def test_every_service_is_profiled_and_volumes_are_external_instance_scoped():
 
 @pytest.mark.parametrize(
     "profile,ceiling,postgres",
-    [("prepare", 7 * GIB, None), ("online", 4.5 * GIB, None), ("refresh", 6.4 * GIB, "512m")],
+    [("prepare", 7 * GIB, None), ("online", 4.5 * GIB, None), ("refresh", 5.875 * GIB, "512m")],
 )
 def test_profile_memory_ceilings_fit_the_docker_budget(profile, ceiling, postgres):
     """Long-running services plus the largest one-shot job never exceed the profile ceiling."""
@@ -129,7 +132,7 @@ def test_profile_memory_ceilings_fit_the_docker_budget(profile, ceiling, postgre
     }
     resident = sum(v for k, v in limits.items() if k not in one_shot)
     jobs = max((v for k, v in limits.items() if k in one_shot), default=0)
-    assert resident + jobs <= ceiling < DOCKER_BUDGET
+    assert resident + jobs == ceiling < DOCKER_BUDGET
     assert not {"dagster", "dagster-daemon"} & set(selected), "Phase 2 stack is not duplicated"
     assert ("neo4j" in selected) is (profile == "prepare"), "graph runs only for preparation"
 
@@ -333,19 +336,136 @@ def test_existing_resources_are_refused_and_never_adopted(tmp_path):
     assert not [c for c in docker.calls if c[:3] == ["docker", "volume", "create"]]
 
 
-def test_cleanup_deletes_only_ledger_resources_with_the_exact_sentinel(tmp_path):
+def test_cleanup_refuses_a_same_named_volume_carrying_another_sentinel(tmp_path):
     module = script()
     instance = "touchstone-phase3-v1-smoke-ab12cd"
     ledger = module.Ledger.create(tmp_path / "evidence", instance)
     docker = FakeDocker(existing=PRESERVED)
     module.create_volumes(docker, ledger, [instance + "-postgres"])
-    # A same-named volume carrying another sentinel is not ours; a preserved one never is.
     docker.labels[instance + "-postgres"]["touchstone.smoke.sentinel"] = "someone-else"
-    ledger.data["volumes"].append("touchstone-phase3-task3_task3-postgres")
-    with pytest.raises(module.Refused):
+    with pytest.raises(module.Refused, match="sentinel"):
         module.cleanup(docker, ledger)
-    removed = [c for c in docker.calls if c[:3] == ["docker", "volume", "rm"]]
-    assert removed == []
+    assert not [c for c in docker.calls if c[:3] == ["docker", "volume", "rm"]]
+
+
+def test_cleanup_refuses_a_preserved_volume_named_in_the_ledger(tmp_path):
+    module = script()
+    instance = "touchstone-phase3-v1-smoke-ab12cd"
+    ledger = module.Ledger.create(tmp_path / "evidence", instance)
+    docker = FakeDocker(existing=PRESERVED)
+    module.create_volumes(docker, ledger, [instance + "-postgres"])
+    ledger.data["volumes"].append("touchstone-phase3-task3_task3-postgres")
+    with pytest.raises(module.Refused, match="cannot own"):
+        module.cleanup(docker, ledger)
+    assert not [c for c in docker.calls if c[:3] == ["docker", "volume", "rm"]]
+
+
+def kind_ledger(module, tmp_path, instance="touchstone-phase3-v1-kind-ab12cd"):
+    ledger = module.Ledger.create(tmp_path / "evidence", instance)
+    kubeconfig = tmp_path / "kind.kubeconfig"
+    kubeconfig.write_text(f"current-context: kind-{instance}\n")
+    ledger.data["kubeconfig"] = str(kubeconfig)
+    ledger.add("clusters", instance)
+    return ledger, kubeconfig
+
+
+def test_cleanup_refuses_a_kind_cluster_without_this_runs_node_label(tmp_path):
+    module = script()
+    ledger, kubeconfig = kind_ledger(module, tmp_path)
+    calls = []
+
+    def runner(command, **kwargs):
+        calls.append([str(c) for c in command])
+        return "another-run" if any("jsonpath=" in str(c) for c in command) else ""
+
+    with pytest.raises(module.Refused, match="sentinel"):
+        module.cleanup(runner, ledger, kind_bin=tmp_path / "kind")
+    assert not [c for c in calls if "delete" in c] and kubeconfig.exists()
+
+
+def test_cleanup_deletes_its_cluster_through_the_dedicated_kubeconfig_then_removes_it(tmp_path):
+    module = script()
+    ledger, kubeconfig = kind_ledger(module, tmp_path)
+    calls = []
+
+    def runner(command, **kwargs):
+        calls.append([str(c) for c in command])
+        return ledger.sentinel if any("jsonpath=" in str(c) for c in command) else ""
+
+    module.cleanup(runner, ledger, kind_bin=tmp_path / "kind")
+    deleted = [c for c in calls if "delete" in c]
+    assert deleted == [
+        [
+            str(tmp_path / "kind"),
+            "delete",
+            "cluster",
+            "--name",
+            ledger.data["instance"],
+            "--kubeconfig",
+            str(kubeconfig),
+        ]
+    ]
+    assert not kubeconfig.exists()
+
+
+def test_cleanup_refuses_a_kubeconfig_that_does_not_name_its_cluster(tmp_path):
+    module = script()
+    ledger, kubeconfig = kind_ledger(module, tmp_path)
+    kubeconfig.write_text("current-context: someone-elses-cluster\n")
+    with pytest.raises(module.Refused, match="kubeconfig"):
+        module.cleanup(lambda command, **kwargs: ledger.sentinel, ledger, kind_bin=tmp_path / "k")
+    assert kubeconfig.exists()
+
+
+def test_kind_refuses_a_pre_existing_cluster_before_creating_anything(tmp_path, monkeypatch):
+    module = script()
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("KUBECONFIG", raising=False)
+    kind = tmp_path / "kind"
+    kind.write_bytes(b"fabricated kind")
+    plugin = tmp_path / "plugins"
+    plugin.mkdir()
+    (plugin / module.GDS_JAR).write_bytes(b"fabricated")
+    instance = "touchstone-phase3-v1-kind-ab12cd"
+    calls = []
+
+    def runner(command, **kwargs):
+        calls.append([str(c) for c in command])
+        return instance if command[1:3] == ["get", "clusters"] else ""
+
+    with pytest.raises(module.Refused, match="already exists"):
+        module.kind_smoke(
+            module.Options(
+                instance,
+                tmp_path / "evidence",
+                plugin,
+                hashlib.sha256(b"fabricated").hexdigest(),
+                sample_interval=0,
+            ),
+            tmp_path / "kubeconfig",
+            kind,
+            hashlib.sha256(b"fabricated kind").hexdigest(),
+            runner=runner,
+        )
+    assert not [c for c in calls if "create" in c]
+
+
+@pytest.mark.parametrize(
+    "running",
+    ["touchstone-phase3-v1-kind-ab12cd-control-plane", "touchstone-phase3-v1-smoke-1-online-api-1"],
+)
+def test_compose_and_kind_never_run_together(running):
+    """Either stack's containers make the other's pre-flight refuse."""
+    module = script()
+
+    def runner(command, **kwargs):
+        if command[:2] == ["docker", "ps"]:
+            kind_filter = "label=io.x-k8s.kind.cluster" in command
+            return running if (not kind_filter or "control-plane" in running) else ""
+        return ""
+
+    with pytest.raises(module.Refused, match="running"):
+        module.preflight_docker(runner, "touchstone-phase3-v1-new-ab12cd", [])
 
 
 def test_cleanup_removes_its_own_volume_after_checking_labels(tmp_path):
@@ -491,6 +611,8 @@ def test_kind_aborts_at_the_free_disk_floor_and_deletes_only_its_own_cluster(tmp
 
     def runner(command, **kwargs):
         calls.append([str(part) for part in command])
+        if "create" in command and "--kubeconfig" in command:
+            Path(command[command.index("--kubeconfig") + 1]).write_text(f"kind-{instance}")
         if any(str(part).startswith("jsonpath=") for part in command):
             return json.loads((evidence / "ledger.json").read_text())["sentinel"]
         return ""
@@ -512,7 +634,10 @@ def test_kind_aborts_at_the_free_disk_floor_and_deletes_only_its_own_cluster(tmp
             preflight=False,
         )
     deleted = [c for c in calls if c[0] == str(kind) and "delete" in c]
-    assert deleted == [[str(kind), "delete", "cluster", "--name", instance]]
+    kubeconfig = str((tmp_path / "kubeconfig").absolute())
+    assert deleted == [
+        [str(kind), "delete", "cluster", "--name", instance, "--kubeconfig", kubeconfig]
+    ]
     text = [" ".join(c) for c in calls]
     assert not [t for t in text if "volume rm" in t or "prune" in t or " rmi " in t]
     guard = [json.loads(line) for line in (evidence / "disk-guard.jsonl").read_text().splitlines()]
