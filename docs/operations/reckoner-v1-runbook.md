@@ -188,7 +188,47 @@ arm64 archives, creates secrets from the generated env files at run time, and ap
 `infra/k8s/reckoner-v1/` stage by stage (`-l touchstone.dev/stage=...`). The manifests use
 PersistentVolumeClaims for Postgres and Neo4j and the same memory limits as Compose.
 
-## Measured evidence
+## Measured evidence (Task 12, 2026-10-03)
 
-See the Task 12 evidence section below; numbers there come from the recorded smoke receipts
-under ignored `artifacts/phase3/task12/`.
+Host: Apple arm64, Docker Desktop 29.8.1 with 8,319,238,144 bytes and 12 CPUs. Final Compose
+smoke instance `touchstone-phase3-v1-smoke-947565`, images built from commit `5d4f808`
+(`touchstone-reckoner:phase3` `sha256:35f9dce9…`, `touchstone-web:phase3` `sha256:2163e4ab…`,
+`touchstone-platform:phase3` `sha256:09c63645…`). Receipts are under ignored
+`artifacts/phase3/task12/compose-final-947565/`. These are fabricated-data observations of
+four tasks over 37 history records; they are not capacity evidence for the simulated archive.
+
+| Check | Result |
+| --- | --- |
+| Prepare | Postgres + Neo4j healthy 14.4 s; migrate 4.6 s; seed 4.7 s; graph import + GDS 8.7 s; graph evidence 7.1 s (4/4 available, PageRank not converged at 20 iterations on 8 nodes) |
+| Online | up 18.2 s; workflow 6.7 s: 4/4 degraded escalations, zero provider calls; repeat run identical, no new decision; 20/20 API/web checks |
+| Restart / stopped | Postgres restart to API ready 7.9 s, 20/20 checks after; with Postgres stopped 5/5 (live 200, ready 503, data 503, proxy 503, no credential in error) |
+| Refresh | collector stopped: `sent 0, pending 10`; restarted: `sent 10, pending 0`; warehouse refresh 11.8 s; both tenants published (metrics stay unavailable: degraded escalations carry no outcome contributions) |
+| Restore | dump restored into a new volume: all 50 table fingerprints and roles equal; graph reimported into a new volume: source nodes, relationships and deterministic projection fields equal; restored database served 20/20 checks; 29.1 s |
+| Build | final Reckoner image rebuild 31 s with warm layers (first build 101 s); web 29 s and platform 25 s with existing layer cache |
+
+Coarse memory observations (bytes; `docker stats` sample maxima are not peaks, cgroup
+`memory.peak` covers each long-running container's lifetime in that profile):
+
+| Profile | cgroup peaks | Largest sampled one-shot job | Max sampled combined |
+| --- | --- | --- | --- |
+| prepare | Neo4j 1,636,179,968; Postgres 118,861,824 | worker 362,492,723 | 1,473,217,822 |
+| online | web 257,220,608; API 145,752,064; platform API 110,837,760; Postgres 39,632,896 | worker 300,102,451 | 769,948,383 |
+| refresh | ClickHouse 882,495,488; platform API 88,092,672; Postgres 34,906,112; collector not readable (no shell) | exporter 246,100,787; refresh 245,576,499 | 1,488,998,889 |
+
+Disk: the smoke's eight own volumes held 229,027,840 bytes and were removed afterwards by
+`cleanup`; free disk fell from 27,758,473,216 to 27,593,035,776 bytes during the run. The
+three new images add about 2.78 GB of unique image data (rounded `docker system df -v`
+figures), and Docker build cache grew by about 7 GB across all Task 12 builds. The prepare
+profile shut down in 3.4 s (other shutdowns were not timed); every readable cgroup reported
+`oom 0` and `oom_kill 0`.
+
+Estimates, not measurements: the profile ceilings above; that the online and refresh
+profiles fit the 8 GB allocation at full archive scale; and the kind node storage, which would
+hold another copy of the four loaded images (about 4.3 GB of image content, plus unpacked
+snapshots).
+
+kind status: **not run.** The approved disk budget caps newly derived Phase 3 data at
+20 GiB. Before kind, derived data measured 17.64 GiB (artifacts 7.28, Phase 3 volumes 7.77,
+new images 2.59). Loading the images into a kind node would exceed the cap, so the kind
+smoke awaits an owner decision; the manifests and the script's kind path are statically
+tested only.
