@@ -830,3 +830,45 @@ def test_host_scripts_run_on_the_host_python_39():
             check=False,
         )
         assert result.returncode == 0, result.stderr
+
+
+def verifier():
+    spec = importlib.util.spec_from_file_location(
+        "verify_v1", INFRA / "verify_reckoner_v1_smoke.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_credential_checks_fail_when_no_secret_is_known_or_any_leaks():
+    module = verifier()
+    assert module.no_credentials(["body"], ["s3cret"]) is True
+    assert module.no_credentials(["body with s3cret"], ["s3cret"]) is False
+    assert module.no_credentials(["body"], []) is False  # nothing to check is not a pass
+
+
+def test_readiness_check_requires_the_latest_packaged_migration():
+    from reckoner.storage.postgres import PACKAGED_MIGRATIONS
+
+    module = verifier()
+    assert module.ready_is_latest({"status": "ready", "migration": PACKAGED_MIGRATIONS[-1]})
+    assert not module.ready_is_latest({"status": "ready", "migration": PACKAGED_MIGRATIONS[0]})
+
+
+def test_stopped_check_inspects_every_error_body_for_credentials(monkeypatch):
+    module = verifier()
+    bodies = {
+        "/health/live": (200, '{"status":"ok"}'),
+        "/health/ready": (503, '{"detail":"database unavailable"}'),
+        "/v1/cases": (503, '{"detail":"database unavailable"}'),
+        "/api/reckoner/cases": (503, '{"detail":"postgresql://x:s3cret@h/db"}'),
+    }
+
+    def get(url, **kwargs):
+        return next(v for k, v in bodies.items() if k in url.split("?")[0][-25:])
+
+    monkeypatch.setattr(module, "_get", get)
+    monkeypatch.setattr(module, "_secrets", lambda: ["s3cret"])
+    result = module.stopped(type("Args", (), {"api": "http://a", "web": "http://w"})())
+    assert result["checks"]["no_credentials_in_error"] is False

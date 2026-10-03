@@ -65,6 +65,17 @@ def _secrets():
     return values
 
 
+def no_credentials(texts, secrets) -> bool:
+    """True only if credentials are known and none appears; nothing to check never passes."""
+    return bool(secrets) and not any(secret in text for text in texts for secret in secrets)
+
+
+def ready_is_latest(ready: dict) -> bool:
+    from reckoner.storage.postgres import PACKAGED_MIGRATIONS
+
+    return ready.get("status") == "ready" and ready.get("migration") == PACKAGED_MIGRATIONS[-1]
+
+
 def postgres_fingerprint(dsn):
     import psycopg
     from psycopg import sql
@@ -156,7 +167,7 @@ def online(args):
     status, body = _get(args.api + "/health/live")
     checks["api_live"] = status == 200 and json.loads(body) == {"status": "ok"}
     ready = _json(args.api + "/health/ready")
-    checks["api_ready_latest_migration"] = ready["status"] == "ready"
+    checks["api_ready_latest_migration"] = ready_is_latest(ready)
     cases = {}
     for tenant in TENANTS:
         query = urlencode({"tenant_id": tenant, "status": "all", "run_id": RUN_ID})
@@ -198,7 +209,7 @@ def online(args):
     except HTTPError as error:
         checks["web_rejects_foreign_origin_post"] = error.code == 403
     responses = json.dumps(cases) + page
-    checks["no_credentials_in_responses"] = not any(s in responses for s in secrets)
+    checks["no_credentials_in_responses"] = no_credentials([responses], secrets)
     return {"checks": checks, "case_counts": {t: len(c) for t, c in cases.items()}}
 
 
@@ -209,11 +220,11 @@ def stopped(args):
     status, body = _get(args.api + "/health/ready")
     checks["api_not_ready_while_postgres_stopped"] = status == 503
     query = urlencode({"tenant_id": "tenant-a", "status": "all"})
-    status, _ = _get(f"{args.api}/v1/cases?{query}")
+    status, cases = _get(f"{args.api}/v1/cases?{query}")
     checks["api_cases_503"] = status == 503
-    status, _ = _get(f"{args.web}/api/reckoner/cases?{query}")
+    status, proxied = _get(f"{args.web}/api/reckoner/cases?{query}")
     checks["web_proxy_503"] = status == 503
-    checks["no_credentials_in_error"] = not any(s in body for s in _secrets())
+    checks["no_credentials_in_error"] = no_credentials([body, cases, proxied], _secrets())
     return {"checks": checks}
 
 
