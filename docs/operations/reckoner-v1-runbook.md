@@ -44,12 +44,22 @@ external and instance-scoped, so Compose never creates, adopts or removes one:
 
 ```bash
 export RECKONER_V1_INSTANCE=touchstone-phase3-v1-<name>
+export RECKONER_V1_POSTGRES_VOLUME="$RECKONER_V1_INSTANCE-postgres"
+export RECKONER_V1_NEO4J_VOLUME="$RECKONER_V1_INSTANCE-neo4j"
 for suffix in postgres neo4j neo4j-logs clickhouse collector-queue warehouse; do
-  docker volume inspect "$RECKONER_V1_INSTANCE-$suffix" >/dev/null 2>&1 && exit 1  # never adopt
+  if docker volume inspect "$RECKONER_V1_INSTANCE-$suffix" >/dev/null 2>&1; then
+    echo "refusing to adopt existing volume $RECKONER_V1_INSTANCE-$suffix" >&2
+    break
+  fi
   docker volume create --label "touchstone.smoke.instance=$RECKONER_V1_INSTANCE" \
     "$RECKONER_V1_INSTANCE-$suffix"
 done
 ```
+
+Compose requires `RECKONER_V1_INSTANCE`, `RECKONER_V1_POSTGRES_VOLUME` and
+`RECKONER_V1_NEO4J_VOLUME` and has no defaults for them. Compose cannot check names against
+the preserved list above; that validation lives in `infra/smoke-reckoner-v1.py` and in this
+procedure (instance names must match the pattern, which no preserved volume does).
 
 `RECKONER_SECRET_DIR` is a protected directory (mode 0700, files 0600) with
 `postgres.env` (`POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`), `provision.env`
@@ -62,8 +72,8 @@ protocol and never into the smoke. The smoke generates all of these freshly.
 
 Common variables: `RECKONER_V1_EVIDENCE_DIR` (writable output), `RECKONER_V1_DATA_DIR`
 (read-only preparation bundle and source), `RECKONER_GDS_PLUGIN_DIR`
-(`artifacts/phase3/task3/plugins`), and optional `RECKONER_V1_POSTGRES_VOLUME` /
-`RECKONER_V1_NEO4J_VOLUME` to point a restore project at new volumes.
+(`artifacts/phase3/task3/plugins`); a restore project points `RECKONER_V1_POSTGRES_VOLUME`
+/ `RECKONER_V1_NEO4J_VOLUME` at new volumes.
 
 ## Profiles — one heavy profile at a time
 
@@ -73,7 +83,10 @@ Phase 2 stack, another Phase 3 store or a kind cluster (8 GB Docker allocation).
 ```bash
 c() { docker compose -p "$RECKONER_V1_INSTANCE-$1" --profile "$1" -f infra/compose.reckoner-v1.yaml "${@:2}"; }
 
-# Preparation/GDS: import, graph, projections, evidence (graph-available evidence persisted).
+# Preparation/GDS. Tracked commands today: migration and the Postgres import only.
+# Graph import, GDS projection and evidence assembly for the real archive have no tracked
+# command yet (see "Open preparation gate" below); only the fabricated smoke runs them.
+# `reckoner v1 import` was not executed in Task 12.
 c prepare up -d --wait postgres neo4j
 c prepare run --rm --no-deps -T migrate
 c prepare run --rm --no-deps -T -e RECKONER_SOURCE_DIR=/data/source owner \
@@ -97,9 +110,11 @@ c refresh down
 | --- | --- | --- |
 | prepare | Postgres 2 GiB, Neo4j 4 GiB (heap 2g, page cache 512m), one job ≤ 1 GiB | 7 GiB |
 | online | Postgres 2 GiB, API 512 MiB, web 512 MiB, platform API 512 MiB, one job ≤ 1 GiB | 4.5 GiB |
-| refresh | Postgres 512 MiB, ClickHouse 2 GiB, collector 384 MiB, platform API 512 MiB, refresh 2.5 GiB | 6.375 GiB |
+| refresh | Postgres 512 MiB, ClickHouse 2 GiB, collector 384 MiB, platform API 512 MiB, one job ≤ 2.5 GiB (refresh; exporter 512 MiB) | 5.875 GiB |
 
-The ceilings are not observed usage. The Postgres 2 GiB and Neo4j 4 GiB settings are the
+Each sum is the resident services plus the largest one-shot job, because jobs run one at a
+time; running the exporter concurrently with the refresh job would make refresh 6.375 GiB,
+which the smoke never does. The ceilings are not observed usage. The Postgres 2 GiB and Neo4j 4 GiB settings are the
 configuration under which the bounded Task 3 import and Task 11 benchmark ran without an
 OOM kill (Task 3 lifetime cgroup peaks reached both limits; Task 11 warm-schedule cgroup
 peaks were 2.56 GB Neo4j and 0.67 GB Postgres). They are not proof that the complete
@@ -112,7 +127,10 @@ Phase 2 5,888 MiB stack; the graph runs only for preparation.
   packaged migration is recorded (migration before traffic); the API's `depends_on` waits for
   the `migrate` job. Readiness never depends on Neo4j.
 * With the graph stopped, newly assembled evidence is `partial` with `graph unavailable`;
-  the workflow records a degraded escalation without any scorer dispatch. The console shows
+  if a worker is configured with a Neo4j URI but the service is unreachable, evidence records
+  `graph unavailable: service unreachable` instead of failing, and the relational arm
+  continues. Either way the workflow records a degraded escalation without any scorer
+  dispatch; a GDS-augmented run never presents as complete. The console shows
   the missing graph coverage and a null graph snapshot (snapshot availability, not live
   service health).
 * With Postgres stopped, the API stays live, readiness and data reads return 503, and the
@@ -120,6 +138,12 @@ Phase 2 5,888 MiB stack; the graph runs only for preparation.
 * With the collector stopped, `telemetry-export` reports `sent: 0` and leaves every outbox
   row pending; the Postgres outbox is the durable queue. The collector keeps its own
   file-backed queue on `$RECKONER_V1_INSTANCE-collector-queue`.
+* Collector readiness: the pinned collector image is distroless (no shell or HTTP client)
+  and the platform configuration enables no `health_check` extension, so Compose declares
+  no collector healthcheck and `up --wait` only waits for it to be running. Readiness is
+  established by a successful OTLP export (`sent` equals the pending count, `pending: 0`).
+  In kind the collector has a TCP readiness probe on port 4318. Changing the platform
+  collector configuration was out of scope.
 
 ## Backup and restore
 
@@ -140,6 +164,13 @@ volume. The smoke proves this for its fabricated source (`reckoner v1 smoke grap
 reimported source graph and the deterministic projection fields equal the original. For the
 real simulated archive there is no tracked graph-import command yet; Task 3 used a bounded
 scratch procedure. Rebuilding the real graph therefore remains a pending delivery gate.
+
+**Open preparation gate (owned by a separate Stage A follow-up task).** For the real
+simulated archive there is no tracked command for (1) graph import into Neo4j, (2) GDS
+projection, or (3) evidence assembly into `reckoner.v1_evidence`. `assemble_evidence` and
+`import_graph` are called only by `reckoner v1 smoke` and the benchmark harness, and
+`reckoner v1 score` requires a pinned prepared evidence record. Until those commands exist,
+the prepare profile can run only the migration and the Postgres import shown above.
 
 ClickHouse/collector: this runbook does not claim raw ClickHouse or collector-queue disaster
 recovery. Only the published-warehouse snapshot procedure in
@@ -180,13 +211,25 @@ kubectl --kubeconfig artifacts/phase3/task12/kind-<id>.kubeconfig \
 ```
 
 It refuses the ambient `~/.kube/config`, a `KUBECONFIG` pointing elsewhere and an existing
-kubeconfig file. It writes a run-specific kind configuration (node image from
+kubeconfig file. Cleanup checks that the ledger kubeconfig names the cluster and that the
+node carries the run's sentinel label, runs `kind delete cluster --kubeconfig <dedicated>`
+(never the ambient configuration), then deletes that kubeconfig file. Optional
+`--derived-baseline-bytes` and `--derived-cap-bytes` make the disk guard abort above an
+owner-approved Phase 3 derived-data cap as well as below the 15 GiB free-disk floor. It writes a run-specific kind configuration (node image from
 `infra/kind.yaml`, the GDS plugin directory mounted read-only at
 `/touchstone/gds-plugins`, and a node sentinel label), tags the pinned Postgres and Neo4j
 digests as `touchstone-{pgvector,neo4j}:phase3` after checking image identity, loads
 arm64 archives, creates secrets from the generated env files at run time, and applies
 `infra/k8s/reckoner-v1/` stage by stage (`-l touchstone.dev/stage=...`). The manifests use
 PersistentVolumeClaims for Postgres and Neo4j and the same memory limits as Compose.
+
+The refresh stage runs in namespace `touchstone-phase3-v1-refresh`. `kubectl apply -k
+infra/k8s/reckoner-v1/refresh` reuses the Phase 2 platform manifests unchanged through the
+base `infra/k8s/platform/kustomization.yaml` (ClickHouse, collector, warehouse PVC, read
+API; Dagster omitted, as in the Compose refresh profile). The smoke then scales the Reckoner
+API and console to zero, exports the outbox with the collector stopped and running, runs
+`refresh/refresh-job.yaml` (2560Mi), and verifies the published run. The console's dashboard
+URL is `http://api.touchstone-phase3-v1-refresh:8000`.
 
 ## Measured evidence (Task 12, 2026-10-03)
 
@@ -206,8 +249,10 @@ four tasks over 37 history records; they are not capacity evidence for the simul
 | Restore | dump restored into a new volume: all 50 table fingerprints and roles equal; graph reimported into a new volume: source nodes, relationships and deterministic projection fields equal; restored database served 20/20 checks; 29.1 s |
 | Build | final Reckoner image rebuild 31 s with warm layers (first build 101 s); web 29 s and platform 25 s with existing layer cache |
 
-Coarse memory observations (bytes; `docker stats` sample maxima are not peaks, cgroup
-`memory.peak` covers each long-running container's lifetime in that profile):
+Coarse memory observations (bytes; `docker stats` sample maxima are not peaks; cgroup
+`memory.peak` is read at the end of each profile and covers only the container's current
+start, so the online Postgres value covers only its life after the stop/start check, not the
+workflow run before it):
 
 | Profile | cgroup peaks | Largest sampled one-shot job | Max sampled combined |
 | --- | --- | --- | --- |
