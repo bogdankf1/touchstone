@@ -21,6 +21,12 @@ from reckoner.storage.budget import ACCOUNTING_LOCK, RunBusy
 
 RUNNER_LOCK = 732019101
 REQUIRED_MIGRATION = "004_evaluation_reporting.sql"
+# Every packaged migration, listed once at import; readiness requires all of them.
+PACKAGED_MIGRATIONS = tuple(
+    sorted(
+        path.name for path in (Path(__file__).with_name("migrations")).glob("[0-9][0-9][0-9]_*.sql")
+    )
+)
 
 
 def _plain(value: Any) -> Any:
@@ -1197,9 +1203,7 @@ class PostgresRepository:
 
     def readiness(self) -> str:
         """Ready only after every packaged migration is applied (migration before traffic)."""
-        from reckoner.storage.migrate import MIGRATIONS
-
-        required = sorted(path.name for path in MIGRATIONS.glob("[0-9][0-9][0-9]_*.sql"))
+        required = PACKAGED_MIGRATIONS
         applied = {
             row["version"]
             for row in self._connection.execute(
