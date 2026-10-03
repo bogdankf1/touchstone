@@ -1,0 +1,8 @@
+# Warehouse-refresh stage of the Reckoner v1 kind smoke (fabricated simulated data).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: touchstone-phase3-v1-refresh
+  labels:
+    touchstone.dev/workload: touchstone-platform
+    touchstone.dev/data: fabricated-simulated

@@ -57,7 +57,12 @@ PINNED = {
     "cf134a767f474095eeba57e0117be8e568e011a63f33fbf252f14c9b760f8e6f",
     "touchstone-neo4j:phase3": "neo4j:2026.09.0@sha256:"
     "91fb0bf237c41b7b3dcbe84703aa0b82e0d7d067b16e1c8ab21f03fc679edf4e",
+    "touchstone-clickhouse:phase3": "clickhouse/clickhouse-server:25.8@sha256:"
+    "0152dd511befe6a2c2ef53e930726179669b08116da78500b37c51c96ff5ee77",
+    "touchstone-collector:phase3": "otel/opentelemetry-collector-contrib:0.136.0@sha256:"
+    "45392d534c1edcc809c2d112394029246bc679d2ae5ea7081414a1fc74f2c621",
 }
+REFRESH_NAMESPACE = "touchstone-phase3-v1-refresh"
 VOLUME_SUFFIXES = ("postgres", "neo4j", "neo4j-logs", "clickhouse", "collector-queue", "warehouse")
 RESTORE_SUFFIXES = ("postgres-restore", "neo4j-reimport")
 PRESERVED_VOLUMES = frozenset(
@@ -92,14 +97,30 @@ def free_bytes() -> int:
     return shutil.disk_usage(ROOT).free
 
 
-def guard_disk(evidence: Path, label: str) -> int:
-    """Record free disk at a checkpoint and abort below the floor."""
+@dataclass
+class DerivedBudget:
+    """Owner-approved Phase 3 derived-data cap, tracked as the free-disk drop from the start."""
+
+    baseline_bytes: int
+    cap_bytes: int
+    start_free: int | None = None
+
+
+def guard_disk(evidence: Path, label: str, budget: DerivedBudget | None = None) -> int:
+    """Record free disk at a checkpoint; abort below the floor or above the derived cap."""
     free = free_bytes()
     record = {"label": label, "free_bytes": free, "below_floor": free < FREE_FLOOR}
+    if budget is not None:
+        if budget.start_free is None:
+            budget.start_free = free
+        record["derived_bytes"] = budget.baseline_bytes + max(0, budget.start_free - free)
+        record["above_derived_cap"] = record["derived_bytes"] > budget.cap_bytes
     with (Path(evidence) / "disk-guard.jsonl").open("a") as handle:
         handle.write(json.dumps(record, sort_keys=True) + "\n")
     if free < FREE_FLOOR:
         raise DiskFloor(f"free disk {free} below the 15 GiB floor at {label}")
+    if record.get("above_derived_cap"):
+        raise DiskFloor(f"derived data {record['derived_bytes']} above the cap at {label}")
     return free
 
 
@@ -873,12 +894,12 @@ def kind_config(plugin_dir: Path, sentinel: str) -> dict:
     }
 
 
-def _wait_job(kube, name, timeout=900):
+def _wait_job(kube, name, timeout=900, namespace=NAMESPACE):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         state = kube(
             "-n",
-            NAMESPACE,
+            namespace,
             "get",
             "job",
             name,
@@ -894,13 +915,22 @@ def _wait_job(kube, name, timeout=900):
     raise TimeoutError(f"job {name} did not finish")
 
 
-def _job(kube, evidence: Path, manifest: str, stage: str, name: str, containers=None, label=None):
-    kube("-n", NAMESPACE, "delete", "job", name, "--ignore-not-found", "--wait=true")
+def _job(
+    kube,
+    evidence: Path,
+    manifest: str,
+    stage: str,
+    name: str,
+    containers=None,
+    label=None,
+    namespace=NAMESPACE,
+):
+    kube("-n", namespace, "delete", "job", name, "--ignore-not-found", "--wait=true")
     kube("apply", "-f", K8S / manifest, "-l", f"touchstone.dev/stage={stage}")
     started = time.monotonic()
-    passed = _wait_job(kube, name)
+    passed = _wait_job(kube, name, namespace=namespace)
     for container in containers or [None]:
-        args = ["-n", NAMESPACE, "logs", f"job/{name}"]
+        args = ["-n", namespace, "logs", f"job/{name}"]
         stem = label or f"kind-{name}"
         target = stem if container is None else f"{stem}-{container}"
         if container:
@@ -914,7 +944,7 @@ def _job(kube, evidence: Path, manifest: str, stage: str, name: str, containers=
     return {"step": f"kind-{name}", "seconds": round(time.monotonic() - started, 3)}
 
 
-def _kind_steps(options, runner, ledger, evidence, config, kubeconfig, kind_bin):
+def _kind_steps(options, runner, ledger, evidence, config, kubeconfig, kind_bin, budget):
     instance, steps = ledger.data["instance"], []
     started = time.monotonic()
     runner(
@@ -931,21 +961,21 @@ def _kind_steps(options, runner, ledger, evidence, config, kubeconfig, kind_bin)
         ]
     )
     steps.append({"step": "kind-create", "seconds": round(time.monotonic() - started, 3)})
-    guard_disk(evidence, "after-cluster-create")
+    guard_disk(evidence, "after-cluster-create", budget)
     kube = Kubectl(kubeconfig, instance, runner)
     with Sampler(runner, evidence / "stats-kind.jsonl", instance, options.sample_interval):
         started = time.monotonic()
-        for image in (IMAGES["reckoner"], IMAGES["web"], *PINNED):
+        for image in (*IMAGES.values(), *PINNED):
             archive = Path("/private/tmp") / f"{instance}-{image.split(':')[0]}.tar"
             runner(
                 ["docker", "image", "save", "--platform", "linux/arm64", "-o", str(archive), image]
             )
             try:
-                guard_disk(evidence, f"archive-{image}")
+                guard_disk(evidence, f"archive-{image}", budget)
                 runner([str(kind_bin), "load", "image-archive", "--name", instance, str(archive)])
             finally:
                 archive.unlink(missing_ok=True)
-            guard_disk(evidence, f"loaded-{image}")
+            guard_disk(evidence, f"loaded-{image}", budget)
         steps.append({"step": "kind-load-images", "seconds": round(time.monotonic() - started, 3)})
         kube("apply", "-f", K8S / "namespace.yaml")
         kube("label", "namespace", NAMESPACE, f"{SENTINEL}={ledger.sentinel}")
@@ -980,7 +1010,7 @@ def _kind_steps(options, runner, ledger, evidence, config, kubeconfig, kind_bin)
         for name in ("postgres", "neo4j"):
             kube("-n", NAMESPACE, "rollout", "status", f"statefulset/{name}", "--timeout=600s")
         steps.append({"step": "kind-stores-ready", "seconds": round(time.monotonic() - started, 3)})
-        guard_disk(evidence, "stores-ready")
+        guard_disk(evidence, "stores-ready", budget)
         steps.append(
             _job(
                 kube,
@@ -991,7 +1021,7 @@ def _kind_steps(options, runner, ledger, evidence, config, kubeconfig, kind_bin)
                 ["migrate", "seed", "graph", "evidence", "fingerprint"],
             )
         )
-        guard_disk(evidence, "prepare-job")
+        guard_disk(evidence, "prepare-job", budget)
         kube("-n", NAMESPACE, "scale", "statefulset/neo4j", "--replicas=0")
         kube("-n", NAMESPACE, "wait", "--for=delete", "pod/neo4j-0", "--timeout=300s")
         started = time.monotonic()
@@ -1000,7 +1030,7 @@ def _kind_steps(options, runner, ledger, evidence, config, kubeconfig, kind_bin)
         for name in ("api", "web"):
             kube("-n", NAMESPACE, "rollout", "status", f"deployment/{name}", "--timeout=600s")
         steps.append({"step": "kind-online-ready", "seconds": round(time.monotonic() - started, 3)})
-        guard_disk(evidence, "online-ready")
+        guard_disk(evidence, "online-ready", budget)
         steps.append(_job(kube, evidence, "worker.yaml", "online", "reckoner-v1-run"))
         steps.append(
             _job(
@@ -1060,7 +1090,12 @@ def _kind_steps(options, runner, ledger, evidence, config, kubeconfig, kind_bin)
         steps.append(
             _job(kube, evidence, "smoke-job.yaml", "fingerprint", "reckoner-v1-fingerprint")
         )
-        _write(evidence / "kind-pods.txt", kube("-n", NAMESPACE, "get", "pods,pvc", "-o", "wide"))
+        steps += _kind_refresh(kube, runner, ledger, evidence, budget)
+        for namespace in (NAMESPACE, REFRESH_NAMESPACE):
+            _write(
+                evidence / f"kind-pods-{namespace}.txt",
+                kube("-n", namespace, "get", "pods,pvc", "-o", "wide"),
+            )
         try:
             _write(
                 evidence / "kind-crictl-stats.json",
@@ -1070,7 +1105,99 @@ def _kind_steps(options, runner, ledger, evidence, config, kubeconfig, kind_bin)
             )
         except subprocess.CalledProcessError:
             pass
-    guard_disk(evidence, "end")
+    guard_disk(evidence, "end", budget)
+    return steps
+
+
+def _kind_refresh(kube, runner, ledger, evidence, budget):
+    """Warehouse-refresh stage: Reckoner API, console and graph stopped; platform core reused
+    from infra/k8s/platform through the refresh overlay in its own namespace."""
+    steps, started = [], time.monotonic()
+    for name in ("api", "web"):
+        kube("-n", NAMESPACE, "scale", f"deployment/{name}", "--replicas=0")
+    kube("apply", "-f", K8S / "refresh/namespace.yaml")
+    kube("label", "namespace", REFRESH_NAMESPACE, f"{SENTINEL}={ledger.sentinel}")
+    secrets_dir = evidence / "secrets"
+    password = (secrets_dir / "clickhouse.env").read_text().strip().split("=", 1)[1]
+    kube(
+        "-n",
+        REFRESH_NAMESPACE,
+        "create",
+        "secret",
+        "generic",
+        "platform-db",
+        f"--from-literal=password={password}",
+    )
+    kube(
+        "-n",
+        REFRESH_NAMESPACE,
+        "create",
+        "configmap",
+        "platform-clickhouse-init",
+        f"--from-file=init.sql={ROOT / 'platform/clickhouse/init.sql'}",
+    )
+    kube(
+        "-n",
+        REFRESH_NAMESPACE,
+        "create",
+        "configmap",
+        "platform-collector-config",
+        f"--from-file=config.yaml={ROOT / 'platform/collector/config.yaml'}",
+    )
+    kube("apply", "-k", K8S / "refresh")
+    for name in ("clickhouse", "collector", "api"):
+        kube("-n", REFRESH_NAMESPACE, "rollout", "status", f"deployment/{name}", "--timeout=600s")
+    steps.append({"step": "kind-refresh-ready", "seconds": round(time.monotonic() - started, 3)})
+    guard_disk(evidence, "refresh-ready", budget)
+    # The Postgres outbox is the durable queue: with the collector stopped nothing is lost.
+    kube("-n", REFRESH_NAMESPACE, "scale", "deployment/collector", "--replicas=0")
+    kube(
+        "-n",
+        REFRESH_NAMESPACE,
+        "wait",
+        "--for=delete",
+        "pod",
+        "-l",
+        "app=collector",
+        "--timeout=300s",
+    )
+    steps.append(
+        _job(
+            kube,
+            evidence,
+            "worker.yaml",
+            "export",
+            "reckoner-v1-export",
+            label="kind-export-collector-stopped",
+        )
+    )
+    kube("-n", REFRESH_NAMESPACE, "scale", "deployment/collector", "--replicas=1")
+    kube("-n", REFRESH_NAMESPACE, "rollout", "status", "deployment/collector", "--timeout=300s")
+    steps.append(
+        _job(kube, evidence, "worker.yaml", "export", "reckoner-v1-export", label="kind-export")
+    )
+    steps.append(
+        _job(
+            kube,
+            evidence,
+            "refresh/refresh-job.yaml",
+            "refresh",
+            "touchstone-refresh",
+            label="kind-refresh-publish",
+            namespace=REFRESH_NAMESPACE,
+        )
+    )
+    steps.append(
+        _job(
+            kube,
+            evidence,
+            "smoke-job.yaml",
+            "verify-refresh",
+            "reckoner-v1-verify-refresh",
+            label="kind-refresh",
+        )
+    )
+    guard_disk(evidence, "refresh-done", budget)
     return steps
 
 
@@ -1078,9 +1205,9 @@ def _kind_diagnostics(runner, kubeconfig, instance, evidence):
     """Best-effort state capture before any cleanup; never raises."""
     kube = Kubectl(kubeconfig, instance, runner)
     for name, args in (
-        ("kind-failure-pods.txt", ("-n", NAMESPACE, "get", "pods,pvc,jobs", "-o", "wide")),
-        ("kind-failure-describe.txt", ("-n", NAMESPACE, "describe", "pods")),
-        ("kind-failure-events.txt", ("-n", NAMESPACE, "get", "events", "--sort-by=.lastTimestamp")),
+        ("kind-failure-pods.txt", ("get", "pods,pvc,jobs", "-A", "-o", "wide")),
+        ("kind-failure-describe.txt", ("describe", "pods", "-A")),
+        ("kind-failure-events.txt", ("get", "events", "-A", "--sort-by=.lastTimestamp")),
     ):
         try:
             _write(evidence / name, kube(*args))
@@ -1095,6 +1222,7 @@ def kind_smoke(
     kind_sha256: str,
     runner=run_command,
     preflight=True,
+    budget: DerivedBudget | None = None,
 ) -> dict:
     instance = validate_instance(options.instance)
     kubeconfig = validate_kubeconfig(kubeconfig, os.environ)
@@ -1103,7 +1231,7 @@ def kind_smoke(
     ledger = Ledger.create(evidence, instance)
     verify_file(Path(options.plugin_dir) / GDS_JAR, options.plugin_sha256)
     if preflight:
-        preflight_docker(runner, instance, [IMAGES["reckoner"], IMAGES["web"], *PINNED.values()])
+        preflight_docker(runner, instance, [*IMAGES.values(), *PINNED.values()])
         if instance in runner([str(kind_bin), "get", "clusters"]).split():
             raise Refused(f"kind cluster {instance} already exists")
     _disk(runner, evidence, "before")
@@ -1119,10 +1247,12 @@ def kind_smoke(
         ):
             raise Refused(f"{tag} is not the pinned image {source}")
     steps = []
-    guard_disk(evidence, "before-cluster")
+    guard_disk(evidence, "before-cluster", budget)
     ledger.add("clusters", instance)
     try:
-        steps += _kind_steps(options, runner, ledger, evidence, config, kubeconfig, kind_bin)
+        steps += _kind_steps(
+            options, runner, ledger, evidence, config, kubeconfig, kind_bin, budget
+        )
     except BaseException as error:
         _kind_diagnostics(runner, kubeconfig, instance, evidence)
         if options.cleanup or isinstance(error, DiskFloor):
@@ -1145,7 +1275,7 @@ def kind_smoke(
     _write(evidence / "summary.json", json.dumps(summary, indent=2, sort_keys=True))
     if options.cleanup:
         cleanup(runner, ledger, kind_bin)
-        guard_disk(evidence, "after-cleanup")
+        guard_disk(evidence, "after-cleanup", budget)
     return summary
 
 
@@ -1165,6 +1295,12 @@ def main(argv=None) -> int:
     kind.add_argument("--kubeconfig", type=Path, required=True)
     kind.add_argument("--kind-bin", type=Path, required=True)
     kind.add_argument("--kind-sha256", required=True)
+    kind.add_argument(
+        "--derived-baseline-bytes", type=int, help="measured Phase 3 derived bytes before the run"
+    )
+    kind.add_argument(
+        "--derived-cap-bytes", type=int, help="owner-approved Phase 3 derived-data cap for this run"
+    )
     clean = commands.add_parser("cleanup")
     clean.add_argument("--evidence-dir", type=Path, required=True)
     clean.add_argument("--kind-bin", type=Path)
@@ -1183,7 +1319,14 @@ def main(argv=None) -> int:
         if args.command == "compose":
             result = compose_smoke(options)
         else:
-            result = kind_smoke(options, args.kubeconfig, args.kind_bin, args.kind_sha256)
+            budget = (
+                DerivedBudget(args.derived_baseline_bytes, args.derived_cap_bytes)
+                if args.derived_cap_bytes is not None
+                else None
+            )
+            result = kind_smoke(
+                options, args.kubeconfig, args.kind_bin, args.kind_sha256, budget=budget
+            )
     except Refused as error:
         print(f"refused: {error}", file=sys.stderr)
         return 2

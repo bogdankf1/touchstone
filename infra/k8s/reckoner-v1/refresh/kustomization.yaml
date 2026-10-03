@@ -1,0 +1,45 @@
+# Refresh profile for the Reckoner v1 kind smoke. It REUSES the Phase 2 platform manifests
+# (OTLP-only ingestion, workflow-agnostic) in a separate namespace, so Touchstone and
+# Reckoner Service names never collide. The Dagster UI and daemon are omitted, matching the
+# Compose refresh profile; the standalone refresh-job.yaml publishes the warehouse.
+# Memory limits equal Compose: ClickHouse 2Gi, collector 384Mi, read API 512Mi.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: touchstone-phase3-v1-refresh
+resources:
+  - namespace.yaml
+  - ../../platform
+images:
+  - {name: touchstone-platform, newTag: phase3}
+  - {name: touchstone-clickhouse, newTag: phase3}
+  - {name: touchstone-collector, newTag: phase3}
+patches:
+  - target: {kind: Deployment, name: dagster}
+    patch: |-
+      $patch: delete
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata: {name: dagster}
+  - target: {kind: Deployment, name: dagster-daemon}
+    patch: |-
+      $patch: delete
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata: {name: dagster-daemon}
+  # Local tags are created by infra/smoke-reckoner-v1.py only after an image-identity check.
+  - target: {kind: Deployment, name: clickhouse}
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: clickhouse
+        annotations:
+          touchstone.dev/pinned-source: clickhouse/clickhouse-server:25.8@sha256:0152dd511befe6a2c2ef53e930726179669b08116da78500b37c51c96ff5ee77
+  - target: {kind: Deployment, name: collector}
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: collector
+        annotations:
+          touchstone.dev/pinned-source: otel/opentelemetry-collector-contrib:0.136.0@sha256:45392d534c1edcc809c2d112394029246bc679d2ae5ea7081414a1fc74f2c621

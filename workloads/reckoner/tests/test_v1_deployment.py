@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -173,6 +174,26 @@ def manifests():
     for path in sorted(K8S.glob("*.yaml")):
         documents += [(path.name, d) for d in yaml.safe_load_all(path.read_text()) if d]
     return documents
+
+
+REFRESH = K8S / "refresh"
+CH_DIGEST = "sha256:0152dd511befe6a2c2ef53e930726179669b08116da78500b37c51c96ff5ee77"
+COLLECTOR_DIGEST = "sha256:45392d534c1edcc809c2d112394029246bc679d2ae5ea7081414a1fc74f2c621"
+
+
+def refresh_overlay():
+    """The kind refresh stage, rendered exactly as `kubectl apply -k` would apply it."""
+    if not (REFRESH / "kustomization.yaml").exists():
+        pytest.fail("kind refresh overlay is not implemented")
+    kubectl = shutil.which("kubectl")
+    if kubectl is None:
+        pytest.fail("rendering the kind refresh overlay requires kubectl (kustomize)")
+    rendered = subprocess.run(
+        [kubectl, "kustomize", str(REFRESH)], check=True, capture_output=True, text=True
+    ).stdout
+    documents = [d for d in yaml.safe_load_all(rendered) if d]
+    job = yaml.safe_load((REFRESH / "refresh-job.yaml").read_text())
+    return documents, job
 
 
 def workloads():
@@ -683,3 +704,111 @@ def test_repeated_kind_jobs_keep_every_receipt(tmp_path):
         "kind-online.json",
         "kind-online-after-restart.json",
     }
+
+
+def test_kind_refresh_stage_reuses_the_platform_manifests_in_its_own_namespace():
+    kustomization = yaml.safe_load((REFRESH / "kustomization.yaml").read_text())
+    assert "../../platform" in kustomization["resources"]
+    for path in K8S.rglob("*.yaml"):
+        if path.name == "kustomization.yaml":
+            continue
+        for document in filter(None, yaml.safe_load_all(path.read_text())):
+            # Platform services are reused from infra/k8s/platform, never redefined here.
+            assert document["metadata"]["name"] not in {"clickhouse", "collector"}, path
+    documents, job = refresh_overlay()
+    names = {(d["kind"], d["metadata"]["name"]) for d in documents}
+    assert {
+        ("Deployment", "clickhouse"),
+        ("Deployment", "collector"),
+        ("Deployment", "api"),
+    } <= names
+    assert not {("Deployment", "dagster"), ("Deployment", "dagster-daemon")} & names
+    assert {d["metadata"].get("namespace") for d in documents if d["kind"] != "Namespace"} == {
+        "touchstone-phase3-v1-refresh"
+    }
+    images = {
+        c["image"]
+        for d in documents
+        if d["kind"] == "Deployment"
+        for c in d["spec"]["template"]["spec"]["containers"]
+    }
+    assert images == {
+        "touchstone-clickhouse:phase3",
+        "touchstone-collector:phase3",
+        "touchstone-platform:phase3",
+    }
+    pinned = {d["metadata"]["name"]: d["metadata"].get("annotations", {}) for d in documents}
+    assert pinned["clickhouse"]["touchstone.dev/pinned-source"].endswith(CH_DIGEST)
+    assert pinned["collector"]["touchstone.dev/pinned-source"].endswith(COLLECTOR_DIGEST)
+    assert job["metadata"]["namespace"] == "touchstone-phase3-v1-refresh"
+    assert job["spec"]["template"]["spec"]["containers"][0]["command"] == ["touchstone", "refresh"]
+    assert job["spec"]["backoffLimit"] == 0
+
+
+def test_console_dashboard_url_points_at_the_refresh_stage_read_api():
+    _, (web,) = containers(workloads()["web"])
+    url = {e["name"]: e.get("value") for e in web["env"]}["TOUCHSTONE_API_URL"]
+    assert url == "http://api.touchstone-phase3-v1-refresh:8000"
+    documents, _ = refresh_overlay()
+    assert ("Service", "api") in {(d["kind"], d["metadata"]["name"]) for d in documents}
+
+
+def test_kind_refresh_profile_matches_compose_refresh_ceilings():
+    _, services = compose()
+    documents, job = refresh_overlay()
+    deployments = {d["metadata"]["name"]: d for d in documents if d["kind"] == "Deployment"}
+    export = workloads()["reckoner-v1-export"]
+    pairs = {
+        "clickhouse": deployments["clickhouse"],
+        "collector": deployments["collector"],
+        "platform-api": deployments["api"],
+        "refresh": job,
+        "exporter": export,
+    }
+    for compose_name, document in pairs.items():
+        _, items = containers(document)
+        limit = items[-1]["resources"]["limits"]["memory"]
+        number, unit = re.fullmatch(r"(\d+)(Mi|Gi)", limit).groups()
+        expected = size(services[compose_name]["mem_limit"])
+        assert int(number) * (1024**2 if unit == "Mi" else GIB) == expected, compose_name
+
+
+def test_disk_guard_also_enforces_the_approved_derived_data_cap(tmp_path, monkeypatch):
+    module = script()
+    readings = iter([30 * GIB, 21 * GIB])
+    monkeypatch.setattr(module, "free_bytes", lambda: next(readings))
+    budget = module.DerivedBudget(baseline_bytes=18 * GIB, cap_bytes=26 * GIB)
+    assert module.guard_disk(tmp_path, "start", budget) == 30 * GIB
+    with pytest.raises(module.DiskFloor, match="derived"):
+        module.guard_disk(tmp_path, "loaded", budget)  # 18 + (30 - 21) = 27 GiB > 26 GiB
+    record = json.loads((tmp_path / "disk-guard.jsonl").read_text().splitlines()[-1])
+    assert record["derived_bytes"] == 27 * GIB and record["above_derived_cap"] is True
+
+
+def test_ci_runs_the_v1_smoke_and_benchmark_store_integration_suites():
+    jobs = yaml.safe_load((ROOT / ".github/workflows/ci.yaml").read_text())["jobs"]
+    job = jobs["neo4j-integration"]
+    commands = " ".join(step.get("run", "") for step in job["steps"])
+    for suite in ("test_v1_graph.py", "test_v1_smoke.py", "test_v1_benchmark_stores.py"):
+        assert f"workloads/reckoner/tests/{suite}" in commands
+    for name in (
+        "RECKONER_TEST_SAMPLE_CONTAINERS",
+        "RECKONER_TEST_AUDIT_PREFIX",
+        "RECKONER_TEST_DU_IMAGE",
+    ):
+        assert job["env"][name]
+
+
+def test_structurizr_model_is_structurally_consistent():
+    """Not a Structurizr parse: balanced blocks and every referenced identifier is defined."""
+    text = (ROOT / "docs/architecture/workspace.dsl").read_text()
+    code = re.sub(r'"[^"]*"', '""', text)
+    assert code.count("{") == code.count("}")
+    defined = set(re.findall(r"^\s*(\w+)\s*=\s*(?:person|softwareSystem|container)\b", text, re.M))
+    for source, target in re.findall(r"^\s*(\w+)\s*->\s*(\w+)", text, re.M):
+        assert {source, target} <= defined, (source, target)
+    for name in re.findall(r"^\s*include\s+(\w+)\s*$", text, re.M):
+        assert name in defined, name
+    views = re.findall(r'^\s*(?:container|systemContext)\s+(\w+)\s+"(\w+)"', text, re.M)
+    assert len({key for _, key in views}) == len(views), "view keys must be unique"
+    assert "ReckonerV1" in {key for _, key in views}

@@ -1,0 +1,41 @@
+# One-shot warehouse publication, applied after the Reckoner outbox export. Same command,
+# environment and 2560Mi ceiling as the Compose `refresh` service.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: touchstone-refresh
+  namespace: touchstone-phase3-v1-refresh
+  labels: {touchstone.dev/stage: refresh}
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels: {touchstone.dev/profile: refresh}
+    spec:
+      restartPolicy: Never
+      securityContext: {runAsNonRoot: true, runAsUser: 10001, fsGroup: 10001}
+      containers:
+        - name: refresh
+          image: touchstone-platform:phase3
+          imagePullPolicy: Never
+          command: ["touchstone", "refresh"]
+          env:
+            - {name: TOUCHSTONE_CLICKHOUSE_HOST, value: clickhouse}
+            - {name: TOUCHSTONE_CLICKHOUSE_USERNAME, value: touchstone}
+            - name: TOUCHSTONE_CLICKHOUSE_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: platform-db, key: password}
+            - {name: TOUCHSTONE_WAREHOUSE_DIR, value: /warehouse}
+            - {name: TOUCHSTONE_DUCKDB_MEMORY_LIMIT, value: 2GB}
+            - {name: TOUCHSTONE_DBT_THREADS, value: "1"}
+            - {name: DBT_LOG_PATH, value: /warehouse/dbt-logs}
+            - {name: DBT_TARGET_PATH, value: /app/platform/dbt/target}
+          volumeMounts:
+            - {name: warehouse, mountPath: /warehouse}
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {cpu: "2", memory: 2560Mi}
+          securityContext: {allowPrivilegeEscalation: false}
+      volumes:
+        - name: warehouse
+          persistentVolumeClaim: {claimName: warehouse-data}

@@ -92,3 +92,48 @@ spec:
             requests: {cpu: 100m, memory: 128Mi}
             limits: {cpu: "1", memory: 1Gi}
           securityContext: {allowPrivilegeEscalation: false}
+---
+# Refresh stage: enqueue (idempotent) and export generic OTLP events to the collector in the
+# refresh namespace. Run once with the collector scaled to zero and once with it running.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: reckoner-v1-export
+  namespace: touchstone-phase3-v1-smoke
+  labels: {touchstone.dev/stage: export}
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels: {touchstone.dev/profile: refresh}
+    spec:
+      restartPolicy: Never
+      securityContext: {runAsNonRoot: true, runAsUser: 10001}
+      initContainers:
+        - name: collect-tenant-a
+          image: touchstone-reckoner:phase3
+          imagePullPolicy: Never
+          command: ["reckoner", "v1", "telemetry-collect", "--env-file", "-", "--tenant-id", "tenant-a", "--run-id", "fabricated-smoke-v1"]
+          envFrom:
+            - secretRef: {name: reckoner-v1-runner}
+          resources: &exporter
+            requests: {cpu: 50m, memory: 128Mi}
+            limits: {cpu: "1", memory: 512Mi}
+          securityContext: {allowPrivilegeEscalation: false}
+        - name: collect-tenant-b
+          image: touchstone-reckoner:phase3
+          imagePullPolicy: Never
+          command: ["reckoner", "v1", "telemetry-collect", "--env-file", "-", "--tenant-id", "tenant-b", "--run-id", "fabricated-smoke-v1"]
+          envFrom:
+            - secretRef: {name: reckoner-v1-runner}
+          resources: *exporter
+          securityContext: {allowPrivilegeEscalation: false}
+      containers:
+        - name: export
+          image: touchstone-reckoner:phase3
+          imagePullPolicy: Never
+          command: ["reckoner", "v1", "telemetry-export", "--env-file", "-", "--endpoint", "http://collector.touchstone-phase3-v1-refresh:4318"]
+          envFrom:
+            - secretRef: {name: reckoner-v1-runner}
+          resources: *exporter
+          securityContext: {allowPrivilegeEscalation: false}

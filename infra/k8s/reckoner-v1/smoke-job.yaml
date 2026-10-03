@@ -87,3 +87,30 @@ spec:
       volumes:
         - name: verify
           configMap: {name: reckoner-v1-verify}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: reckoner-v1-verify-refresh
+  namespace: touchstone-phase3-v1-smoke
+  labels: {touchstone.dev/stage: verify-refresh}
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      securityContext: {runAsNonRoot: true, runAsUser: 10001}
+      containers:
+        - name: verify
+          image: touchstone-reckoner:phase3
+          imagePullPolicy: Never
+          command: ["python", "/verify/verify_reckoner_v1_smoke.py", "refresh", "--platform-api", "http://api.touchstone-phase3-v1-refresh:8000", "--output", "-"]
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: 500m, memory: 256Mi}
+          securityContext: {allowPrivilegeEscalation: false}
+          volumeMounts:
+            - {name: verify, mountPath: /verify, readOnly: true}
+      volumes:
+        - name: verify
+          configMap: {name: reckoner-v1-verify}

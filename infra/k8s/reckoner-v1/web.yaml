@@ -19,7 +19,7 @@ spec:
           env:
             # Server-side only; no credential reaches the browser.
             - {name: RECKONER_API_URL, value: "http://api:8000"}
-            - {name: TOUCHSTONE_API_URL, value: "http://platform-api:8000"}
+            - {name: TOUCHSTONE_API_URL, value: "http://api.touchstone-phase3-v1-refresh:8000"}
           ports:
             - {name: http, containerPort: 3000}
           resources:

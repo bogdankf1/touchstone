@@ -1,0 +1,10 @@
+# Platform core (ClickHouse, collector, warehouse, read API) as a reusable kustomize base.
+# The Phase 2 smoke still applies these files individually; the Reckoner v1 kind smoke
+# reuses them unchanged through infra/k8s/reckoner-v1/refresh/ in its own namespace.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - clickhouse.yaml
+  - collector.yaml
+  - warehouse.yaml
+  - api.yaml
