@@ -546,9 +546,10 @@ def _tree_hash(paths):
     return digest.hexdigest()
 
 
-def test_failure_midway_preserves_old_volumes_images_and_sources(tmp_path):
+def test_failure_midway_preserves_old_volumes_images_and_sources(tmp_path, monkeypatch):
     """A failing online profile stops only this run; nothing pre-existing is removed."""
     module = script()
+    monkeypatch.setattr(module, "free_bytes", lambda: 30 * GIB)
     sources = [p for p in INFRA.rglob("*") if p.is_file()]
     before = _tree_hash(sources)
     instance = "touchstone-phase3-v1-smoke-ab12cd"
@@ -577,7 +578,11 @@ def test_failure_midway_preserves_old_volumes_images_and_sources(tmp_path):
     assert not [t for t in text if " volume rm " in f" {t} " or "prune" in t or " rmi " in t]
     assert not [t for t in text if "down" in t and ("--volumes" in t or "-v" in t.split())]
     assert not [t for t in text if "image rm" in t or "kind delete" in t]
-    assert any("--profile online" in t and " down" in t for t in text), "own project stopped"
+    # Profile-independent down of every own project, including the one that failed.
+    for stage in ("prepare", "online"):
+        assert f"docker compose -p {instance}-{stage} down --remove-orphans" in text
+    guard = (evidence / "disk-guard.jsonl").read_text()
+    assert '"label": "before-volumes"' in guard and '"label": "prepare-done"' in guard
     ledger = json.loads((evidence / "ledger.json").read_text())
     assert set(ledger["volumes"]) == set(module.planned_volumes(instance))
     assert not set(ledger["volumes"]) & PRESERVED
@@ -635,6 +640,8 @@ def test_kind_aborts_at_the_free_disk_floor_and_deletes_only_its_own_cluster(tmp
         calls.append([str(part) for part in command])
         if "create" in command and "--kubeconfig" in command:
             Path(command[command.index("--kubeconfig") + 1]).write_text(f"kind-{instance}")
+        if command[:2] == ["docker", "info"]:
+            return "aarch64"
         if any(str(part).startswith("jsonpath=") for part in command):
             return json.loads((evidence / "ledger.json").read_text())["sentinel"]
         return ""
@@ -872,3 +879,305 @@ def test_stopped_check_inspects_every_error_body_for_credentials(monkeypatch):
     monkeypatch.setattr(module, "_secrets", lambda: ["s3cret"])
     result = module.stopped(type("Args", (), {"api": "http://a", "web": "http://w"})())
     assert result["checks"]["no_credentials_in_error"] is False
+
+
+# --- Fix round 2: orchestrator hardening -------------------------------------------------
+
+
+def write_ledger(tmp_path, **changes):
+    module = script()
+    instance = "touchstone-phase3-v1-smoke-ab12cd"
+    ledger = module.Ledger.create(tmp_path / "evidence", instance)
+    ledger.data.update(changes)
+    ledger.save()
+    return module, tmp_path / "evidence"
+
+
+@pytest.mark.parametrize(
+    "changes,message",
+    [
+        ({"instance": "touchstone-phase3-task3"}, "instance"),
+        ({"sentinel": "not-hex"}, "sentinel"),
+        ({"projects": ["touchstone-phase3-v1-smoke-ab12cd-evil"]}, "project"),
+        ({"clusters": ["touchstone-phase3-v1-other-cluster"]}, "cluster"),
+        ({"kubeconfig": "/Users/someone/.kube/config"}, "kubeconfig"),
+    ],
+)
+def test_a_tampered_ledger_is_refused_on_load(tmp_path, changes, message):
+    module, evidence = write_ledger(tmp_path, **changes)
+    with pytest.raises(module.Refused, match=message):
+        module.Ledger.load(evidence)
+
+
+def test_cleanup_refuses_a_project_whose_containers_carry_another_sentinel(tmp_path):
+    module, evidence = write_ledger(tmp_path)
+    ledger = module.Ledger.load(evidence)
+    project = ledger.data["instance"] + "-online"
+    ledger.add("projects", project)
+    calls = []
+
+    def runner(command, **kwargs):
+        calls.append(" ".join(map(str, command)))
+        if command[:3] == ["docker", "ps", "-a"]:
+            return "someone-else\n"
+        return ""
+
+    with pytest.raises(module.Refused, match="sentinel"):
+        module.cleanup(runner, ledger)
+    assert not [c for c in calls if " down" in c]
+
+
+def test_cleanup_stops_its_project_after_the_container_sentinel_check(tmp_path):
+    module, evidence = write_ledger(tmp_path)
+    ledger = module.Ledger.load(evidence)
+    project = ledger.data["instance"] + "-online"
+    ledger.add("projects", project)
+    calls = []
+
+    def runner(command, **kwargs):
+        calls.append(" ".join(map(str, command)))
+        if command[:3] == ["docker", "ps", "-a"]:
+            assert f"label=com.docker.compose.project={project}" in command
+            return ledger.sentinel + "\n" + ledger.sentinel + "\n"
+        return ""
+
+    module.cleanup(runner, ledger)
+    assert f"docker compose -p {project} down --remove-orphans" in calls
+
+
+def test_compose_services_carry_the_run_sentinel_label():
+    _, services = compose()
+    for name, service in services.items():
+        assert service["labels"]["touchstone.smoke.sentinel"].startswith(
+            "${RECKONER_V1_SENTINEL"
+        ), name
+
+
+def test_pinned_tag_pointing_at_another_image_is_refused_before_retagging():
+    module = script()
+    calls = []
+
+    def runner(command, **kwargs):
+        calls.append(list(command))
+        if command[:3] == ["docker", "image", "inspect"]:
+            return "sha256:other" if command[-1].startswith("touchstone-") else "sha256:pinned"
+        return ""
+
+    with pytest.raises(module.Refused, match="different image"):
+        module.tag_pinned_images(runner)
+    assert not [c for c in calls if c[:2] == ["docker", "tag"]]
+
+
+def test_absent_pinned_tags_are_created_and_then_verified():
+    module = script()
+    tags, calls = {}, []
+
+    def runner(command, **kwargs):
+        calls.append(list(command))
+        if command[:3] == ["docker", "image", "inspect"]:
+            name = command[-1]
+            if name.startswith("touchstone-"):
+                if name not in tags:
+                    raise subprocess.CalledProcessError(1, command)
+                return tags[name]
+            return "sha256:" + name.rsplit(":", 1)[-1][:12]
+        if command[:2] == ["docker", "tag"]:
+            tags[command[3]] = "sha256:" + command[2].rsplit(":", 1)[-1][:12]
+        return ""
+
+    module.tag_pinned_images(runner)
+    assert set(tags) == set(module.PINNED)
+
+
+@pytest.mark.parametrize("command", ["compose", "kind"])
+@pytest.mark.parametrize("given", ["--derived-cap-bytes", "--derived-baseline-bytes"])
+def test_derived_budget_options_must_be_given_together(tmp_path, command, given, capsys):
+    module = script()
+    argv = [
+        command,
+        "--instance",
+        "touchstone-phase3-v1-x-ab12cd",
+        "--evidence-dir",
+        str(tmp_path / "evidence"),
+        "--plugin-dir",
+        str(tmp_path),
+        given,
+        "1",
+    ]
+    if command == "kind":
+        argv += [
+            "--kubeconfig",
+            str(tmp_path / "k"),
+            "--kind-bin",
+            str(tmp_path / "kind"),
+            "--kind-sha256",
+            "0" * 64,
+        ]
+    with pytest.raises(SystemExit) as raised:
+        module.main(argv)
+    assert raised.value.code == 2 and not (tmp_path / "evidence").exists()
+
+
+def test_cleanup_with_kind_bin_requires_its_checksum(tmp_path):
+    module = script()
+    with pytest.raises(SystemExit):
+        module.main(["cleanup", "--evidence-dir", str(tmp_path), "--kind-bin", str(tmp_path)])
+
+
+def test_evidence_inside_the_tracked_tree_is_refused_unless_git_ignored(tmp_path):
+    module = script()
+    with pytest.raises(module.Refused, match="tracked"):
+        module.validate_evidence_dir(ROOT / "docs" / "smoke-evidence")
+    assert module.validate_evidence_dir(ROOT / "artifacts/phase3/task12/x")
+    assert module.validate_evidence_dir(tmp_path / "evidence")
+
+
+def test_receipt_scan_rejects_any_secret_value_outside_the_secret_directory(tmp_path):
+    module = script()
+    (tmp_path / "secrets").mkdir()
+    (tmp_path / "secrets/postgres.env").write_text("POSTGRES_PASSWORD=s3cret\n")
+    (tmp_path / "online.json").write_text('{"ok": true}')
+    module.scan_receipts(tmp_path, ["s3cret"])
+    (tmp_path / "leak.txt").write_text("postgresql://x:s3cret@h/db")
+    with pytest.raises(module.Refused, match="leak.txt"):
+        module.scan_receipts(tmp_path, ["s3cret"])
+    with pytest.raises(module.Refused, match="no secret"):
+        module.scan_receipts(tmp_path, [])
+
+
+def test_write_secrets_returns_every_generated_credential(tmp_path):
+    module = script()
+    created = module.write_secrets(tmp_path / "secrets")
+    text = "".join(p.read_text() for p in (tmp_path / "secrets").iterdir())
+    for value in created["secret_values"]:
+        assert value in text
+    assert len(created["secret_values"]) == 6  # owner, runner, evaluator, api, neo4j, clickhouse
+
+
+def test_memory_parser_tolerates_unavailable_docker_stats_rows(tmp_path):
+    module = script()
+    assert module.memory_used("-- / --") is None
+    rows = [
+        {"Name": "a", "MemUsage": "--", "sample": 0},
+        {"Name": "a", "MemUsage": "2MiB / 1GiB", "sample": 1},
+    ]
+    (tmp_path / "stats-x.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    assert module.resource_summary(tmp_path)["stats-x"]["max_sampled_bytes_combined"] == 2 * 2**20
+
+
+def test_pinned_images_agree_across_script_compose_and_kind():
+    module = script()
+    platform = yaml.load((INFRA / "compose.platform.yaml").read_text(), Loader=ComposeLoader)
+    _, services = compose()
+    compose_images = {services["postgres"]["image"], services["neo4j"]["image"]}
+    compose_images |= {platform["services"][n]["image"] for n in ("clickhouse", "collector")}
+    annotations = {
+        d["metadata"].get("annotations", {}).get("touchstone.dev/pinned-source")
+        for _, d in manifests()
+    } | {
+        d["metadata"].get("annotations", {}).get("touchstone.dev/pinned-source")
+        for d in refresh_overlay()[0]
+    }
+    assert set(module.PINNED.values()) == compose_images == annotations - {None}
+
+
+def full_kind_runner(tmp_path, instance, secrets_seen):
+    """Answers every command of a successful kind run; records argv for inspection."""
+    calls, tags = [], {}
+
+    def runner(command, **kwargs):
+        command = [str(c) for c in command]
+        calls.append(command)
+        if "create" in command and "--kubeconfig" in command and command[1] == "create":
+            Path(command[command.index("--kubeconfig") + 1]).write_text(f"kind-{instance}")
+        if command[:3] == ["docker", "info", "--format"]:
+            return "aarch64"
+        if command[:3] == ["docker", "image", "inspect"]:
+            name = command[-1]
+            if name.startswith("touchstone-") and name.split(":")[0] in {
+                t.split(":")[0] for t in module_pinned()
+            }:
+                if name not in tags:
+                    raise subprocess.CalledProcessError(1, command)
+                return tags[name]
+            return "sha256:" + name[-12:]
+        if command[:2] == ["docker", "tag"]:
+            tags[command[3]] = "sha256:" + command[2][-12:]
+        if command[:3] == ["docker", "image", "save"]:
+            Path(command[command.index("-o") + 1]).write_bytes(b"archive")
+        if any(c.startswith("jsonpath={.status") for c in command):
+            return "1,"
+        if any(c.startswith("jsonpath={.items[0]") for c in command):
+            evidence = tmp_path / "evidence"
+            return json.loads((evidence / "ledger.json").read_text())["sentinel"]
+        if "logs" in command:
+            return "{}"
+        return ""
+
+    return runner, calls
+
+
+def module_pinned():
+    return script().PINNED
+
+
+def test_a_complete_fake_kind_run_never_puts_a_secret_on_argv_and_cleans_up(tmp_path, monkeypatch):
+    module = script()
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("KUBECONFIG", raising=False)
+    monkeypatch.setattr(module, "free_bytes", lambda: 30 * GIB)
+    monkeypatch.setattr(module.time, "sleep", lambda _: None)
+    kind = tmp_path / "kind"
+    kind.write_bytes(b"fabricated kind")
+    plugin = tmp_path / "plugins"
+    plugin.mkdir()
+    (plugin / module.GDS_JAR).write_bytes(b"fabricated")
+    instance = "touchstone-phase3-v1-kind-ab12cd"
+    runner, calls = full_kind_runner(tmp_path, instance, [])
+    archives = []
+    real_mkdtemp = module.tempfile.mkdtemp
+    monkeypatch.setattr(
+        module.tempfile, "mkdtemp", lambda **k: archives.append(real_mkdtemp(**k)) or archives[-1]
+    )
+    secrets_seen = {}
+    real_write = module.write_secrets
+
+    def capture(directory):
+        created = real_write(directory)
+        secrets_seen["values"] = created["secret_values"]
+        return created
+
+    monkeypatch.setattr(module, "write_secrets", capture)
+    module.kind_smoke(
+        module.Options(
+            instance,
+            tmp_path / "evidence",
+            plugin,
+            hashlib.sha256(b"fabricated").hexdigest(),
+            cleanup=True,
+            sample_interval=0,
+        ),
+        tmp_path / "kubeconfig",
+        kind,
+        hashlib.sha256(b"fabricated kind").hexdigest(),
+        runner=runner,
+        preflight=False,
+    )
+    argv = " ".join(" ".join(c) for c in calls)
+    assert secrets_seen["values"] and not [v for v in secrets_seen["values"] if v in argv]
+    saves = [c for c in calls if c[:3] == ["docker", "image", "save"]]
+    assert saves and all(c[c.index("--platform") + 1] == "linux/arm64" for c in saves)
+    assert archives and not any(Path(a).exists() for a in archives)
+    kubectl = [c for c in calls if c[0] == "kubectl"]
+    assert all(
+        c[1:5]
+        == [
+            "--kubeconfig",
+            str((tmp_path / "kubeconfig").absolute()),
+            "--context",
+            f"kind-{instance}",
+        ]
+        for c in kubectl
+    )
+    assert not (tmp_path / "evidence/secrets").exists()
+    assert not (tmp_path / "kubeconfig").exists()

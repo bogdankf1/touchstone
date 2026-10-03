@@ -11,14 +11,20 @@
 # 2.5 GiB refresh job is the largest). Running the 512 MiB exporter concurrently with the
 # refresh job would make refresh 6.375 GiB; the smoke never does that.
 
+# Every container carries the smoke run's sentinel; cleanup checks it before `down`.
+x-sentinel: &sentinel
+  touchstone.smoke.sentinel: ${RECKONER_V1_SENTINEL:-manual}
+
 x-reckoner: &reckoner
   image: ${RECKONER_V1_IMAGE:-touchstone-reckoner:phase3}
   user: "10001:10001"
   restart: "no"
+  labels: *sentinel
 
 services:
   postgres:
     profiles: [prepare, online, refresh]
+    labels: *sentinel
     image: pgvector/pgvector:0.8.6-pg17-bookworm@sha256:cf134a767f474095eeba57e0117be8e568e011a63f33fbf252f14c9b760f8e6f
     env_file: ${RECKONER_SECRET_DIR:?set the protected disposable credential directory}/postgres.env
     command: ["postgres", "-c", "shared_buffers=128MB", "-c", "max_connections=40"]
@@ -33,6 +39,7 @@ services:
 
   neo4j:
     profiles: [prepare]
+    labels: *sentinel
     image: neo4j:2026.09.0@sha256:91fb0bf237c41b7b3dcbe84703aa0b82e0d7d067b16e1c8ab21f03fc679edf4e
     env_file: ${RECKONER_SECRET_DIR}/neo4j-server.env
     environment:
@@ -108,6 +115,7 @@ services:
 
   web:
     profiles: [online]
+    labels: *sentinel
     image: ${RECKONER_V1_WEB_IMAGE:-touchstone-web:phase3}
     environment:
       RECKONER_API_URL: http://api:8000
@@ -126,10 +134,12 @@ services:
 
   clickhouse:
     extends: {file: compose.platform.yaml, service: clickhouse}
+    labels: *sentinel
     profiles: [refresh]
 
   queue-init:
     extends: {file: compose.platform.yaml, service: queue-init}
+    labels: *sentinel
     profiles: [refresh]
     mem_limit: 64m
     # The image declares VOLUME /var/lib/clickhouse; tmpfs avoids an unowned anonymous volume.
@@ -137,6 +147,7 @@ services:
 
   warehouse-init:
     extends: {file: compose.platform.yaml, service: warehouse-init}
+    labels: *sentinel
     profiles: [online, refresh]
     mem_limit: 64m
     # The image declares VOLUME /var/lib/clickhouse; tmpfs avoids an unowned anonymous volume.
@@ -144,6 +155,7 @@ services:
 
   collector:
     extends: {file: compose.platform.yaml, service: collector}
+    labels: *sentinel
     profiles: [refresh]
     depends_on:
       clickhouse:
@@ -163,6 +175,7 @@ services:
 
   refresh:
     extends: {file: compose.platform.yaml, service: refresh}
+    labels: *sentinel
     image: ${TOUCHSTONE_PLATFORM_IMAGE:-touchstone-platform:phase3}
     profiles: [refresh]
     command: ["touchstone", "refresh"]
@@ -174,6 +187,7 @@ services:
 
   platform-api:
     extends: {file: compose.platform.yaml, service: api}
+    labels: *sentinel
     image: ${TOUCHSTONE_PLATFORM_IMAGE:-touchstone-platform:phase3}
     profiles: [online, refresh]
     ports: !override

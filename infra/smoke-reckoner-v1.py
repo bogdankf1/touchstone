@@ -30,6 +30,7 @@ import secrets
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from dataclasses import dataclass
@@ -49,6 +50,9 @@ SENTINEL = "touchstone.smoke.sentinel"
 NODE_SENTINEL = "touchstone.smoke/sentinel"
 INSTANCE_LABEL = "touchstone.smoke.instance"
 INSTANCE = re.compile(r"touchstone-phase3-v1-[a-z0-9][a-z0-9-]{2,30}")
+SENTINEL_FORMAT = re.compile(r"[0-9a-f]{16}")
+STAGES = ("prepare", "online", "refresh", "restore")
+ARCHITECTURES = {"aarch64": "arm64", "arm64": "arm64", "x86_64": "amd64", "amd64": "amd64"}
 IMAGES = {
     "reckoner": "touchstone-reckoner:phase3",
     "web": "touchstone-web:phase3",
@@ -132,6 +136,10 @@ def validate_instance(name: str) -> str:
     return name
 
 
+def own_projects(instance: str) -> list[str]:
+    return [f"{validate_instance(instance)}-{stage}" for stage in STAGES]
+
+
 def planned_volumes(instance: str, suffixes=VOLUME_SUFFIXES) -> list[str]:
     names = [f"{validate_instance(instance)}-{suffix}" for suffix in suffixes]
     if set(names) & PRESERVED_VOLUMES:
@@ -196,8 +204,24 @@ class Ledger:
 
     @classmethod
     def load(cls, evidence: Path):
-        path = Path(evidence) / "ledger.json"
-        return cls(path, json.loads(path.read_text()))
+        """A ledger is input to deletion, so every identifier in it is re-validated."""
+        path = Path(evidence).absolute() / "ledger.json"
+        data = json.loads(path.read_text())
+        instance = validate_instance(str(data.get("instance", "")))
+        if not SENTINEL_FORMAT.fullmatch(str(data.get("sentinel", ""))):
+            raise Refused("ledger sentinel is malformed")
+        if set(data.get("projects", [])) - set(own_projects(instance)):
+            raise Refused("ledger names a project this run cannot own")
+        if set(data.get("clusters", [])) - {instance}:
+            raise Refused("ledger names a cluster this run cannot own")
+        if "kubeconfig" in data:
+            kubeconfig = Path(data["kubeconfig"])
+            if not kubeconfig.is_absolute() or kubeconfig.parent not in {
+                path.parent,
+                path.parent.parent,
+            }:
+                raise Refused("ledger kubeconfig is not this run's dedicated file")
+        return cls(path, data)
 
     @property
     def sentinel(self):
@@ -242,20 +266,38 @@ def create_volumes(runner, ledger: Ledger, names):
         )
 
 
+def _project_sentinels(runner, project: str) -> set[str]:
+    rows = runner(
+        [
+            "docker",
+            "ps",
+            "-a",
+            "--filter",
+            f"label=com.docker.compose.project={project}",
+            "--format",
+            '{{.Label "' + SENTINEL + '"}}',
+        ]
+    )
+    return {row.strip() for row in rows.splitlines() if row.strip()}
+
+
 def cleanup(runner, ledger: Ledger, kind_bin=None):
-    """Stop own projects, then remove own volumes/cluster only after every check passes."""
+    """Check every ledger resource first; then stop, delete and forget only owned ones."""
+    instance = validate_instance(ledger.data["instance"])
     for name in ledger.data["volumes"]:
-        if name in PRESERVED_VOLUMES or not name.startswith(ledger.data["instance"] + "-"):
+        if name in PRESERVED_VOLUMES or not name.startswith(instance + "-"):
             raise Refused(f"ledger names a volume this run cannot own: {name}")
         labels = _volume_labels(runner, name)
         if labels is not None and labels.get(SENTINEL) != ledger.sentinel:
             raise Refused(f"volume {name} does not carry this run's sentinel")
     for project in ledger.data["projects"]:
-        if not project.startswith(ledger.data["instance"] + "-"):
+        if project not in own_projects(instance):
             raise Refused(f"ledger names a foreign project: {project}")
-        runner(["docker", "compose", "-p", project, "down", "--remove-orphans"])
+        if _project_sentinels(runner, project) - {ledger.sentinel}:
+            raise Refused(f"project {project} has containers without this run's sentinel")
+    kubeconfigs = {}
     for cluster in ledger.data["clusters"]:
-        if cluster != ledger.data["instance"] or kind_bin is None:
+        if cluster != instance or kind_bin is None:
             raise Refused(f"cluster {cluster} cannot be removed by this run")
         kubeconfig = Path(ledger.data["kubeconfig"])
         # The dedicated kubeconfig was created by this run (validate_kubeconfig refused an
@@ -266,6 +308,10 @@ def cleanup(runner, ledger: Ledger, kind_bin=None):
         label = "{.items[0].metadata.labels." + NODE_SENTINEL.replace(".", "\\.") + "}"
         if kube("get", "nodes", "-o", "jsonpath=" + label).strip() != ledger.sentinel:
             raise Refused(f"cluster {cluster} does not carry this run's sentinel")
+        kubeconfigs[cluster] = kubeconfig
+    for project in ledger.data["projects"]:
+        runner(["docker", "compose", "-p", project, "down", "--remove-orphans"])
+    for cluster, kubeconfig in kubeconfigs.items():
         # Never fall back to the ambient ~/.kube/config.
         runner(
             [str(kind_bin), "delete", "cluster", "--name", cluster, "--kubeconfig", str(kubeconfig)]
@@ -274,6 +320,55 @@ def cleanup(runner, ledger: Ledger, kind_bin=None):
     for name in ledger.data["volumes"]:
         if _volume_labels(runner, name) is not None:
             runner(["docker", "volume", "rm", name])
+    # The stores these fabricated credentials opened no longer exist.
+    shutil.rmtree(ledger.path.parent / "secrets", ignore_errors=True)
+
+
+def validate_evidence_dir(path: Path) -> Path:
+    """Evidence holds credentials until cleanup: never inside the tracked tree unless ignored."""
+    path = Path(path).absolute()
+    if path == ROOT or ROOT in path.parents:
+        ignored = subprocess.run(
+            ["git", "-C", str(ROOT), "check-ignore", "-q", str(path)], check=False
+        ).returncode
+        if ignored != 0:
+            raise Refused(f"evidence directory {path} is inside the tracked tree")
+    return path
+
+
+def scan_receipts(evidence: Path, secret_values) -> dict:
+    """No generated credential may appear in any receipt, log or dump outside secrets/."""
+    if not secret_values:
+        raise Refused("no secret values to scan; refusing to report a clean scan")
+    evidence = Path(evidence)
+    scanned = 0
+    for path in sorted(evidence.rglob("*")):
+        if not path.is_file() or (evidence / "secrets") in path.parents:
+            continue
+        content = path.read_bytes()
+        scanned += 1
+        if any(value.encode() in content for value in secret_values):
+            raise Refused(f"{path.relative_to(evidence)} contains a generated credential")
+    return {"files_scanned": scanned, "secret_values_checked": len(secret_values)}
+
+
+def tag_pinned_images(runner):
+    """Create local kind tags for pinned digests; never move a tag that names another image."""
+    inspect = ["docker", "image", "inspect", "--format", "{{.Id}}"]
+    expected, absent = {}, []
+    for tag, source in PINNED.items():
+        expected[tag] = runner([*inspect, source]).strip()
+        try:
+            existing = runner([*inspect, tag]).strip()
+        except subprocess.CalledProcessError:
+            absent.append(tag)
+            continue
+        if existing != expected[tag]:
+            raise Refused(f"{tag} already names a different image than {source}")
+    for tag in absent:
+        runner(["docker", "tag", PINNED[tag], tag])
+        if runner([*inspect, tag]).strip() != expected[tag]:
+            raise Refused(f"{tag} is not the pinned image {PINNED[tag]}")
 
 
 def verify_file(path: Path, expected: str):
@@ -306,7 +401,7 @@ class Kubectl:
 
 class Compose:
     def __init__(self, runner, ledger: Ledger, project: str, profile: str, env: dict):
-        if not project.startswith(ledger.data["instance"] + "-"):
+        if project not in own_projects(ledger.data["instance"]):
             raise Refused(f"project {project} is outside this instance")
         self.runner, self.project, self.profile, self.env = runner, project, profile, env
         ledger.add("projects", project)
@@ -320,7 +415,8 @@ class Compose:
         return self("run", "--rm", "--no-deps", "-T", service, *command, **kwargs)
 
     def down(self):
-        return self("down", "--remove-orphans")
+        # Profile-independent: removes every service of the project, whichever profile ran.
+        return self.runner(["docker", "compose", "-p", self.project, "down", "--remove-orphans"])
 
 
 @dataclass
@@ -383,10 +479,10 @@ UNITS = {
 }
 
 
-def memory_used(usage: str) -> int:
-    """Used side of `docker stats` MemUsage, e.g. ``142.1MiB / 512MiB``."""
-    number, unit = re.fullmatch(r"([\d.]+)([A-Za-z]+)", usage.split("/")[0].strip()).groups()
-    return int(float(number) * UNITS[unit])
+def memory_used(usage: str) -> int | None:
+    """Used side of `docker stats` MemUsage, e.g. ``142.1MiB / 512MiB``; ``--`` is unknown."""
+    match = re.fullmatch(r"([\d.]+)([A-Za-z]+)", usage.split("/")[0].strip())
+    return int(float(match.group(1)) * UNITS[match.group(2)]) if match else None
 
 
 def resource_summary(evidence: Path) -> dict:
@@ -397,6 +493,8 @@ def resource_summary(evidence: Path) -> dict:
         for line in path.read_text().splitlines():
             row = json.loads(line)
             used = memory_used(row["MemUsage"])
+            if used is None:
+                continue
             per[row["Name"]] = max(per.get(row["Name"], 0), used)
             rounds[row["sample"]] = rounds.get(row["sample"], 0) + used
         summary[path.stem] = {
@@ -418,9 +516,10 @@ def write_secrets(directory: Path) -> dict:
     owner, neo4j, clickhouse = (secrets.token_urlsafe(24) for _ in range(3))
     host = f"postgres:5432/{DATABASE}"
     values = {"RECKONER_OWNER_DSN": f"postgresql://postgres:{owner}@{host}"}
-    for kind in ("runner", "evaluator", "api"):
+    logins = {kind: secrets.token_urlsafe(24) for kind in ("runner", "evaluator", "api")}
+    for kind, password in logins.items():
         values[f"RECKONER_{kind.upper()}_DSN"] = (
-            f"postgresql://reckoner_{kind}_login:{secrets.token_urlsafe(24)}@{host}"
+            f"postgresql://reckoner_{kind}_login:{password}@{host}"
         )
     files = {
         "postgres.env": {
@@ -438,12 +537,17 @@ def write_secrets(directory: Path) -> dict:
             "RECKONER_NEO4J_PASSWORD": neo4j,
         },
         "clickhouse.env": {"TOUCHSTONE_CH_PASSWORD": clickhouse},
+        # kind reads this file (`--from-env-file`), so the password never appears on argv.
+        "platform-db.env": {"password": clickhouse},
     }
     for name, content in files.items():
         path = directory / name
         path.write_text("".join(f"{k}={v}\n" for k, v in content.items()))
         path.chmod(0o600)
-    return {"clickhouse": clickhouse, "secret_values": [owner, neo4j, clickhouse]}
+    return {
+        "clickhouse": clickhouse,
+        "secret_values": [owner, *logins.values(), neo4j, clickhouse],
+    }
 
 
 def _write(path: Path, text: str):
@@ -531,9 +635,251 @@ def _restore_globals(evidence: Path):
     return evidence / "globals-restore.sql"
 
 
-def compose_smoke(options: Options, runner=run_command, preflight=True) -> dict:
+VERIFY_COMMAND = ("python", "/verify/verify_reckoner_v1_smoke.py")
+SMOKE_COMMAND = ("reckoner", "v1", "smoke")
+ENDPOINTS = ("--api", "http://api:8000", "--web", "http://web:3000", "--output", "-")
+
+
+@dataclass
+class ComposeRun:
+    """Shared state of one Compose smoke; each stage function owns one profile."""
+
+    runner: object
+    ledger: Ledger
+    evidence: Path
+    env: dict
+    sample_interval: float
+    budget: DerivedBudget | None = None
+    steps: list | None = None
+
+    def compose(self, stage: str, profile: str, **extra_env) -> Compose:
+        project = f"{self.ledger.data['instance']}-{stage}"
+        return Compose(self.runner, self.ledger, project, profile, {**self.env, **extra_env})
+
+    def receipt(self, name: str, call):
+        self.steps.append(_receipt(self.evidence, name, call))
+
+    def timed(self, name: str, call):
+        started = time.monotonic()
+        call()
+        self.steps.append({"step": name, "seconds": round(time.monotonic() - started, 3)})
+
+    def sampler(self, label: str) -> Sampler:
+        prefix = self.ledger.data["instance"]
+        return Sampler(
+            self.runner, self.evidence / f"stats-{label}.jsonl", prefix, self.sample_interval
+        )
+
+    def guard(self, label: str):
+        guard_disk(self.evidence, label, self.budget)
+
+
+def _compose_prepare(run: ComposeRun):
+    """Preparation/GDS profile: Postgres + Neo4j; graph evidence persisted, never scored."""
+    prepare = run.compose("prepare", "prepare")
+    with run.sampler("prepare"):
+        run.timed("prepare-up", lambda: prepare("up", "-d", "--wait", "postgres", "neo4j"))
+        run.receipt("prepare-migrate", lambda: prepare.run("migrate"))
+        for step, service in (("seed", "owner"), ("graph", "owner"), ("evidence", "worker")):
+            run.receipt(
+                f"prepare-{step}",
+                lambda s=step, v=service: prepare.run(v, *SMOKE_COMMAND, s, "--env-file", "-"),
+            )
+        run.receipt(
+            "fingerprint-prepare",
+            lambda: prepare.run(
+                "verifier", *VERIFY_COMMAND, "fingerprint", "--graph", "--output", "-"
+            ),
+        )
+        _peaks(run.runner, prepare.project, ("postgres", "neo4j"), run.evidence, "prepare")
+    run.timed("prepare-down", prepare.down)
+
+
+def _compose_online(run: ComposeRun):
+    """Online profile with the graph stopped: workflow, API, console, restart and stop checks."""
+    online = run.compose("online", "online")
+    verify = ("verifier", *VERIFY_COMMAND)
+    with run.sampler("online"):
+        run.timed("online-up", lambda: online("up", "-d", "--wait", "api", "web", "platform-api"))
+        for name in ("online-run", "online-run-repeat"):
+            run.receipt(
+                name, lambda: online.run("worker", *SMOKE_COMMAND, "run", "--env-file", "-")
+            )
+        run.receipt("online", lambda: online.run(*verify, "online", *ENDPOINTS))
+
+        def restart():
+            online("restart", "postgres")
+            online("up", "-d", "--wait", "api", "web")
+
+        run.timed("postgres-restart", restart)
+        run.receipt("online-after-restart", lambda: online.run(*verify, "online", *ENDPOINTS))
+        online("stop", "postgres")
+        run.receipt("stopped", lambda: online.run(*verify, "stopped", *ENDPOINTS))
+        online("start", "postgres")
+        online("up", "-d", "--wait", "api", "web")
+        run.receipt(
+            "fingerprint-online", lambda: online.run(*verify, "fingerprint", "--output", "-")
+        )
+        dump = ("exec", "-T", "postgres")
+        online(
+            *dump,
+            "pg_dump",
+            "-U",
+            "postgres",
+            "-d",
+            DATABASE,
+            "-Fc",
+            stdout_path=run.evidence / "postgres.dump",
+        )
+        online(
+            *dump,
+            "pg_dumpall",
+            "-U",
+            "postgres",
+            "--globals-only",
+            "--no-role-passwords",
+            stdout_path=run.evidence / "globals.sql",
+        )
+        _peaks(
+            run.runner,
+            online.project,
+            ("postgres", "api", "web", "platform-api"),
+            run.evidence,
+            "online",
+        )
+    online.down()
+
+
+def _compose_refresh(run: ComposeRun):
+    """Platform refresh profile: outbox -> OTLP collector -> ClickHouse -> warehouse."""
+    refresh = run.compose("refresh", "refresh", RECKONER_V1_POSTGRES_MEMORY="512m")
+    export = (
+        "exporter",
+        "reckoner",
+        "v1",
+        "telemetry-export",
+        "--env-file",
+        "-",
+        "--endpoint",
+        "http://collector:4318",
+    )
+    with run.sampler("refresh"):
+        refresh("up", "-d", "--wait", "postgres", "clickhouse", "collector", "platform-api")
+        for tenant in TENANTS:
+            run.receipt(
+                f"refresh-collect-{tenant}",
+                lambda t=tenant: refresh.run(
+                    "exporter",
+                    "reckoner",
+                    "v1",
+                    "telemetry-collect",
+                    "--env-file",
+                    "-",
+                    "--tenant-id",
+                    t,
+                    "--run-id",
+                    RUN_ID,
+                ),
+            )
+        refresh("stop", "collector")
+        run.receipt("refresh-export-collector-stopped", lambda: refresh.run(*export))
+        refresh("start", "collector")
+        refresh("up", "-d", "--wait", "collector")
+        run.receipt("refresh-export", lambda: refresh.run(*export))
+        run.timed(
+            "warehouse-refresh",
+            lambda: refresh.run("refresh", stdout_path=run.evidence / "refresh-publish.log"),
+        )
+        run.receipt(
+            "refresh",
+            lambda: refresh.run(
+                "verifier",
+                *VERIFY_COMMAND,
+                "refresh",
+                "--platform-api",
+                "http://platform-api:8000",
+                "--output",
+                "-",
+            ),
+        )
+        _peaks(
+            run.runner,
+            refresh.project,
+            ("postgres", "clickhouse", "collector", "platform-api"),
+            run.evidence,
+            "refresh",
+        )
+    refresh.down()
+
+
+def _compose_restore(run: ComposeRun) -> dict:
+    """Postgres dump into a NEW volume; graph reimported from the immutable source; served."""
+    instance = run.ledger.data["instance"]
+    volumes = planned_volumes(instance, RESTORE_SUFFIXES)
+    create_volumes(run.runner, run.ledger, volumes)
+    env = {"RECKONER_V1_POSTGRES_VOLUME": volumes[0], "RECKONER_V1_NEO4J_VOLUME": volumes[1]}
+    restored = run.compose("restore", "prepare", **env)
+    started = time.monotonic()
+    restored("up", "-d", "--wait", "postgres", "neo4j")
+    restored(
+        "exec",
+        "-T",
+        "postgres",
+        "psql",
+        "-U",
+        "postgres",
+        "-d",
+        "postgres",
+        "-v",
+        "ON_ERROR_STOP=1",
+        "-q",
+        input_path=_restore_globals(run.evidence),
+    )
+    restored(
+        "exec",
+        "-T",
+        "postgres",
+        "pg_restore",
+        "-U",
+        "postgres",
+        "-d",
+        DATABASE,
+        "--exit-on-error",
+        input_path=run.evidence / "postgres.dump",
+    )
+    run.receipt("restore-migrate", lambda: restored.run("migrate"))
+    run.receipt(
+        "restore-graph",
+        lambda: restored.run("owner", *SMOKE_COMMAND, "graph", "--env-file", "-"),
+    )
+    run.receipt(
+        "fingerprint-restore",
+        lambda: restored.run(
+            "verifier", *VERIFY_COMMAND, "fingerprint", "--graph", "--output", "-"
+        ),
+    )
+    run.steps.append({"step": "restore-total", "seconds": round(time.monotonic() - started, 3)})
+    restored.down()
+    served = run.compose("restore", "online", **env)
+    served("up", "-d", "--wait", "api", "web")
+    run.receipt(
+        "online-restored",
+        lambda: served.run("verifier", *VERIFY_COMMAND, "online", *ENDPOINTS),
+    )
+    served.down()
+    comparison = compare_restore(run.evidence)
+    _write(run.evidence / "restore-comparison.json", json.dumps(comparison, indent=2))
+    return comparison
+
+
+def compose_smoke(
+    options: Options,
+    runner=run_command,
+    preflight=True,
+    budget: DerivedBudget | None = None,
+) -> dict:
     instance = validate_instance(options.instance)
-    evidence = Path(options.evidence).absolute()
+    evidence = validate_evidence_dir(options.evidence)
     ledger = Ledger.create(evidence, instance)
     verify_file(Path(options.plugin_dir) / GDS_JAR, options.plugin_sha256)
     if preflight:
@@ -542,8 +888,10 @@ def compose_smoke(options: Options, runner=run_command, preflight=True) -> dict:
     created = write_secrets(evidence / "secrets")
     data = evidence / "empty-data"
     data.mkdir()
+    (evidence / "container-output").mkdir()
     env = {
         "RECKONER_V1_INSTANCE": instance,
+        "RECKONER_V1_SENTINEL": ledger.sentinel,
         "RECKONER_V1_POSTGRES_VOLUME": f"{instance}-postgres",
         "RECKONER_V1_NEO4J_VOLUME": f"{instance}-neo4j",
         "RECKONER_SECRET_DIR": str(evidence / "secrets"),
@@ -553,297 +901,42 @@ def compose_smoke(options: Options, runner=run_command, preflight=True) -> dict:
         "RECKONER_V1_NEO4J_TX_LOG_ROTATION": "16m",
         "TOUCHSTONE_CH_PASSWORD": created["clickhouse"],
     }
-    (evidence / "container-output").mkdir()
-    verify = ["python", "/verify/verify_reckoner_v1_smoke.py"]
-    smoke = ["reckoner", "v1", "smoke"]
-    steps = []
+    run = ComposeRun(runner, ledger, evidence, env, options.sample_interval, budget, steps=[])
+    run.guard("before-volumes")
     create_volumes(runner, ledger, planned_volumes(instance))
-    projects = []
     try:
-        # Preparation/GDS profile: Postgres + Neo4j; graph evidence persisted, never scored.
-        prepare = Compose(runner, ledger, f"{instance}-prepare", "prepare", env)
-        projects.append(prepare)
-        with Sampler(runner, evidence / "stats-prepare.jsonl", instance, options.sample_interval):
-            started = time.monotonic()
-            prepare("up", "-d", "--wait", "postgres", "neo4j")
-            steps.append({"step": "prepare-up", "seconds": round(time.monotonic() - started, 3)})
-            steps.append(_receipt(evidence, "prepare-migrate", lambda: prepare.run("migrate")))
-            for step, service in (("seed", "owner"), ("graph", "owner"), ("evidence", "worker")):
-                steps.append(
-                    _receipt(
-                        evidence,
-                        f"prepare-{step}",
-                        lambda s=step, v=service: prepare.run(v, *smoke, s, "--env-file", "-"),
-                    )
-                )
-            steps.append(
-                _receipt(
-                    evidence,
-                    "fingerprint-prepare",
-                    lambda: prepare.run(
-                        "verifier", *verify, "fingerprint", "--graph", "--output", "-"
-                    ),
-                )
-            )
-            _peaks(runner, prepare.project, ("postgres", "neo4j"), evidence, "prepare")
-        started = time.monotonic()
-        prepare.down()
-        steps.append({"step": "prepare-down", "seconds": round(time.monotonic() - started, 3)})
-
-        # Online profile: graph stopped; API, console, dashboard API and workflow worker.
-        online = Compose(runner, ledger, f"{instance}-online", "online", env)
-        projects.append(online)
-        endpoints = ["--api", "http://api:8000", "--web", "http://web:3000", "--output", "-"]
-        with Sampler(runner, evidence / "stats-online.jsonl", instance, options.sample_interval):
-            started = time.monotonic()
-            online("up", "-d", "--wait", "api", "web", "platform-api")
-            steps.append({"step": "online-up", "seconds": round(time.monotonic() - started, 3)})
-            steps.append(
-                _receipt(
-                    evidence,
-                    "online-run",
-                    lambda: online.run("worker", *smoke, "run", "--env-file", "-"),
-                )
-            )
-            steps.append(
-                _receipt(
-                    evidence,
-                    "online-run-repeat",
-                    lambda: online.run("worker", *smoke, "run", "--env-file", "-"),
-                )
-            )
-            steps.append(
-                _receipt(
-                    evidence,
-                    "online",
-                    lambda: online.run("verifier", *verify, "online", *endpoints),
-                )
-            )
-            started = time.monotonic()
-            online("restart", "postgres")
-            online("up", "-d", "--wait", "api", "web")
-            steps.append(
-                {"step": "postgres-restart", "seconds": round(time.monotonic() - started, 3)}
-            )
-            steps.append(
-                _receipt(
-                    evidence,
-                    "online-after-restart",
-                    lambda: online.run("verifier", *verify, "online", *endpoints),
-                )
-            )
-            online("stop", "postgres")
-            steps.append(
-                _receipt(
-                    evidence,
-                    "stopped",
-                    lambda: online.run("verifier", *verify, "stopped", *endpoints),
-                )
-            )
-            online("start", "postgres")
-            online("up", "-d", "--wait", "api", "web")
-            steps.append(
-                _receipt(
-                    evidence,
-                    "fingerprint-online",
-                    lambda: online.run("verifier", *verify, "fingerprint", "--output", "-"),
-                )
-            )
-            dump = ["exec", "-T", "postgres"]
-            online(
-                *dump,
-                "pg_dump",
-                "-U",
-                "postgres",
-                "-d",
-                DATABASE,
-                "-Fc",
-                stdout_path=evidence / "postgres.dump",
-            )
-            online(
-                *dump,
-                "pg_dumpall",
-                "-U",
-                "postgres",
-                "--globals-only",
-                "--no-role-passwords",
-                stdout_path=evidence / "globals.sql",
-            )
-            _peaks(
-                runner,
-                online.project,
-                ("postgres", "api", "web", "platform-api"),
-                evidence,
-                "online",
-            )
-        online.down()
-
-        # Platform refresh profile: outbox -> OTLP collector -> ClickHouse -> warehouse.
-        refresh_env = {**env, "RECKONER_V1_POSTGRES_MEMORY": "512m"}
-        refresh = Compose(runner, ledger, f"{instance}-refresh", "refresh", refresh_env)
-        projects.append(refresh)
-        export = [
-            "reckoner",
-            "v1",
-            "telemetry-export",
-            "--env-file",
-            "-",
-            "--endpoint",
-            "http://collector:4318",
-        ]
-        with Sampler(runner, evidence / "stats-refresh.jsonl", instance, options.sample_interval):
-            refresh("up", "-d", "--wait", "postgres", "clickhouse", "collector", "platform-api")
-            for tenant in TENANTS:
-                steps.append(
-                    _receipt(
-                        evidence,
-                        f"refresh-collect-{tenant}",
-                        lambda t=tenant: refresh.run(
-                            "exporter",
-                            "reckoner",
-                            "v1",
-                            "telemetry-collect",
-                            "--env-file",
-                            "-",
-                            "--tenant-id",
-                            t,
-                            "--run-id",
-                            RUN_ID,
-                        ),
-                    )
-                )
-            refresh("stop", "collector")
-            steps.append(
-                _receipt(
-                    evidence,
-                    "refresh-export-collector-stopped",
-                    lambda: refresh.run("exporter", *export),
-                )
-            )
-            refresh("start", "collector")
-            refresh("up", "-d", "--wait", "collector")
-            steps.append(
-                _receipt(evidence, "refresh-export", lambda: refresh.run("exporter", *export))
-            )
-            started = time.monotonic()
-            refresh.run("refresh", stdout_path=evidence / "refresh-publish.log")
-            steps.append(
-                {"step": "warehouse-refresh", "seconds": round(time.monotonic() - started, 3)}
-            )
-            steps.append(
-                _receipt(
-                    evidence,
-                    "refresh",
-                    lambda: refresh.run(
-                        "verifier",
-                        *verify,
-                        "refresh",
-                        "--platform-api",
-                        "http://platform-api:8000",
-                        "--output",
-                        "-",
-                    ),
-                )
-            )
-            _peaks(
-                runner,
-                refresh.project,
-                ("postgres", "clickhouse", "collector", "platform-api"),
-                evidence,
-                "refresh",
-            )
-        refresh.down()
-
-        # Restore: Postgres dump into a NEW volume; graph reimported from the immutable source.
-        restore_volumes = planned_volumes(instance, RESTORE_SUFFIXES)
-        create_volumes(runner, ledger, restore_volumes)
-        restore_env = {
-            **env,
-            "RECKONER_V1_POSTGRES_VOLUME": restore_volumes[0],
-            "RECKONER_V1_NEO4J_VOLUME": restore_volumes[1],
-        }
-        restored = Compose(runner, ledger, f"{instance}-restore", "prepare", restore_env)
-        projects.append(restored)
-        started = time.monotonic()
-        restored("up", "-d", "--wait", "postgres", "neo4j")
-        restored(
-            "exec",
-            "-T",
-            "postgres",
-            "psql",
-            "-U",
-            "postgres",
-            "-d",
-            "postgres",
-            "-v",
-            "ON_ERROR_STOP=1",
-            "-q",
-            input_path=_restore_globals(evidence),
-        )
-        restored(
-            "exec",
-            "-T",
-            "postgres",
-            "pg_restore",
-            "-U",
-            "postgres",
-            "-d",
-            DATABASE,
-            "--exit-on-error",
-            input_path=evidence / "postgres.dump",
-        )
-        steps.append(_receipt(evidence, "restore-migrate", lambda: restored.run("migrate")))
-        steps.append(
-            _receipt(
-                evidence,
-                "restore-graph",
-                lambda: restored.run("owner", *smoke, "graph", "--env-file", "-"),
-            )
-        )
-        steps.append(
-            _receipt(
-                evidence,
-                "fingerprint-restore",
-                lambda: restored.run(
-                    "verifier", *verify, "fingerprint", "--graph", "--output", "-"
-                ),
-            )
-        )
-        steps.append({"step": "restore-total", "seconds": round(time.monotonic() - started, 3)})
-        restored.down()
-        served = Compose(runner, ledger, f"{instance}-restore", "online", restore_env)
-        served("up", "-d", "--wait", "api", "web")
-        steps.append(
-            _receipt(
-                evidence,
-                "online-restored",
-                lambda: served.run("verifier", *verify, "online", *endpoints),
-            )
-        )
-        served.down()
-        comparison = compare_restore(evidence)
-        _write(evidence / "restore-comparison.json", json.dumps(comparison, indent=2))
+        for name, stage in (
+            ("prepare", _compose_prepare),
+            ("online", _compose_online),
+            ("refresh", _compose_refresh),
+        ):
+            stage(run)
+            run.guard(f"{name}-done")
+        comparison = _compose_restore(run)
+        run.guard("restore-done")
         sizes = _volume_sizes(runner, ledger, evidence)
         _disk(runner, evidence, "after")
+        scan = scan_receipts(evidence, created["secret_values"])
         summary = {
             "schema_version": "reckoner-v1-compose-smoke-v1",
             "dataset": "fabricated simulated; no provider calls",
             "instance": instance,
-            "steps": steps,
+            "steps": run.steps,
             "volume_bytes": sizes,
             "restore": comparison,
+            "secret_scan": scan,
             "resources": resource_summary(evidence),
         }
         _write(evidence / "summary.json", json.dumps(summary, indent=2, sort_keys=True))
         if not comparison["all_equal"]:
             raise Refused("restored or reimported state differs from the original")
     except BaseException:
-        for project in projects:
-            try:
-                project.down()  # Containers and networks only; volumes stay for inspection.
+        for project in ledger.data["projects"]:
+            try:  # Containers and networks only; volumes stay for inspection.
+                runner(["docker", "compose", "-p", project, "down", "--remove-orphans"])
             except subprocess.CalledProcessError:
                 pass
-        _write(evidence / "failure-steps.json", json.dumps(steps, indent=2))
+        _write(evidence / "failure-steps.json", json.dumps(run.steps, indent=2))
         raise
     if options.cleanup:
         cleanup(runner, ledger)
@@ -967,17 +1060,36 @@ def _kind_steps(options, runner, ledger, evidence, config, kubeconfig, kind_bin,
     kube = Kubectl(kubeconfig, instance, runner)
     with Sampler(runner, evidence / "stats-kind.jsonl", instance, options.sample_interval):
         started = time.monotonic()
-        for image in (*IMAGES.values(), *PINNED):
-            archive = Path("/private/tmp") / f"{instance}-{image.split(':')[0]}.tar"
-            runner(
-                ["docker", "image", "save", "--platform", "linux/arm64", "-o", str(archive), image]
-            )
-            try:
-                guard_disk(evidence, f"archive-{image}", budget)
-                runner([str(kind_bin), "load", "image-archive", "--name", instance, str(archive)])
-            finally:
-                archive.unlink(missing_ok=True)
-            guard_disk(evidence, f"loaded-{image}", budget)
+        architecture = runner(["docker", "info", "--format", "{{.Architecture}}"]).strip()
+        if architecture not in ARCHITECTURES:
+            raise Refused(f"unsupported Docker architecture {architecture!r}")
+        platform = "linux/" + ARCHITECTURES[architecture]
+        archives = Path(tempfile.mkdtemp(prefix=f"{instance}-"))
+        try:
+            for image in (*IMAGES.values(), *PINNED):
+                archive = archives / (image.replace(":", "_").replace("/", "_") + ".tar")
+                try:
+                    runner(
+                        [
+                            "docker",
+                            "image",
+                            "save",
+                            "--platform",
+                            platform,
+                            "-o",
+                            str(archive),
+                            image,
+                        ]
+                    )
+                    guard_disk(evidence, f"archive-{image}", budget)
+                    runner(
+                        [str(kind_bin), "load", "image-archive", "--name", instance, str(archive)]
+                    )
+                finally:
+                    archive.unlink(missing_ok=True)
+                guard_disk(evidence, f"loaded-{image}", budget)
+        finally:
+            shutil.rmtree(archives, ignore_errors=True)
         steps.append({"step": "kind-load-images", "seconds": round(time.monotonic() - started, 3)})
         kube("apply", "-f", K8S / "namespace.yaml")
         kube("label", "namespace", NAMESPACE, f"{SENTINEL}={ledger.sentinel}")
@@ -1119,8 +1231,6 @@ def _kind_refresh(kube, runner, ledger, evidence, budget):
         kube("-n", NAMESPACE, "scale", f"deployment/{name}", "--replicas=0")
     kube("apply", "-f", K8S / "refresh/namespace.yaml")
     kube("label", "namespace", REFRESH_NAMESPACE, f"{SENTINEL}={ledger.sentinel}")
-    secrets_dir = evidence / "secrets"
-    password = (secrets_dir / "clickhouse.env").read_text().strip().split("=", 1)[1]
     kube(
         "-n",
         REFRESH_NAMESPACE,
@@ -1128,7 +1238,7 @@ def _kind_refresh(kube, runner, ledger, evidence, budget):
         "secret",
         "generic",
         "platform-db",
-        f"--from-literal=password={password}",
+        f"--from-env-file={evidence / 'secrets' / 'platform-db.env'}",
     )
     kube(
         "-n",
@@ -1229,7 +1339,7 @@ def kind_smoke(
     instance = validate_instance(options.instance)
     kubeconfig = validate_kubeconfig(kubeconfig, os.environ)
     verify_file(kind_bin, kind_sha256)
-    evidence = Path(options.evidence).absolute()
+    evidence = validate_evidence_dir(options.evidence)
     ledger = Ledger.create(evidence, instance)
     verify_file(Path(options.plugin_dir) / GDS_JAR, options.plugin_sha256)
     if preflight:
@@ -1237,17 +1347,12 @@ def kind_smoke(
         if instance in runner([str(kind_bin), "get", "clusters"]).split():
             raise Refused(f"kind cluster {instance} already exists")
     _disk(runner, evidence, "before")
-    write_secrets(evidence / "secrets")
+    created = write_secrets(evidence / "secrets")
     config = evidence / "kind-config.json"
     _write(config, json.dumps(kind_config(options.plugin_dir, ledger.sentinel), indent=2))
     ledger.data["kubeconfig"] = str(kubeconfig)
     ledger.save()
-    for tag, source in PINNED.items():
-        runner(["docker", "tag", source, tag])
-        if runner(["docker", "image", "inspect", "--format", "{{.Id}}", tag]) != runner(
-            ["docker", "image", "inspect", "--format", "{{.Id}}", source]
-        ):
-            raise Refused(f"{tag} is not the pinned image {source}")
+    tag_pinned_images(runner)
     steps = []
     guard_disk(evidence, "before-cluster", budget)
     ledger.add("clusters", instance)
@@ -1272,6 +1377,7 @@ def kind_smoke(
         "kubeconfig": str(kubeconfig),
         "context": f"kind-{instance}",
         "steps": steps,
+        "secret_scan": scan_receipts(evidence, created["secret_values"]),
         "resources": resource_summary(evidence),
     }
     _write(evidence / "summary.json", json.dumps(summary, indent=2, sort_keys=True))
@@ -1293,22 +1399,34 @@ def main(argv=None) -> int:
             "--cleanup", action="store_true", help="remove this run's own resources after success"
         )
         command.add_argument("--sample-interval", type=float, default=2.0)
+        command.add_argument(
+            "--derived-baseline-bytes", type=int, help="measured Phase 3 derived bytes before"
+        )
+        command.add_argument(
+            "--derived-cap-bytes", type=int, help="owner-approved Phase 3 derived-data cap"
+        )
     kind = commands.choices["kind"]
     kind.add_argument("--kubeconfig", type=Path, required=True)
     kind.add_argument("--kind-bin", type=Path, required=True)
     kind.add_argument("--kind-sha256", required=True)
-    kind.add_argument(
-        "--derived-baseline-bytes", type=int, help="measured Phase 3 derived bytes before the run"
-    )
-    kind.add_argument(
-        "--derived-cap-bytes", type=int, help="owner-approved Phase 3 derived-data cap for this run"
-    )
     clean = commands.add_parser("cleanup")
     clean.add_argument("--evidence-dir", type=Path, required=True)
     clean.add_argument("--kind-bin", type=Path)
+    clean.add_argument("--kind-sha256")
     args = parser.parse_args(argv)
+    budget = None
+    if args.command in ("compose", "kind"):
+        given = (args.derived_baseline_bytes, args.derived_cap_bytes)
+        if (given[0] is None) != (given[1] is None):
+            parser.error("--derived-baseline-bytes and --derived-cap-bytes go together")
+        if given[1] is not None:
+            budget = DerivedBudget(*given)
+    if args.command == "cleanup" and args.kind_bin is not None and not args.kind_sha256:
+        parser.error("cleanup --kind-bin requires --kind-sha256")
     try:
         if args.command == "cleanup":
+            if args.kind_bin is not None:
+                verify_file(args.kind_bin, args.kind_sha256)
             cleanup(run_command, Ledger.load(args.evidence_dir), args.kind_bin)
             return 0
         options = Options(
@@ -1319,13 +1437,8 @@ def main(argv=None) -> int:
             sample_interval=args.sample_interval,
         )
         if args.command == "compose":
-            result = compose_smoke(options)
+            result = compose_smoke(options, budget=budget)
         else:
-            budget = (
-                DerivedBudget(args.derived_baseline_bytes, args.derived_cap_bytes)
-                if args.derived_cap_bytes is not None
-                else None
-            )
             result = kind_smoke(
                 options, args.kubeconfig, args.kind_bin, args.kind_sha256, budget=budget
             )
