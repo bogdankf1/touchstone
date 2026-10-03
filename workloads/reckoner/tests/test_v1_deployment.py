@@ -42,6 +42,7 @@ def script():
         pytest.fail("allow-listed smoke orchestrator is not implemented")
     spec = importlib.util.spec_from_file_location("smoke_reckoner_v1", path)
     module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module  # dataclasses resolve deferred annotations via the module
     spec.loader.exec_module(module)
     return module
 
@@ -812,3 +813,20 @@ def test_structurizr_model_is_structurally_consistent():
     views = re.findall(r'^\s*(?:container|systemContext)\s+(\w+)\s+"(\w+)"', text, re.M)
     assert len({key for _, key in views}) == len(views), "view keys must be unique"
     assert "ReckonerV1" in {key for _, key in views}
+
+
+def test_host_scripts_run_on_the_host_python_39():
+    """macOS's /usr/bin/python3 is 3.9: PEP 604 annotations must stay unevaluated."""
+    for name in ("smoke-reckoner-v1.py", "verify_reckoner_v1_smoke.py"):
+        text = (INFRA / name).read_text()
+        if re.search(r"\w+ \| None", text):
+            assert "from __future__ import annotations" in text, name
+    host = Path("/usr/bin/python3")
+    if host.exists():
+        result = subprocess.run(
+            [str(host), str(INFRA / "smoke-reckoner-v1.py"), "--help"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr

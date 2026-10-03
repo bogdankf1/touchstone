@@ -19,6 +19,8 @@ all credentials are freshly generated, fabricated and disposable. Compose and ki
 together, and neither runs alongside the preserved Phase 2 stack.
 """
 
+from __future__ import annotations
+
 import argparse
 import hashlib
 import json
