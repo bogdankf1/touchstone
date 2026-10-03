@@ -402,3 +402,13 @@ request. Missing/failed notes and caller substitutions cannot pass. Generation a
 Ragas share `build_note_context`, with distinct raw/effective routing probabilities,
 frozen calibration identity and unchanged Jev concentration. This changes prepared
 request bytes/hashes; old exact-hash approvals do not approve the revised request.
+
+## Local runtime packaging (Task 12)
+
+`/health/ready` now requires every packaged migration, not only the Phase 1
+`004_evaluation_reporting.sql`; it reports the latest applied file name. A database migrated
+only through the baseline therefore receives no v1 API traffic. Readiness never depends on
+Neo4j. `reckoner v1 smoke seed|graph|evidence|run` is a fabricated deployment check confined
+to a `reckoner_smoke_` database (the graph step refuses a graph containing non-smoke tenants);
+it makes no provider call. The Reckoner image now installs only the `reckoner` package. See
+[reckoner-v1-runbook.md](reckoner-v1-runbook.md).

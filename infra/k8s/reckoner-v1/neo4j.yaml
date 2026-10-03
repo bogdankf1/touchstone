@@ -1,0 +1,75 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: neo4j
+  namespace: touchstone-phase3-v1-smoke
+spec:
+  clusterIP: None
+  selector: {app: neo4j}
+  ports:
+    - {name: bolt, port: 7687}
+---
+# Preparation profile only: scale to zero before the online profile (graph stopped).
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: neo4j
+  namespace: touchstone-phase3-v1-smoke
+  annotations:
+    touchstone.dev/pinned-source: neo4j:2026.09.0@sha256:91fb0bf237c41b7b3dcbe84703aa0b82e0d7d067b16e1c8ab21f03fc679edf4e
+spec:
+  serviceName: neo4j
+  replicas: 1
+  selector:
+    matchLabels: {app: neo4j}
+  template:
+    metadata:
+      labels: {app: neo4j, touchstone.dev/profile: prepare}
+    spec:
+      securityContext: {runAsNonRoot: true, runAsUser: 7474, runAsGroup: 7474, fsGroup: 7474}
+      containers:
+        - name: neo4j
+          image: touchstone-neo4j:phase3
+          imagePullPolicy: Never
+          envFrom:
+            - secretRef: {name: reckoner-v1-neo4j-server}
+          env:
+            - {name: NEO4J_server_memory_heap_initial__size, value: 512m}
+            - {name: NEO4J_server_memory_heap_max__size, value: 2g}
+            - {name: NEO4J_server_memory_pagecache_size, value: 512m}
+            - {name: NEO4J_dbms_security_procedures_unrestricted, value: gds.*}
+            - {name: NEO4J_db_tx__log_rotation_size, value: 16m}
+          ports:
+            - {name: bolt, containerPort: 7687}
+          resources:
+            requests: {cpu: 250m, memory: 1Gi}
+            limits: {cpu: "2", memory: 4Gi}
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", 'cypher-shell -u neo4j -p "${NEO4J_AUTH#neo4j/}" "RETURN gds.version()"']
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 15
+          livenessProbe:
+            tcpSocket: {port: bolt}
+            initialDelaySeconds: 60
+            periodSeconds: 20
+          securityContext: {allowPrivilegeEscalation: false}
+          volumeMounts:
+            - {name: data, mountPath: /data}
+            - {name: logs, mountPath: /logs}
+            - {name: gds-plugins, mountPath: /plugins, readOnly: true}
+      volumes:
+        - name: logs
+          emptyDir: {sizeLimit: 256Mi}
+        # The checksum-verified GDS JAR, mounted read-only into the kind node by the smoke.
+        - name: gds-plugins
+          hostPath: {path: /touchstone/gds-plugins, type: Directory}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: 1Gi

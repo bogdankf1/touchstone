@@ -1196,14 +1196,19 @@ class PostgresRepository:
         }
 
     def readiness(self) -> str:
-        row = self._connection.execute(
-            "SELECT EXISTS (SELECT 1 FROM public.reckoner_schema_migrations "
-            "WHERE version = %s) AS applied",
-            (REQUIRED_MIGRATION,),
-        ).fetchone()
-        if row is None or not row["applied"]:
+        """Ready only after every packaged migration is applied (migration before traffic)."""
+        from reckoner.storage.migrate import MIGRATIONS
+
+        required = sorted(path.name for path in MIGRATIONS.glob("[0-9][0-9][0-9]_*.sql"))
+        applied = {
+            row["version"]
+            for row in self._connection.execute(
+                "SELECT version FROM public.reckoner_schema_migrations"
+            ).fetchall()
+        }
+        if REQUIRED_MIGRATION not in required or set(required) - applied:
             raise ValueError("schema migration is incompatible")
-        return REQUIRED_MIGRATION
+        return required[-1]
 
     def api_run_summary(self, tenant_id: str, run_id: str) -> dict[str, Any] | None:
         row = self._connection.execute(

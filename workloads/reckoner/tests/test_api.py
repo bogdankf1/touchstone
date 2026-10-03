@@ -5,6 +5,7 @@ import importlib
 import psycopg
 import pytest
 from fastapi.testclient import TestClient
+from reckoner.storage.migrate import MIGRATIONS
 from reckoner.storage.postgres import PostgresRepository
 from test_runner import FakeProvider, _create_four_task_run
 
@@ -29,7 +30,8 @@ def test_readiness_uses_api_role_and_liveness_is_independent(pg):
         assert client.get("/health/live").json() == {"status": "ok"}
         ready = client.get("/health/ready")
     assert ready.status_code == 200
-    assert ready.json() == {"status": "ready", "migration": "004_evaluation_reporting.sql"}
+    latest = sorted(MIGRATIONS.glob("[0-9][0-9][0-9]_*.sql"))[-1].name
+    assert ready.json() == {"status": "ready", "migration": latest}
 
     with psycopg.connect(pg.owner_dsn) as owner:
         owner.execute(
@@ -47,6 +49,20 @@ def test_readiness_uses_api_role_and_liveness_is_independent(pg):
     assert unavailable.status_code == 503
     assert unavailable.json() == {"detail": "database unavailable"}
     assert "dsn-secret" not in unavailable.text
+
+
+def test_readiness_waits_for_every_packaged_migration_before_traffic(pg):
+    """A database migrated only through the baseline must not receive v1 traffic."""
+    create_app = importlib.import_module("reckoner.app").create_app
+    latest = sorted(MIGRATIONS.glob("[0-9][0-9][0-9]_*.sql"))[-1].name
+    assert latest != "004_evaluation_reporting.sql"
+    with psycopg.connect(pg.owner_dsn) as owner:
+        owner.execute("DELETE FROM public.reckoner_schema_migrations WHERE version = %s", (latest,))
+    with TestClient(create_app(pg.api_dsn)) as client:
+        assert client.get("/health/live").status_code == 200
+        pending = client.get("/health/ready")
+    assert pending.status_code == 503
+    assert pending.json() == {"detail": "database unavailable"}
 
 
 def test_tenant_scoped_run_and_results_are_sanitized_and_paginated(pg):

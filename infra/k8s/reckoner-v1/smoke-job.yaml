@@ -1,0 +1,89 @@
+# Verification Jobs for the fabricated smoke; the script is a ConfigMap built from
+# infra/verify_reckoner_v1_smoke.py. Apply one stage at a time with `-l touchstone.dev/stage=`.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: reckoner-v1-verify-online
+  namespace: touchstone-phase3-v1-smoke
+  labels: {touchstone.dev/stage: verify-online}
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      securityContext: {runAsNonRoot: true, runAsUser: 10001}
+      containers:
+        - name: verify
+          image: touchstone-reckoner:phase3
+          imagePullPolicy: Never
+          command: ["python", "/verify/verify_reckoner_v1_smoke.py", "online", "--api", "http://api:8000", "--web", "http://web:3000", "--output", "-"]
+          envFrom:
+            - secretRef: {name: reckoner-v1-provision}
+            - secretRef: {name: reckoner-v1-neo4j}
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: 500m, memory: 256Mi}
+          securityContext: {allowPrivilegeEscalation: false}
+          volumeMounts:
+            - {name: verify, mountPath: /verify, readOnly: true}
+      volumes:
+        - name: verify
+          configMap: {name: reckoner-v1-verify}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: reckoner-v1-verify-stopped
+  namespace: touchstone-phase3-v1-smoke
+  labels: {touchstone.dev/stage: verify-stopped}
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      securityContext: {runAsNonRoot: true, runAsUser: 10001}
+      containers:
+        - name: verify
+          image: touchstone-reckoner:phase3
+          imagePullPolicy: Never
+          command: ["python", "/verify/verify_reckoner_v1_smoke.py", "stopped", "--api", "http://api:8000", "--web", "http://web:3000", "--output", "-"]
+          envFrom:
+            - secretRef: {name: reckoner-v1-provision}
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: 500m, memory: 256Mi}
+          securityContext: {allowPrivilegeEscalation: false}
+          volumeMounts:
+            - {name: verify, mountPath: /verify, readOnly: true}
+      volumes:
+        - name: verify
+          configMap: {name: reckoner-v1-verify}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: reckoner-v1-fingerprint
+  namespace: touchstone-phase3-v1-smoke
+  labels: {touchstone.dev/stage: fingerprint}
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      securityContext: {runAsNonRoot: true, runAsUser: 10001}
+      containers:
+        - name: verify
+          image: touchstone-reckoner:phase3
+          imagePullPolicy: Never
+          command: ["python", "/verify/verify_reckoner_v1_smoke.py", "fingerprint", "--output", "-"]
+          envFrom:
+            - secretRef: {name: reckoner-v1-provision}
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: 500m, memory: 256Mi}
+          securityContext: {allowPrivilegeEscalation: false}
+          volumeMounts:
+            - {name: verify, mountPath: /verify, readOnly: true}
+      volumes:
+        - name: verify
+          configMap: {name: reckoner-v1-verify}

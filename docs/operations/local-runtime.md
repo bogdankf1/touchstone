@@ -70,3 +70,9 @@ The task reused the existing verified kind v0.33.0 binary at
 Darwin arm64 checksum is `0c8c7dbe5e23594a198b786c4bc13dacc101fa6196b0cb0b23a1ca44e61f4b4f`.
 The task-owned cluster/kubeconfig were separate from the user's configuration. Compose was
 stopped before kind. Evidence was copied out before deleting only the smoke cluster.
+
+## Phase 3 Reckoner v1 runtime
+
+Reckoner v1 uses separate preparation, online and refresh Compose profiles and kind
+manifests; see [reckoner-v1-runbook.md](reckoner-v1-runbook.md). The Phase 0–2 figures above
+remain historical and are not v1 capacity evidence.

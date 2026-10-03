@@ -7,9 +7,11 @@ separate acceptance result; the offline deployment checks use four fabricated ca
 
 The [Structurizr model](workspace.dsl) marks the Phase 1 baseline and Phase 2 local measurement
 software `Implemented`, with separate `Baseline` and `LocalMeasurement` views. The original
-`Foundation` view retains the profiler/API boundary from Phase 0. The LangGraph cascade, Jev,
-graph/vector retrieval and reviewer interface remain `Planned`. There is no implemented agent
-graph to draw in this phase. DuckDB is the verified local warehouse; Snowflake is a configured
+`Foundation` view retains the profiler/API boundary from Phase 0. Phase 3 marks the Reckoner
+v1 decision workflow, evidence preparation, Neo4j/GDS store, v1 OTLP outbox, Jev adapter and
+reviewer console `Implemented` in the `ReckonerV1` view; paid runs stay separately gated. The
+generated LangGraph view is [reckoner-v1-workflow.mmd](reckoner-v1-workflow.mmd) and the local
+runtime profiles are drawn in [reckoner-v1.mmd](reckoner-v1.mmd). DuckDB is the verified local warehouse; Snowflake is a configured
 future boundary with no live parity claim. The [generated dbt lineage](dbt-lineage.md) records
 the direct model and source dependencies in the final image's manifest.
 
@@ -88,3 +90,14 @@ real-Chrome checks on the same frozen HTML found no overflow at 1600×1000 or 19
 1440×900 and 1920×1080 light screenshots were visually inspected; the controller separately
 inspected 2048×1320 light. This is a code/diagram drift check, not a Snowflake
 deployment or visual dashboard test.
+
+## Phase 3 drift check
+
+The Task 12 archify candidate traces the v1 runtime from `infra/compose.reckoner-v1.yaml`, the
+`reckoner.v1` workflow, evidence, API and telemetry modules, the web server proxy and the
+platform refresh/read API. Local source paths are recorded in a separate evidence mapping because
+the branch has no pinned public URL. The candidate, delivery receipt and browser receipt are
+ignored artifacts under `artifacts/phase3/task12/architecture/`. Deterministic validation,
+automated browser evidence and visual review are reported separately in the Task 12 evidence.
+The committed LangGraph view is asserted equal to `build_graph(...).draw_mermaid()` by
+`workloads/reckoner/tests/test_v1_deployment.py`.

@@ -1,0 +1,94 @@
+# Fabricated simulated smoke work; no provider is called. Applied one stage at a time with
+# `kubectl apply -f worker.yaml -l touchstone.dev/stage=STAGE`.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: reckoner-v1-prepare
+  namespace: touchstone-phase3-v1-smoke
+  labels: {touchstone.dev/stage: prepare}
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels: {touchstone.dev/profile: prepare}
+    spec:
+      restartPolicy: Never
+      securityContext: {runAsNonRoot: true, runAsUser: 10001}
+      initContainers:
+        - name: migrate
+          image: touchstone-reckoner:phase3
+          imagePullPolicy: Never
+          command: ["reckoner", "migrate", "--env-file", "-", "--provision-roles"]
+          envFrom:
+            - secretRef: {name: reckoner-v1-provision}
+          resources: &job
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: "1", memory: 1Gi}
+          securityContext: {allowPrivilegeEscalation: false}
+        - name: seed
+          image: touchstone-reckoner:phase3
+          imagePullPolicy: Never
+          command: ["reckoner", "v1", "smoke", "seed", "--env-file", "-"]
+          envFrom:
+            - secretRef: {name: reckoner-v1-provision}
+          resources: *job
+          securityContext: {allowPrivilegeEscalation: false}
+        - name: graph
+          image: touchstone-reckoner:phase3
+          imagePullPolicy: Never
+          command: ["reckoner", "v1", "smoke", "graph", "--env-file", "-"]
+          envFrom:
+            - secretRef: {name: reckoner-v1-neo4j}
+          resources: *job
+          securityContext: {allowPrivilegeEscalation: false}
+        - name: evidence
+          image: touchstone-reckoner:phase3
+          imagePullPolicy: Never
+          command: ["reckoner", "v1", "smoke", "evidence", "--env-file", "-"]
+          envFrom:
+            - secretRef: {name: reckoner-v1-runner}
+            - secretRef: {name: reckoner-v1-neo4j}
+          resources: *job
+          securityContext: {allowPrivilegeEscalation: false}
+      containers:
+        - name: fingerprint
+          image: touchstone-reckoner:phase3
+          imagePullPolicy: Never
+          command: ["python", "/verify/verify_reckoner_v1_smoke.py", "fingerprint", "--graph", "--output", "-"]
+          envFrom:
+            - secretRef: {name: reckoner-v1-provision}
+            - secretRef: {name: reckoner-v1-neo4j}
+          resources: *job
+          securityContext: {allowPrivilegeEscalation: false}
+          volumeMounts:
+            - {name: verify, mountPath: /verify, readOnly: true}
+      volumes:
+        - name: verify
+          configMap: {name: reckoner-v1-verify}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: reckoner-v1-run
+  namespace: touchstone-phase3-v1-smoke
+  labels: {touchstone.dev/stage: online}
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels: {touchstone.dev/profile: online}
+    spec:
+      restartPolicy: Never
+      securityContext: {runAsNonRoot: true, runAsUser: 10001}
+      containers:
+        - name: worker
+          image: touchstone-reckoner:phase3
+          imagePullPolicy: Never
+          # The graph service is scaled to zero: degraded escalations, no dispatch.
+          command: ["reckoner", "v1", "smoke", "run", "--env-file", "-"]
+          envFrom:
+            - secretRef: {name: reckoner-v1-runner}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: "1", memory: 1Gi}
+          securityContext: {allowPrivilegeEscalation: false}

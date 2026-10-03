@@ -19,6 +19,9 @@ def register(commands):
     from reckoner.v1.benchmark.steps import register as register_benchmark
 
     register_benchmark(subcommands)
+    smoke = subcommands.add_parser("smoke")
+    smoke.add_argument("smoke_step", choices=("seed", "graph", "evidence", "run"))
+    smoke.add_argument("--env-file", type=Path, required=True)
     preparation = subcommands.add_parser("prepare")
     preparation.add_argument("--source", type=Path, required=True)
     preparation.add_argument("--baseline-bundle", type=Path, required=True)
@@ -67,6 +70,8 @@ def execute(args):
         from reckoner.v1.benchmark.steps import run
 
         return run(args)
+    if args.v1_command == "smoke":
+        return _smoke(args)
     if args.v1_command.startswith("telemetry-"):
         return _telemetry(args)
     if args.v1_command == "review-simulated":
@@ -260,3 +265,63 @@ def _telemetry(args):
             "telemetry-collect-scoring": collect_scoring_run,
         }.get(args.v1_command, collect_run)
         return {"enqueued": collect(repo, args.tenant_id, args.run_id)}
+
+
+SMOKE_KEYS = {
+    "RECKONER_OWNER_DSN",
+    "RECKONER_RUNNER_DSN",
+    "RECKONER_NEO4J_URI",
+    "RECKONER_NEO4J_USER",
+    "RECKONER_NEO4J_PASSWORD",
+}
+
+
+def _smoke(args):
+    """Fabricated deployment smoke; DSNs must name a dedicated reckoner_smoke_ database."""
+    from reckoner.smoke import is_smoke_database
+    from reckoner.v1 import smoke
+
+    if args.env_file == Path("-"):
+        environment = {key: os.environ[key] for key in SMOKE_KEYS if key in os.environ}
+    else:
+        environment = {}
+        for raw in args.env_file.read_text().splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            key, separator, value = line.partition("=")
+            if not separator or key not in SMOKE_KEYS:
+                raise ValueError("v1 smoke requires a smoke-only environment file")
+            environment[key] = value
+    needed = {
+        "seed": ("RECKONER_OWNER_DSN",),
+        "graph": ("RECKONER_NEO4J_URI", "RECKONER_NEO4J_USER", "RECKONER_NEO4J_PASSWORD"),
+        "evidence": (
+            "RECKONER_RUNNER_DSN",
+            "RECKONER_NEO4J_URI",
+            "RECKONER_NEO4J_USER",
+            "RECKONER_NEO4J_PASSWORD",
+        ),
+        "run": ("RECKONER_RUNNER_DSN",),
+    }[args.smoke_step]
+    if not all(environment.get(key) for key in needed):
+        raise ValueError("v1 smoke " + args.smoke_step + " requires " + ", ".join(needed))
+    for key in ("RECKONER_OWNER_DSN", "RECKONER_RUNNER_DSN"):
+        if key in needed and not is_smoke_database(environment[key]):
+            raise ValueError("v1 smoke requires a dedicated reckoner_smoke_ database")
+    if args.smoke_step == "seed":
+        return smoke.seed_postgres(environment["RECKONER_OWNER_DSN"])
+    if args.smoke_step == "run":
+        return smoke.run_without_graph(environment["RECKONER_RUNNER_DSN"])
+    from neo4j import GraphDatabase
+
+    driver = GraphDatabase.driver(
+        environment["RECKONER_NEO4J_URI"],
+        auth=(environment["RECKONER_NEO4J_USER"], environment["RECKONER_NEO4J_PASSWORD"]),
+        warn_notification_severity="OFF",
+    )
+    with driver:
+        driver.verify_connectivity()
+        if args.smoke_step == "graph":
+            return smoke.seed_graph(driver)
+        return smoke.graph_evidence(environment["RECKONER_RUNNER_DSN"], driver)
