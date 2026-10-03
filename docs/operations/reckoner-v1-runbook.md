@@ -294,3 +294,27 @@ maximum was 2,983,928,528 bytes; an end-of-run `crictl` snapshot showed API 130,
 web 101,011,456 working-set bytes. Two evidence defects found by this run were fixed
 afterwards (stderr interleaved into stdout receipts; the first online receipt overwritten);
 the job results themselves were unaffected. The kind run was not repeated.
+
+kind rerun with the refresh stage (fix round 1, same owner bounds, `--cleanup`, guard with
+`--derived-baseline-bytes 18946257796 --derived-cap-bytes 27917287424`): instance
+`touchstone-phase3-v1-kind-f73b3c`, Reckoner image `sha256:0197c99b…` built from `e59e117`.
+All 16 steps passed; the earlier run above stays as recorded.
+
+| Step | Result |
+| --- | --- |
+| Create / load 7 images (adds platform, ClickHouse, collector) | 10.0 s / 40.6 s |
+| Stores ready; prepare Job (4/4 graph evidence) | 27.6 s; 36.9 s |
+| Online: workflow 4/4 degraded escalations, 0 provider calls; online check 20/20 (receipt kept); after Postgres pod replacement 20/20; Postgres stopped 5/5 | 12.4 s; 3.2 s; 1.5 s restart |
+| Refresh stage in `touchstone-phase3-v1-refresh` (Reckoner API/console scaled to 0, Neo4j 0): platform core from `infra/k8s/platform` ready | 6.9 s |
+| Export with collector at 0 replicas: `sent 0, pending 10`; after scale-up: `sent 10, pending 0` | 18.4 s |
+| `touchstone refresh` Job: 2 declarations and 8 measurements accepted, 0 rejected, new DuckDB generation | 18.4 s |
+| Verification: platform ready, workflow `reckoner` published, both tenants (2/2 tasks complete; metrics such as CPST unavailable for degraded escalations) | 3.2 s |
+
+Disk guard (bytes): free 28,464,144,384 before the cluster, minimum 21,006,172,160 at the
+prepare checkpoint (host sampler minimum 20,514,120 KiB), so derived data peaked at
+26,404,230,020 bytes (24.59 GiB) against the 26 GiB cap, and free disk stayed above 19.5 GiB.
+After cleanup the cluster, its node volume and its dedicated kubeconfig were gone, the volume
+count was back to 32, free disk recovered to 27,757,276 KiB within a minute, and derived data
+measured 18,946,474,884 bytes (17.645 GiB; baseline 18,946,257,796 plus 217 KB of receipts).
+Whole-node sampled memory maximum: 2,720,861,782 bytes. End-of-run `crictl` working sets:
+ClickHouse 451,751,936; read API 124,080,128; collector 29,900,800; Postgres 23,007,232.
