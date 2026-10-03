@@ -1181,3 +1181,23 @@ def test_a_complete_fake_kind_run_never_puts_a_secret_on_argv_and_cleans_up(tmp_
     )
     assert not (tmp_path / "evidence/secrets").exists()
     assert not (tmp_path / "kubeconfig").exists()
+
+
+def runbook_commands():
+    text = (ROOT / "docs/operations/reckoner-v1-runbook.md").read_text()
+    return "\n".join(re.findall(r"```bash\n(.*?)```", text, re.S))
+
+
+def test_runbook_container_variables_expand_inside_the_container():
+    """A host-side "$POSTGRES_DB" is empty, which would silently dump the `postgres` DB."""
+    commands = runbook_commands()
+    for line in commands.splitlines():
+        if "exec" in line and "$POSTGRES_" in line:
+            assert re.search(r"sh -c '[^']*\$POSTGRES_", line), line
+
+
+def test_runbook_volume_creation_checks_every_name_before_creating_any():
+    commands = runbook_commands()
+    body = commands[commands.index("create_v1_volumes()") :]
+    assert "|| return 1" in body and "exit 1" not in body
+    assert body.index("docker volume inspect") < body.index("docker volume create")

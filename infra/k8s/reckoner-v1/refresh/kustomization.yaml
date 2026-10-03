@@ -26,7 +26,8 @@ patches:
       apiVersion: apps/v1
       kind: Deployment
       metadata: {name: dagster-daemon}
-  # Local tags are created by infra/smoke-reckoner-v1.py only after an image-identity check.
+  # infra/smoke-reckoner-v1.py creates these local tags from the digests; an existing tag
+  # naming a different image is refused, never moved.
   - target: {kind: Deployment, name: clickhouse}
     patch: |-
       apiVersion: apps/v1

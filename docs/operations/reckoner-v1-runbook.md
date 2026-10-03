@@ -46,15 +46,25 @@ external and instance-scoped, so Compose never creates, adopts or removes one:
 export RECKONER_V1_INSTANCE=touchstone-phase3-v1-<name>
 export RECKONER_V1_POSTGRES_VOLUME="$RECKONER_V1_INSTANCE-postgres"
 export RECKONER_V1_NEO4J_VOLUME="$RECKONER_V1_INSTANCE-neo4j"
-for suffix in postgres neo4j neo4j-logs clickhouse collector-queue warehouse; do
-  if docker volume inspect "$RECKONER_V1_INSTANCE-$suffix" >/dev/null 2>&1; then
-    echo "refusing to adopt existing volume $RECKONER_V1_INSTANCE-$suffix" >&2
-    break
-  fi
-  docker volume create --label "touchstone.smoke.instance=$RECKONER_V1_INSTANCE" \
-    "$RECKONER_V1_INSTANCE-$suffix"
-done
+create_v1_volumes() {
+  local suffix
+  # Check every name first: any existing volume refuses the whole set, leaving no residue.
+  for suffix in postgres neo4j neo4j-logs clickhouse collector-queue warehouse; do
+    if docker volume inspect "$RECKONER_V1_INSTANCE-$suffix" >/dev/null 2>&1; then
+      echo "refusing to adopt existing volume $RECKONER_V1_INSTANCE-$suffix" >&2
+      return 1
+    fi
+  done
+  for suffix in postgres neo4j neo4j-logs clickhouse collector-queue warehouse; do
+    docker volume create --label "touchstone.smoke.instance=$RECKONER_V1_INSTANCE" \
+      "$RECKONER_V1_INSTANCE-$suffix" || return 1
+  done
+}
+create_v1_volumes
 ```
+
+If the function refuses, choose a new instance name; never point a later profile at
+volumes this procedure did not create.
 
 Compose requires `RECKONER_V1_INSTANCE`, `RECKONER_V1_POSTGRES_VOLUME` and
 `RECKONER_V1_NEO4J_VOLUME` and has no defaults for them. Compose cannot check names against
@@ -150,7 +160,8 @@ Phase 2 5,888 MiB stack; the graph runs only for preparation.
 Postgres (new records): while the online profile is quiescent,
 
 ```bash
-c online exec -T postgres pg_dump -U postgres -d "$POSTGRES_DB" -Fc > reckoner-v1.dump
+# Single quotes: $POSTGRES_DB expands inside the container (from postgres.env), not on the host.
+c online exec -T postgres sh -c 'pg_dump -U postgres -d "$POSTGRES_DB" -Fc' > reckoner-v1.dump
 c online exec -T postgres pg_dumpall -U postgres --globals-only --no-role-passwords > globals.sql
 ```
 
@@ -186,10 +197,18 @@ python3 infra/smoke-reckoner-v1.py cleanup --evidence-dir artifacts/phase3/task1
 ```
 
 It refuses a non-matching instance, an existing volume for the instance, a running Phase 2
-measured or Phase 3 task stack, any running kind node, and free disk below 15 GiB. Every
-resource is written to `ledger.json` before creation and labelled with a random sentinel.
-After a failure it stops only its own projects and keeps its own volumes for inspection;
-`cleanup` removes only ledger volumes whose sentinel matches. It runs prepare, online
+measured or Phase 3 task stack, any running kind node, free disk below 15 GiB, and an
+evidence directory inside the tracked tree unless git-ignored. Every volume, project and
+cluster is written to `ledger.json` before creation; volumes, every Compose container
+(`RECKONER_V1_SENTINEL` label) and the kind node carry the run's random sentinel. Loading a
+ledger re-validates the instance, sentinel format, the four stage projects, the cluster and
+the dedicated kubeconfig. After a failure it stops only its own projects (profile-independent
+`down`, never `--volumes`) and keeps its own volumes for inspection. `cleanup` first checks
+every ledger volume, project container and cluster for the exact sentinel, then stops and
+deletes only those, and finally removes the generated credentials in `secrets/`. Before
+reporting success, every receipt, log and dump is scanned for the six generated credentials.
+Optional `--derived-baseline-bytes` with `--derived-cap-bytes` (both or neither) add a
+derived-data cap to the free-disk guard, which records a checkpoint after each profile. It runs prepare, online
 (workflow, verification, Postgres restart, stopped-Postgres check, dump), refresh (outbox,
 collector stop/start, warehouse refresh, published-run check), then restore and graph
 reimport into new volumes and serves the restored database. Receipts are JSON files in the
@@ -217,9 +236,11 @@ node carries the run's sentinel label, runs `kind delete cluster --kubeconfig <d
 `--derived-baseline-bytes` and `--derived-cap-bytes` make the disk guard abort above an
 owner-approved Phase 3 derived-data cap as well as below the 15 GiB free-disk floor. It writes a run-specific kind configuration (node image from
 `infra/kind.yaml`, the GDS plugin directory mounted read-only at
-`/touchstone/gds-plugins`, and a node sentinel label), tags the pinned Postgres and Neo4j
-digests as `touchstone-{pgvector,neo4j}:phase3` after checking image identity, loads
-arm64 archives, creates secrets from the generated env files at run time, and applies
+`/touchstone/gds-plugins`, and a node sentinel label), creates the local tags
+`touchstone-{pgvector,neo4j,clickhouse,collector}:phase3` for the pinned digests (an
+existing tag naming a different image is refused, never moved), saves archives for the Docker
+host's architecture into a private temporary directory, creates secrets from the generated
+env files at run time (`--from-env-file`, never on argv), and applies
 `infra/k8s/reckoner-v1/` stage by stage (`-l touchstone.dev/stage=...`). The manifests use
 PersistentVolumeClaims for Postgres and Neo4j and the same memory limits as Compose.
 
