@@ -542,13 +542,37 @@ def test_pilot_draft_pins_manifest_cases_prices_ledger_and_worst_case(tmp_path):
     assert "approved" not in draft
 
 
-def test_drafts_pin_the_request_projection(tmp_path):
+def test_token_bounds_use_the_measured_maximum_for_every_purpose_including_the_pilot():
+    from reckoner.v1.experiment.protocol import token_bounds
+
+    assert token_bounds(20000, None) == (32000, 64000)
+    with pytest.raises(ValueError, match="exceeds"):
+        token_bounds(32001, None)
+
+
+def test_draft_refuses_a_measured_request_that_execution_would_refuse(tmp_path):
+    from reckoner.v1.experiment.protocol import draft_scoring_protocol
+
+    inputs = draft_inputs(tmp_path)
+    manifest = inputs["manifests"][0]["manifest"]
+    inputs["measurements"] = measured(manifest, inputs["runs"], size=40000)
+    with pytest.raises(ValueError, match="exceeds"):
+        draft_scoring_protocol(**inputs)
+
+
+def test_drafts_pin_the_request_projection_and_measured_maximum(tmp_path):
     from reckoner.v1 import projection
     from reckoner.v1.experiment.protocol import identify, validate_body
 
     draft = pilot(tmp_path)
     assert draft["versions"]["request_projection"] == projection.VERSION
+    largest = draft["bounds"]["measured_request_bytes_max"]
+    assert 1500 < largest <= draft["bounds"]["input_token_ceiling"]
     body = {k: v for k, v in draft.items() if k != "protocol_sha256"}
+    over = deepcopy(body)
+    over["bounds"]["measured_request_bytes_max"] = 32001
+    with pytest.raises(ValueError, match="measured request"):
+        validate_body(identify(over))
     for value in (None, "bounded-evidence-v0"):
         changed = deepcopy(body)
         changed["versions"].pop("request_projection")

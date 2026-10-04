@@ -83,6 +83,7 @@ FIELDS = {
 BOUNDS = {
     "input_token_ceiling",
     "billing_token_bound",
+    "measured_request_bytes_max",
     "max_output_tokens",
     "maximum_attempts",
     "retry_assumption",
@@ -315,6 +316,9 @@ def validate_body(protocol: dict) -> dict:
             raise ValueError("bounds must be positive integers")
     if bounds["billing_token_bound"] < bounds["input_token_ceiling"]:
         raise ValueError("billing bound cannot be below the request ceiling")
+    if bounds["measured_request_bytes_max"] > bounds["input_token_ceiling"]:
+        # Execution preflight refuses such a request; no draft may promise it.
+        raise ValueError("the largest measured request exceeds the request ceiling")
     pins = protocol["evidence"]
     if not isinstance(pins, list) or (provider == "typesafe" and not pins):
         raise ValueError("scoring protocols must pin published evidence manifests")
@@ -732,6 +736,9 @@ def token_bounds(max_bytes: int, overhead: dict | None, *, ceiling_limit: int = 
     limit and billing allows 100% hidden overhead. With a pilot measurement, both are
     the measured worst case plus a 25% margin.
     """
+    if max_bytes > ceiling_limit:
+        # Execution preflight refuses any request above the conservative bytes bound.
+        raise ValueError("measured request bound exceeds the provider state limit")
     if overhead is None:
         return ceiling_limit, 2 * ceiling_limit
     body = {k: v for k, v in overhead.items() if k != "overhead_id"}
@@ -872,6 +879,7 @@ def draft_scoring_protocol(
     bounds = {
         "input_token_ceiling": ceiling,
         "billing_token_bound": billing,
+        "measured_request_bytes_max": measurements["distribution"]["max"],
         "max_output_tokens": 1000,
         "maximum_attempts": attempts,
         "retry_assumption": RETRY.format(attempts=attempts),
@@ -1057,6 +1065,7 @@ def draft_note_protocol(
     bounds = {
         "input_token_ceiling": ceiling,
         "billing_token_bound": 2 * ceiling,
+        "measured_request_bytes_max": measurements["distribution"]["max"],
         "max_output_tokens": output,
         "maximum_attempts": note_attempts if notes else 1,
         "retry_assumption": (
@@ -1222,8 +1231,10 @@ def present_protocol(protocol: dict, ledger: dict) -> str:
         ),
         f"- Bounds: request ceiling {bounds['input_token_ceiling']} tokens, billing bound "
         f"{bounds['billing_token_bound']} input tokens, {bounds['max_output_tokens']} output "
-        f"tokens, {bounds['maximum_attempts']} attempts per case; request projection "
-        f"`{protocol['versions']['request_projection']}`",
+        f"tokens, {bounds['maximum_attempts']} attempts per case; largest measured request "
+        f"{bounds['measured_request_bytes_max']} UTF-8 bytes (the ceiling is enforced on UTF-8 "
+        f"bytes as a conservative token bound; request projection "
+        f"`{protocol['versions']['request_projection']}`)",
         f"- Retry assumptions: {bounds['retry_assumption']}",
         "- Per-attempt reservation: per-attempt maximum USD "
         + ", ".join(sorted({d["attempt_maximum_usd"] for d in protocol["dispatch"]}))
