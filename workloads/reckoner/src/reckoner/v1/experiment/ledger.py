@@ -198,6 +198,11 @@ def copy_legacy_ledger(*, staging_dsn: str, target_owner_dsn: str, dump_sha256: 
 
 
 EVIDENCE_SCHEMA = "reckoner-settlement-evidence-v1"
+RECOVERY = (
+    "; recover with: reckoner v1 protocol execute (resume; marks a never-answered or "
+    "active call uncertain without re-sending it), then reckoner v1 protocol close, then "
+    "reckoner v1 protocol settle with the stored provider evidence"
+)
 EVIDENCE_KINDS = {"provider-usage-record", "provider-invoice-line", "provider-request-log"}
 
 
@@ -275,11 +280,11 @@ def reconcile_call(connection, call_id: str, usage: dict, *, evidence: dict | No
     if row["settled"]:
         raise ValueError("call is already settled; settlements are immutable")
     if not row["uncertain"]:
-        raise ValueError("only calls recorded as uncertain can be reconciled")
+        raise ValueError("only calls recorded as uncertain can be reconciled" + RECOVERY)
     if row["in_flight"]:
-        raise ValueError("call is still in flight as the provider's active dispatch")
+        raise ValueError("call is still in flight as the provider's active dispatch" + RECOVERY)
     if not row["closed"]:
-        raise ValueError("close the call's protocol envelope before reconciling it")
+        raise ValueError("close the call's protocol envelope before reconciling it" + RECOVERY)
     persisted_request = (
         (row["body"] or {}).get("provider_request_id") if isinstance(row["body"], dict) else None
     )

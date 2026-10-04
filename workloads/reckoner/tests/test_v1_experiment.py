@@ -1326,11 +1326,11 @@ def test_never_answered_call_stays_uncertain_without_evidence_and_is_never_auto_
             reconcile_call(owner, "never-answered", zero, evidence=None)
         assert ProviderBudget(owner).snapshot("typesafe")["unresolved"]
     # Not yet recorded as uncertain, then still in an open envelope, then in flight.
-    with pytest.raises(ValueError, match="recorded as uncertain"):
+    with pytest.raises(ValueError, match="recorded as uncertain.*execute.*close.*settle"):
         settle_cli(pg, tmp_path, "never-answered", zero, zero_evidence)
     with V1Repository(pg.runner_dsn) as repo:
         ProviderBudget(repo._connection).settle("never-answered", None, None)
-    with pytest.raises(ValueError, match="close"):
+    with pytest.raises(ValueError, match="close.*execute.*close.*settle"):
         settle_cli(pg, tmp_path, "never-answered", zero, zero_evidence)
     with psycopg.connect(pg.owner_dsn, autocommit=True) as owner:
         for item in protocol["dispatch"]:
@@ -1340,7 +1340,7 @@ def test_never_answered_call_stays_uncertain_without_evidence_and_is_never_auto_
             "VALUES ('typesafe','never-answered') ON CONFLICT (provider) "
             "DO UPDATE SET active_call='never-answered'"
         )
-    with pytest.raises(ValueError, match="in flight"):
+    with pytest.raises(ValueError, match="in flight.*execute.*close.*settle"):
         settle_cli(pg, tmp_path, "never-answered", zero, zero_evidence)
     with psycopg.connect(pg.owner_dsn, autocommit=True) as owner:
         owner.execute("UPDATE reckoner.v1_provider_state SET active_call=NULL")
@@ -1683,3 +1683,20 @@ def test_reconciliation_prices_at_the_recorded_protocol_price_not_todays(pg, tmp
     usage = {"input_tokens": 2000, "output_tokens": 0}
     settled = settle_cli(pg, tmp_path, call_id, usage, evidence_file(tmp_path, call_id, usage))
     assert settled["cost"] == "0.000084"
+
+
+def test_paid_run_operator_guide_states_recovery_and_the_database_residual():
+    from pathlib import Path
+
+    guide = (
+        Path(__file__).resolve().parents[3] / "docs/operations/reckoner-v1-paid-runs.md"
+    ).read_text()
+    for phrase in (
+        "reckoner v1 protocol execute",
+        "reckoner v1 protocol close",
+        "reckoner v1 protocol settle",
+        "never-answered",
+        "Residual",
+        "simulated",
+    ):
+        assert phrase in guide
