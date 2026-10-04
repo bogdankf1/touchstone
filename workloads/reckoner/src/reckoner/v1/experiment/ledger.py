@@ -294,9 +294,26 @@ def reconcile_call(connection, call_id: str, usage: dict, *, evidence: dict | No
     reported = _persisted_usage(row["body"])
     if reported is not None and reported != usage:
         raise ValueError("entered usage differs from the persisted response usage")
-    if not pricing.matches(row["provider"], row["prices"] or {}):
-        raise ValueError("recorded protocol prices are not the pinned prices")
-    cost = pricing.cost(row["provider"], usage)
+    # Price at the identity-checked price table recorded in the approved protocol,
+    # never at whatever is published today.
+    table = row["prices"] or {}
+    body = {k: v for k, v in table.items() if k != "price_table_version"}
+    try:
+        recorded = (
+            table.get("price_table_version") == content_id(body)
+            and table["model"] == pricing.PUBLISHED[row["provider"]]["model"]
+            and table["currency"] == "USD"
+        )
+        input_price = Decimal(table["input_per_million"])
+        output_price = Decimal(table["output_per_million"])
+    except (KeyError, TypeError, ArithmeticError) as exc:
+        raise ValueError("recorded protocol price table is incomplete") from exc
+    if not recorded or input_price < 0 or output_price < 0:
+        raise ValueError("recorded protocol price table fails its identity check")
+    cost = (
+        Decimal(usage["input_tokens"]) * input_price
+        + Decimal(usage["output_tokens"]) * output_price
+    ) / pricing.MILLION
     document = {
         "call_id": call_id,
         "prior_state": state,

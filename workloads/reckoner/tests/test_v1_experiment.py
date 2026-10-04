@@ -1653,3 +1653,18 @@ def test_cli_execute_loads_only_the_protocol_providers_key(pg, tmp_path, monkeyp
     env.write_text(f"RECKONER_RUNNER_DSN={pg.runner_dsn}\nANTHROPIC_API_KEY=fabricated-not-a-key\n")
     with pytest.raises(ValueError, match="JEV_API_KEY"):
         v1(_parser().parse_args(args))
+
+
+# --- final follow-up -------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_reconciliation_prices_at_the_recorded_protocol_price_not_todays(pg, tmp_path, monkeypatch):
+    from reckoner.v1 import pricing
+
+    protocol, call_id = timed_out_call(pg, tmp_path, monkeypatch)
+    # A later published price change must not reprice an approved protocol's call.
+    monkeypatch.setitem(pricing.PUBLISHED["typesafe"], "input_per_million", Decimal("0.05"))
+    usage = {"input_tokens": 2000, "output_tokens": 0}
+    settled = settle_cli(pg, tmp_path, call_id, usage, evidence_file(tmp_path, call_id, usage))
+    assert settled["cost"] == "0.000084"
