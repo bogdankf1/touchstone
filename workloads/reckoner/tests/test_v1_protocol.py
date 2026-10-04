@@ -773,6 +773,8 @@ def experiment_scenario(
             config["limits"].update(input_token_ceiling=32000, maximum_attempts=3)
             config["scorer"]["price_table"] = jev_price()
             config["scaler_id"] = "b" * 64  # fabricated frozen-scaler identity
+            for part in ("note_model", "judge_model"):
+                config[part]["price_table"] = anthropic_price()
             identified(config, "config_id")
             owner.register_config(config)
             rows = (
@@ -1274,10 +1276,12 @@ def anthropic_ledger(verified=True):
 
 
 def note_draft(purpose="note-judge-pilot", **overrides):
-    from reckoner.v1.experiment.protocol import draft_note_protocol
+    from reckoner.v1.experiment.protocol import draft_note_protocol, selection_record
 
     config = note_config()
+    keys = [("tenant-a", "final-a", f"task-{i}") for i in range(3)]
     inputs = {
+        "selection": selection_record(keys, method="all-escalations"),
         "purpose": purpose,
         "approver": FIXTURE,
         "runs": note_runs(config),
@@ -1319,7 +1323,7 @@ def test_final_note_and_judge_drafts_cover_only_their_stage(purpose, purposes):
 
 
 @pytest.mark.parametrize(
-    "missing", ["approver", "runs", "measurements", "config", "price_table", "ledger"]
+    "missing", ["approver", "runs", "measurements", "config", "price_table", "ledger", "selection"]
 )
 def test_note_draft_refuses_missing_inputs(missing):
     from reckoner.v1.experiment.protocol import MissingInputs
@@ -1355,7 +1359,12 @@ def test_note_judge_pilot_runs_end_to_end_under_one_fixture_approval(pg, tmp_pat
     from reckoner.v1.evaluation.judges import NoteVerdict, RagasFaithfulness
     from reckoner.v1.evaluation.notes import evaluate_note_fixtures
     from reckoner.v1.experiment.execute import execute_protocol
-    from reckoner.v1.experiment.protocol import draft_note_protocol, measure_note_requests
+    from reckoner.v1.experiment.protocol import (
+        draft_note_protocol,
+        escalation_selection,
+        measure_note_requests,
+    )
+    from reckoner.v1.experiment.verify import collect_run_facts, verify_experiment
     from reckoner.v1.notes import build_note_context
     from reckoner.v1.notes.calls import BudgetedCalls
     from test_v1_graph_workflow import execute as run_workflow
@@ -1372,7 +1381,6 @@ def test_note_judge_pilot_runs_end_to_end_under_one_fixture_approval(pg, tmp_pat
         decision, _ = run_workflow(repo, task, settings)  # escalation, note pending
         assert decision["outcome"] == "escalate"
         key = (task["tenant_id"], task["run_id"], task["task_id"])
-        measurements = measure_note_requests(repo, [key])
         run = repo._connection.execute(
             "SELECT document FROM reckoner.v1_runs WHERE tenant_id=%s AND run_id=%s",
             key[:2],
@@ -1384,10 +1392,14 @@ def test_note_judge_pilot_runs_end_to_end_under_one_fixture_approval(pg, tmp_pat
             "SELECT score FROM reckoner.v1_provider_responses WHERE call_id=%s",
             (decision["call_id"],),
         ).fetchone()["score"]
+        chosen = escalation_selection(repo, [run])
+        assert chosen["keys"] == [key]
+        measurements = measure_note_requests(repo, chosen["keys"])
     with psycopg.connect(pg.owner_dsn, autocommit=True) as owner:
         ledger = ProviderBudget(owner).snapshot("anthropic")
     assert ledger["legacy_verified"] is True
     draft = draft_note_protocol(
+        selection=chosen["selection"],
         purpose="note-judge-pilot",
         approver=FIXTURE,
         runs=[run],
@@ -1414,6 +1426,23 @@ def test_note_judge_pilot_runs_end_to_end_under_one_fixture_approval(pg, tmp_pat
     )
     assert {c["status"] for c in result["cases"]} == {"succeeded", "evaluator-owned"}
     assert result["closed"] is False  # judge stages remain open for the evaluator
+    assert result["status"] == "dispatched; judges pending"
+
+    def verified(claimed_attempts):
+        with V1Repo(pg.runner_dsn) as runner:
+            facts = collect_run_facts(runner, draft)
+        assert facts["execution_kind"] == "fixture"
+        return facts, verify_experiment(
+            draft, facts, {"status": "complete", "passed": True, "attempts": claimed_attempts}
+        )
+
+    facts, early = verified(1)
+    assert [s["status"] for s in facts["tasks"][0]["stages"]] == [
+        "complete", "missing", "missing", "missing"
+    ]  # fmt: skip
+    assert facts["tasks"][0]["evidence_id"] == draft["cases"][0]["evidence_id"]
+    assert "missing-stage" in {b["code"] for b in early["blockers"]}
+    assert set(early["false_claims"]) == {"status", "passed"}
     stages = {d["derivation"]["stage"]: d for d in draft["dispatch"] if d["purpose"] == "judge"}
     judges = Transport([paid_body(text) for text in JUDGE_RESPONSES])
     with V1Repo(pg.runner_dsn) as runner:
@@ -1448,3 +1477,490 @@ def test_note_judge_pilot_runs_end_to_end_under_one_fixture_approval(pg, tmp_pat
     assert close_protocol(draft["protocol_sha256"], dsn=pg.runner_dsn)["closed"] == 4
     with psycopg.connect(pg.owner_dsn, autocommit=True) as owner:
         assert ProviderBudget(owner).snapshot("anthropic")["unresolved"] == []
+    facts, final = verified(4)
+    assert {s["status"] for s in facts["tasks"][0]["stages"]} == {"complete"}
+    assert final["status"] == "complete", final["blockers"]
+    assert final["passed"] is False  # recorded fixture execution can never pass
+    # A forged extra call in the note envelope with another request hash is a mismatch.
+    note_envelope = next(d for d in draft["dispatch"] if d["purpose"] == "online-note")
+    with psycopg.connect(pg.owner_dsn, autocommit=True) as owner:
+        row = owner.execute(
+            "SELECT document FROM reckoner.v1_provider_calls WHERE protocol_id=%s",
+            (note_envelope["protocol_id"],),
+        ).fetchone()[0]
+        forged = {**row, "call_id": "forged-call", "request_sha256": "f" * 64}
+        owner.execute(
+            "INSERT INTO reckoner.v1_provider_calls (tenant_id,call_id,protocol_id,provider,"
+            "run_id,task_id,purpose,maximum_cost,document) VALUES (%s,%s,%s,%s,%s,%s,%s,0,%s)",
+            (forged["tenant_id"], "forged-call", forged["protocol_id"], "anthropic",
+             forged["run_id"], forged["task_id"], forged["purpose"],
+             psycopg.types.json.Jsonb(forged)),
+        )  # fmt: skip
+    facts, tampered = verified(5)
+    assert facts["tasks"][0]["evidence_id"] == "request-mismatch"
+    assert "evidence-mismatch" in {b["code"] for b in tampered["blockers"]}
+
+
+# --- fix round 1: recorded escalation subsets and explicit evidence arms ---------
+
+
+def test_escalation_selection_is_deterministic_and_seed_bound():
+    from reckoner.v1.experiment.protocol import select_cases, selection_record
+
+    population = [("tenant-a", "run", f"task-{n}") for n in range(50)]
+    first = select_cases(population, method="hash-sample-v1", seed="pilot-v1", count=20)
+    assert first == select_cases(
+        list(reversed(population)), method="hash-sample-v1", seed="pilot-v1", count=20
+    )
+    assert len(first) == 20 and first != select_cases(
+        population, method="hash-sample-v1", seed="other", count=20
+    )
+    assert select_cases(population, method="all-escalations") == sorted(population)
+    for bad in (
+        {"method": "hash-sample-v1", "seed": "s", "count": 51},
+        {"method": "hash-sample-v1", "seed": "", "count": 2},
+        {"method": "all-escalations", "seed": "s"},
+        {"method": "best-results"},
+    ):
+        with pytest.raises(ValueError):
+            select_cases(population, **bad)
+    record = selection_record(population, method="hash-sample-v1", seed="pilot-v1", count=20)
+    assert record["population_count"] == 50 and record["count"] == 20
+
+
+def test_note_protocol_cases_must_equal_the_recorded_selection():
+    from reckoner.v1.experiment.protocol import identify, validate_body
+
+    draft = note_draft()
+    changed = deepcopy(draft)
+    changed["cases"] = changed["cases"][1:]
+    for item in changed["dispatch"]:
+        item["tasks"] = item["tasks"][1:]
+        identified(item, "protocol_id")
+    with pytest.raises(ValueError):
+        validate_body(identify(changed))
+    loose = deepcopy(draft)
+    loose["selection"] = {"method": "whole-runs"}
+    with pytest.raises(ValueError, match="selection"):
+        validate_body(identify(loose))
+    widened = deepcopy(draft)
+    widened["selection"]["count"] = 3
+    with pytest.raises(ValueError):
+        validate_body(identify(widened))
+
+
+def two_arm_inputs(tmp_path, cases=PILOT_CASES[:3]):
+    from reckoner.v1.experiment.protocol import load_evidence_manifest
+
+    relational = fabricated_manifest(cases, population="validation")
+    gds = fabricated_manifest(cases, population="validation", mode="gds-augmented")
+    manifests = [
+        load_evidence_manifest(write_manifest(tmp_path, relational, "validation-relational.json")),
+        load_evidence_manifest(write_manifest(tmp_path, gds, "validation-gds.json")),
+    ]
+    runs, arms, measured_cases = [], [], []
+    for manifest, mode in ((relational, "relational"), (gds, "gds-augmented")):
+        for run in runs_for(manifest, "graph-comparison"):
+            run["run_id"] = f"{run['run_id']}-{mode}"
+            identified(run, "experiment_id")
+            runs.append(run)
+            arms.append(
+                {"tenant_id": run["tenant_id"], "run_id": run["run_id"], "evidence_mode": mode}
+            )
+            measured_cases.append((manifest, run))
+    from reckoner.v1.experiment.protocol import request_measurements
+
+    entries = []
+    for manifest, run in measured_cases:
+        by_tx = {(c["tenant_id"], c["transaction_id"]): c for c in manifest["cases"]}
+        for task in run["tasks"]:
+            case = by_tx[(run["tenant_id"], task["transaction_id"])]
+            entries.append(
+                (
+                    {**task, "tenant_id": run["tenant_id"], "run_id": run["run_id"]},
+                    {"evidence_id": case["evidence_id"], "evidence_mode": manifest["mode"]},
+                    {"fabricated_request": case["evidence_id"], "pad": "x" * 1000},
+                )
+            )
+    return {
+        "purpose": "graph-comparison",
+        "approver": FIXTURE,
+        "manifests": manifests,
+        "runs": runs,
+        "arms": arms,
+        "measurements": request_measurements(entries),
+        "price_table": jev_price(),
+        "ledger": ledger_snapshot(),
+        "code_revision": "fabricated-revision",
+        "token_overhead": overhead(),
+    }
+
+
+def test_graph_comparison_pins_both_arms_in_workflow_mode_with_notes_deferred(tmp_path):
+    from reckoner.v1.experiment.protocol import draft_scoring_protocol, validate_protocol
+
+    draft = draft_scoring_protocol(**two_arm_inputs(tmp_path))
+    validate_protocol(draft, ledger_snapshot())
+    assert draft["telemetry_mode"] == "workflow" and "deferred" in draft["statement_of_purpose"]
+    assert {d["purpose"] for d in draft["dispatch"]} == {"graph-comparison"}
+    assert {r["evidence_mode"] for r in draft["runs"]} == {"relational", "gds-augmented"}
+    assert {c["evidence_mode"] for c in draft["cases"]} == {"relational", "gds-augmented"}
+    assert len(draft["cases"]) == 6 and draft["selection"] == {"method": "whole-runs"}
+
+
+def test_graph_comparison_refuses_missing_or_crossed_arms_and_unpaired_arms(tmp_path):
+    from reckoner.v1.experiment.protocol import (
+        MissingInputs,
+        draft_scoring_protocol,
+        identify,
+        validate_body,
+    )
+
+    inputs = two_arm_inputs(tmp_path)
+    with pytest.raises(MissingInputs, match="run_evidence_modes"):
+        draft_scoring_protocol(**{**inputs, "arms": None})
+    crossed = deepcopy(inputs["arms"])
+    for arm in crossed:
+        arm["evidence_mode"] = (
+            "relational" if arm["evidence_mode"] == "gds-augmented" else "gds-augmented"
+        )
+    with pytest.raises(ValueError, match="arm"):
+        draft_scoring_protocol(**{**inputs, "arms": crossed})
+    draft = draft_scoring_protocol(**inputs)
+    unpaired = deepcopy(draft)
+    dropped = next(c for c in unpaired["cases"] if c["evidence_mode"] == "gds-augmented")
+    unpaired["cases"].remove(dropped)
+    for item in unpaired["dispatch"]:
+        if (item["tenant_id"], item["run_id"]) == (dropped["tenant_id"], dropped["run_id"]):
+            item["tasks"] = [t for t in item["tasks"] if t["task_id"] != dropped["task_id"]]
+            identified(item, "protocol_id")
+    with pytest.raises(ValueError, match="identical case membership"):
+        validate_body(identify(unpaired))
+    other_config = deepcopy(draft)
+    run = next(r for r in other_config["runs"] if r["evidence_mode"] == "gds-augmented")
+    run["config_id"] = "c" * 64
+    with pytest.raises(ValueError, match="share model"):
+        validate_body(identify(other_config))
+    mixed = deepcopy(draft)
+    mixed["cases"][0]["evidence_mode"] = (
+        "relational" if mixed["cases"][0]["evidence_mode"] != "relational" else "gds-augmented"
+    )
+    with pytest.raises(ValueError, match="cross-arm"):
+        validate_body(identify(mixed))
+
+
+def routed_run(pg, tmp_path, monkeypatch, probabilities):
+    """A final workflow run (fixture Jev transport) with partly escalated tasks."""
+    import httpx
+    from reckoner.storage.postgres import PostgresRepository
+    from reckoner.v1.experiment.execute import execute_protocol
+    from reckoner.v1.providers.jev import JevClient
+    from test_v1_jev import response
+    from test_v1_note_storage import ledger_fixture
+
+    monkeypatch.setattr(
+        "reckoner.v1.storage.attempts.time",
+        __import__("types").SimpleNamespace(sleep=lambda _: None),
+    )  # local to the scorer: patching time.sleep globally makes library threads spin
+    draft, _, runs = experiment_scenario(pg, tmp_path, purpose="final", per_tenant=(3, 0))
+    reserve(pg, draft, fixture_approval(draft))
+    queue = iter(probabilities)
+
+    def handler(request):
+        fraud = next(queue)
+        body = response()
+        body["usage"] = {"input_tokens": 100, "output_tokens": 0}
+        body["answers"]["risk"]["probabilities"] = {"fraud": fraud, "legitimate": 1 - fraud}
+        return httpx.Response(200, json=body)
+
+    execute_protocol(
+        draft["protocol_sha256"],
+        provider_clients={
+            "typesafe": JevClient("fabricated", transport=httpx.MockTransport(handler))
+        },
+        dsn=pg.runner_dsn,
+        execution_kind="fixture",
+        output_dir=tmp_path / "routed",
+        data_kind="fabricated",
+    )
+    with PostgresRepository(pg.runner_dsn) as old:
+        legacy = next(
+            t for t in old.pending_tasks("baseline-preserved") if t["tenant_id"] == "tenant-a"
+        )
+    ledger_fixture(pg, legacy)
+    return draft, runs
+
+
+def note_protocol_for(pg, runs, *, method="all-escalations", seed=None, count=None):
+    from reckoner.v1.experiment.protocol import (
+        draft_note_protocol,
+        escalation_selection,
+        measure_note_requests,
+    )
+
+    with V1Repo(pg.runner_dsn) as repo:
+        chosen = escalation_selection(repo, runs, method=method, seed=seed, count=count)
+        measurements = measure_note_requests(repo, chosen["keys"])
+        config = repo.workflow_document(
+            "v1_configs", {"tenant_id": runs[0]["tenant_id"], "config_id": runs[0]["config_id"]}
+        )
+    with psycopg.connect(pg.owner_dsn, autocommit=True) as owner:
+        ledger = ProviderBudget(owner).snapshot("anthropic")
+    return draft_note_protocol(
+        purpose="note-judge-pilot",
+        approver=FIXTURE,
+        runs=runs,
+        measurements=measurements,
+        config=config,
+        price_table=anthropic_price(),
+        ledger=ledger,
+        code_revision="fabricated-revision",
+        selection=chosen["selection"],
+    ), chosen
+
+
+@pytest.mark.integration
+def test_note_protocol_reserves_an_exact_subset_of_a_partly_escalated_run(
+    pg, tmp_path, monkeypatch
+):
+    # task-0 and task-2 escalate; task-1 (0.001) is auto-approved.
+    draft, runs = routed_run(pg, tmp_path, monkeypatch, [0.4, 0.001, 0.4])
+    note, chosen = note_protocol_for(pg, runs)
+    assert [k[2] for k in chosen["keys"]] == ["task-0", "task-2"]
+    assert chosen["selection"]["population_count"] == 2
+    reserve(pg, note, fixture_approval(note))
+    with psycopg.connect(pg.owner_dsn, autocommit=True) as owner:
+        for dispatch in note["dispatch"]:
+            ProviderBudget(owner).close(dispatch["protocol_id"])
+    sample, chosen = note_protocol_for(pg, runs, method="hash-sample-v1", seed="pilot", count=1)
+    assert len(sample["cases"]) == 1 and chosen["selection"]["population_count"] == 2
+    reserve(pg, sample, fixture_approval(sample))
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("defect", ["non-escalated", "population", "selection"])
+def test_note_protocol_over_non_escalated_or_reselected_cases_is_refused(
+    pg, tmp_path, monkeypatch, defect
+):
+    from reckoner.v1.experiment.protocol import identify, keys_digest
+
+    draft, runs = routed_run(pg, tmp_path, monkeypatch, [0.4, 0.001, 0.4])
+    note, chosen = note_protocol_for(pg, runs, method="hash-sample-v1", seed="pilot", count=1)
+    forged = deepcopy(note)
+    if defect == "non-escalated":
+        # Swap the selected case for the auto-approved task, consistently rehashed.
+        approved = next(c for c in draft["cases"] if c["task_id"] == "task-1")
+        old = forged["cases"][0]
+        forged["cases"] = [
+            {**old, "task_id": "task-1", "transaction_id": approved["transaction_id"]}
+        ]
+        for item in forged["dispatch"]:
+            item["tasks"] = [{**item["tasks"][0], "task_id": "task-1",
+                              "transaction_id": approved["transaction_id"]}]  # fmt: skip
+            identified(item, "protocol_id")
+        forged["selection"]["selected_sha256"] = keys_digest(
+            [(c["tenant_id"], c["run_id"], c["task_id"]) for c in forged["cases"]]
+        )
+    elif defect == "population":
+        forged["selection"]["population_count"] = 3
+    else:
+        forged["selection"]["seed"] = "chosen-after-results"
+    forged = identify(forged)
+    with pytest.raises(ValueError):
+        reserve(pg, forged, fixture_approval(forged))
+    with psycopg.connect(pg.owner_dsn, autocommit=True) as owner:
+        assert (
+            owner.execute(
+                "SELECT count(*) FROM reckoner.v1_protocols WHERE provider='anthropic'"
+            ).fetchone()[0]
+            == 0
+        )
+
+
+def graph_scenario(pg, tmp_path):
+    """Two declared graph-comparison runs (one per arm) over identical transactions."""
+    import json
+
+    from reckoner.v1.evidence.neo4j import PARAMETERS
+    from test_v1_storage import CONFIG_DIR, setup_run
+    from v1_fixtures import config_fixture, evidence_fixture
+
+    setup_run(pg)
+    threshold = json.loads((CONFIG_DIR / "thresholds-tenant-a-v1.json").read_text())
+    config = config_fixture(threshold=threshold["config_id"])
+    config["limits"].update(input_token_ceiling=32000, maximum_attempts=3)
+    config["scorer"]["price_table"] = jev_price()
+    identified(config, "config_id")
+    manifests, runs, arms = {}, [], []
+    with V1Repo(pg.owner_dsn) as owner:
+        owner.register_config(config)
+        rows = owner._connection.execute(
+            "SELECT document FROM reckoner.transactions WHERE tenant_id='tenant-a' "
+            "ORDER BY transaction_id LIMIT 2"
+        ).fetchall()
+        for mode in ("relational", "gds-augmented"):
+            entries = []
+            for row in rows:
+                tx = row["document"]
+                evidence = evidence_fixture(transaction_id=tx["transaction_id"])
+                evidence["query_time"] = tx["occurred_at"]
+                evidence["cutoffs"]["history_before"] = tx["occurred_at"]
+                evidence["cutoffs"]["resolved_before"] = tx["occurred_at"]
+                if mode == "gds-augmented":
+                    projection = {
+                        "cutoff": tx["occurred_at"], "window_days": 30,
+                        "gds_version": "fabricated-gds", "algorithm": "louvain-page-rank-v1",
+                        "parameters": PARAMETERS, "node_count": 2, "edge_count": 1,
+                        "covered_accounts": 1, "covered_cards": 1, "covered_merchants": 1,
+                        "build_seconds": 0.1, "page_rank_converged": True,
+                        "page_rank_iterations": 5, "community_count": 1,
+                        "cross_tenant": False,
+                    }  # fmt: skip
+                    projection["projection_id"] = content_id(projection)
+                    projection["snapshot_age_seconds"] = "0"
+                    evidence["graph_projection"] = projection
+                    evidence["source_snapshot_ids"]["graph"] = projection["projection_id"]
+                    evidence["cutoffs"]["graph_before"] = tx["occurred_at"]
+                identified(evidence, "evidence_id")
+                owner.persist_evidence(evidence)
+                entries.append(evidence)
+            body = {
+                "schema_version": "reckoner-evidence-manifest-v1", "dataset_simulated": True,
+                "preparation_id": "1" * 64, "source_snapshot_id": "a" * 64,
+                "population": "validation", "mode": mode, "sample_id": "3" * 64,
+                "case_count": len(entries),
+                "cases": [
+                    {"tenant_id": e["tenant_id"], "transaction_id": e["transaction_id"],
+                     "evidence_id": e["evidence_id"], "coverage_status": "available",
+                     "missing": [], "projection_id": None, "page_rank_converged": None,
+                     "snapshot_age_seconds": None}
+                    for e in entries
+                ],
+            }  # fmt: skip
+            manifests[mode] = write_manifest(
+                tmp_path, {**body, "manifest_id": content_id(body)}, f"validation-{mode}.json"
+            )
+            run = {
+                "schema_version": "reckoner-experiment-v1", "tenant_id": "tenant-a",
+                "run_id": f"graph-{mode}", "purpose": "graph-comparison",
+                "config_id": config["config_id"], "dataset_simulated": True,
+                "dataset_version": "a" * 64, "cohort_version": "a" * 64,
+                "code_revision": "fabricated-revision", "created_at": "2026-10-04T00:00:00Z",
+                "tasks": [{"task_id": f"task-{n}",
+                           "transaction_id": r["document"]["transaction_id"]}
+                          for n, r in enumerate(rows)],
+            }  # fmt: skip
+            identified(run, "experiment_id")
+            owner.create_run(run, config["config_id"], telemetry_mode="workflow")
+            runs.append(run)
+            arms.append({"tenant_id": "tenant-a", "run_id": run["run_id"], "evidence_mode": mode})
+    return manifests, runs, arms
+
+
+@pytest.mark.integration
+def test_cli_measures_and_drafts_both_graph_comparison_arms_without_overwriting(pg, tmp_path):
+    import json
+
+    manifests, runs, arms = graph_scenario(pg, tmp_path)
+    (tmp_path / "runs.json").write_text(json.dumps(runs))
+    (tmp_path / "arms.json").write_text(json.dumps(arms))
+    env = tmp_path / "runner.env"
+    env.write_text(f"RECKONER_RUNNER_DSN={pg.runner_dsn}\n")
+    common = ["--manifest", str(manifests["relational"]), "--manifest",
+              str(manifests["gds-augmented"]), "--runs", str(tmp_path / "runs.json")]  # fmt: skip
+    with pytest.raises(ValueError, match="--arms"):
+        cli(["measure", *common, "--output", str(tmp_path / "m0.json"), "--env-file", str(env)])
+    cli(["measure", *common, "--arms", str(tmp_path / "arms.json"),
+         "--output", str(tmp_path / "m.json"), "--env-file", str(env)])  # fmt: skip
+    measured = json.loads((tmp_path / "m.json").read_text())
+    assert len(measured["cases"]) == 4
+    assert {c["evidence_mode"] for c in measured["cases"]} == {"relational", "gds-augmented"}
+    assert len({c["request_sha256"] for c in measured["cases"]}) == 4
+    partial = [arms[0]]
+    (tmp_path / "partial.json").write_text(json.dumps(partial))
+    with pytest.raises(ValueError, match="exactly one pinned manifest arm"):
+        cli(["measure", *common, "--arms", str(tmp_path / "partial.json"),
+             "--output", str(tmp_path / "m2.json"), "--env-file", str(env)])  # fmt: skip
+    # Both runs on one arm is consistent per run, so it measures, but it is not a
+    # paired comparison and the draft refuses it.
+    crossed = [{**a, "evidence_mode": "relational"} for a in arms]
+    (tmp_path / "crossed.json").write_text(json.dumps(crossed))
+    cli(["measure", *common, "--arms", str(tmp_path / "crossed.json"),
+         "--output", str(tmp_path / "m3.json"), "--env-file", str(env)])  # fmt: skip
+    with psycopg.connect(pg.owner_dsn, autocommit=True) as owner:
+        (tmp_path / "ledger.json").write_text(
+            json.dumps(ProviderBudget(owner).snapshot("typesafe"))
+        )
+    (tmp_path / "prices.json").write_text(json.dumps(jev_price()))
+    (tmp_path / "overhead.json").write_text(json.dumps(overhead()))
+    result = cli(["draft", "--purpose", "graph-comparison", "--approver", FIXTURE, *common,
+                  "--arms", str(tmp_path / "arms.json"),
+                  "--measurements", str(tmp_path / "m.json"),
+                  "--prices", str(tmp_path / "prices.json"),
+                  "--ledger", str(tmp_path / "ledger.json"),
+                  "--code-revision", "fabricated-revision", "--token-overhead",
+                  str(tmp_path / "overhead.json"),
+                  "--output", str(tmp_path / "graph.json")])  # fmt: skip
+    draft = json.loads((tmp_path / "graph.json").read_text())
+    assert draft["protocol_sha256"] == result["protocol_sha256"]
+    single = ["draft", "--purpose", "graph-comparison", "--approver", FIXTURE, *common,
+              "--arms", str(tmp_path / "crossed.json"),
+              "--measurements", str(tmp_path / "m3.json"),
+              "--prices", str(tmp_path / "prices.json"),
+              "--ledger", str(tmp_path / "ledger.json"),
+              "--code-revision", "fabricated-revision", "--token-overhead",
+              str(tmp_path / "overhead.json"),
+              "--output", str(tmp_path / "single.json")]  # fmt: skip
+    with pytest.raises(ValueError, match="one relational and one gds"):
+        cli(single)
+    assert draft["telemetry_mode"] == "workflow"
+    reserve(pg, draft, fixture_approval(draft))
+
+
+@pytest.mark.integration
+def test_cli_drafts_a_note_protocol_from_a_runs_selected_escalations(pg, tmp_path, monkeypatch):
+    import json
+
+    draft, runs = routed_run(pg, tmp_path, monkeypatch, [0.4, 0.001, 0.4])
+    with psycopg.connect(pg.owner_dsn, autocommit=True) as owner:
+        (tmp_path / "ledger.json").write_text(
+            json.dumps(ProviderBudget(owner).snapshot("anthropic"))
+        )
+    (tmp_path / "prices.json").write_text(json.dumps(anthropic_price()))
+    env = tmp_path / "runner.env"
+    env.write_text(f"RECKONER_RUNNER_DSN={pg.runner_dsn}\n")
+    result = cli(["draft-notes", "--purpose", "note-judge-pilot", "--approver", FIXTURE,
+                  "--run", "tenant-a", runs[0]["run_id"], "--select", "hash-sample-v1",
+                  "--seed", "pilot-v1", "--count", "1", "--prices", str(tmp_path / "prices.json"),
+                  "--ledger", str(tmp_path / "ledger.json"), "--code-revision",
+                  "fabricated-revision", "--output", str(tmp_path / "notes.json"),
+                  "--env-file", str(env)])  # fmt: skip
+    note = json.loads((tmp_path / "notes.json").read_text())
+    assert note["protocol_sha256"] == result["protocol_sha256"]
+    assert note["selection"]["method"] == "hash-sample-v1" and len(note["cases"]) == 1
+    assert note["selection"]["population_count"] == 2
+    assert "not execution" in (tmp_path / "notes.json.md").read_text()
+    reserve(pg, note, fixture_approval(note))
+
+
+@pytest.mark.parametrize(
+    "step,extra,line",
+    [
+        ("draft-notes", ["--purpose", "final-notes", "--approver", "x", "--run", "t", "r",
+                         "--select", "all-escalations", "--prices", "p", "--ledger", "l",
+                         "--code-revision", "c", "--output", "o"], "RECKONER_OWNER_DSN=x"),
+        ("settle", ["--call-id", "c", "--input-tokens", "1", "--output-tokens", "0"],
+         "RECKONER_RUNNER_DSN=x"),
+        ("declare-run", ["--tenant-id", "t", "--run-id", "r", "--purpose", "final", "--tasks",
+                         "t.json", "--dataset-version", "a", "--cohort-version", "a",
+                         "--code-revision", "c", "--created-at", "x"], "JEV_API_KEY=x"),
+        ("export-calibration", ["--protocol-sha256", "a" * 64, "--bundle", "b",
+                                "--data-kind", "fabricated", "--output", "o"],
+         "RECKONER_RUNNER_DSN=x"),
+    ],
+)  # fmt: skip
+def test_cli_new_steps_accept_only_their_allowlisted_environment(tmp_path, step, extra, line):
+    env = tmp_path / "step.env"
+    env.write_text(line + "\n")
+    with pytest.raises(ValueError, match="accepts only"):
+        cli([step, *extra, "--env-file", str(env)])

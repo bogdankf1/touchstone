@@ -231,7 +231,10 @@ def execute(pg, protocol, recorder, tmp_path, **kwargs):
 
 
 def no_sleep(monkeypatch):
-    monkeypatch.setattr("reckoner.v1.storage.attempts.time.sleep", lambda _: None)
+    monkeypatch.setattr(
+        "reckoner.v1.storage.attempts.time",
+        __import__("types").SimpleNamespace(sleep=lambda _: None),
+    )  # local to the scorer: patching time.sleep globally makes library threads spin
 
 
 @pytest.mark.integration
@@ -253,7 +256,7 @@ def test_fixture_dry_run_executes_exact_requests_settles_and_verifies(pg, tmp_pa
     outputs = sorted((tmp_path / "evidence-output").rglob("*.json*"))
     assert outputs and all(oct(p.stat().st_mode)[-3:] == "600" for p in outputs)
     with V1Repository(pg.runner_dsn) as repo:
-        run = collect_run_facts(repo, protocol, execution_kind="fixture")
+        run = collect_run_facts(repo, protocol)
     report = verify_experiment(
         protocol,
         run,
@@ -319,7 +322,7 @@ def test_overage_stops_dispatch_and_leaves_unexecuted_cases_incomplete(pg, tmp_p
         sum(c["status"] == "not-dispatched" for c in result["cases"]) == len(protocol["cases"]) - 1
     )
     with V1Repository(pg.runner_dsn) as repo:
-        run = collect_run_facts(repo, protocol, execution_kind="fixture")
+        run = collect_run_facts(repo, protocol)
     report = verify_experiment(protocol, run, {"status": "complete", "passed": True, "attempts": 1})
     codes = {b["code"] for b in report["blockers"]}
     assert {"over-budget-stop", "incomplete-expected-tasks"} <= codes
@@ -344,7 +347,7 @@ def test_ambiguous_timeout_is_uncertain_and_blocks_completion(pg, tmp_path, monk
     assert result["status"] == "incomplete"
     assert result["uncertain_calls"] == 1
     with V1Repository(pg.runner_dsn) as repo:
-        run = collect_run_facts(repo, protocol, execution_kind="fixture")
+        run = collect_run_facts(repo, protocol)
     report = verify_experiment(
         protocol, run, {"status": "complete", "passed": None, "attempts": len(recorder.requests)}
     )
@@ -392,7 +395,7 @@ def test_final_workflow_protocol_decides_and_keeps_pending_notes_incomplete(
     assert result["status"] == "complete", (result["stop_reason"], result["cases"])
     assert {c["outcome"] for c in result["cases"]} == {"escalate"}
     with V1Repository(pg.runner_dsn) as repo:
-        run = collect_run_facts(repo, draft, execution_kind="fixture")
+        run = collect_run_facts(repo, draft)
     report = verify_experiment(
         draft, run, {"status": "complete", "passed": True, "attempts": len(draft["cases"])}
     )
@@ -892,3 +895,255 @@ def test_custom_dump_restores_into_disposable_staging_then_copies(pg, staging, t
         assert copied["call_count"] == 1040 and copied["dump_sha256"] == digest
     finally:
         drop_database(maintenance, name)
+
+
+# --- fix round 1: recorded transport label, preflight-all, explicit errors -------
+
+
+@pytest.mark.integration
+def test_execution_kind_is_recorded_once_and_verify_reads_it(pg, tmp_path, monkeypatch):
+    import json
+
+    from reckoner.cli import _parser
+    from reckoner.v1.cli import execute as v1
+    from reckoner.v1.experiment.execute import execute_protocol
+
+    no_sleep(monkeypatch)
+    protocol = reserved(pg, tmp_path)
+    recorder = Recorder(lambda n, payload: httpx.Response(200, json=jev_body()))
+    execute(pg, protocol, recorder, tmp_path)
+    with pytest.raises(ValueError, match="already executed as fixture"):
+        execute_protocol(
+            protocol["protocol_sha256"],
+            provider_clients={"typesafe": client(recorder)},
+            dsn=pg.runner_dsn,
+            execution_kind="measured",
+            output_dir=tmp_path / "relabelled",
+        )
+    env = tmp_path / "runner.env"
+    env.write_text(f"RECKONER_RUNNER_DSN={pg.runner_dsn}\n")
+    report = tmp_path / "claim.json"
+    report.write_text(
+        json.dumps(
+            {
+                "status": "complete",
+                "passed": True,
+                "measured": True,
+                "attempts": len(protocol["cases"]),
+            }
+        )
+    )
+    result = v1(
+        _parser().parse_args(
+            ["v1", "protocol", "verify", "--protocol-sha256", protocol["protocol_sha256"],
+             "--report", str(report), "--env-file", str(env)]
+        )
+    )  # fmt: skip
+    assert result["execution_kind"] == "fixture" and result["passed"] is False
+    assert "fixture-claimed-as-measured" in {b["code"] for b in result["blockers"]}
+    with pytest.raises(ValueError, match="no recorded approval"):
+        v1(
+            _parser().parse_args(
+                ["v1", "protocol", "verify", "--protocol-sha256", "0" * 64,
+                 "--report", str(report), "--env-file", str(env)]
+            )
+        )  # fmt: skip
+
+
+@pytest.mark.integration
+def test_workflow_cases_are_all_preflighted_before_the_first_dispatch(pg, tmp_path, monkeypatch):
+    import reckoner.v1.storage.attempts as attempts
+    from test_v1_protocol import experiment_scenario, fixture_approval, reserve
+
+    no_sleep(monkeypatch)
+    draft, _, _ = experiment_scenario(pg, tmp_path, purpose="final")
+    reserve(pg, draft, fixture_approval(draft))
+    real, seen = attempts._preflight, []
+
+    def failing(repo, task, evidence, protocol):
+        seen.append(task["task_id"])
+        if len(seen) == len(draft["cases"]):
+            raise ValueError("fabricated preflight refusal on the last case")
+        return real(repo, task, evidence, protocol)
+
+    monkeypatch.setattr(attempts, "_preflight", failing)
+    recorder = Recorder(lambda n, payload: pytest.fail("dispatch before full preflight"))
+    with pytest.raises(ValueError, match="preflight refusal"):
+        execute(pg, draft, recorder, tmp_path, data_kind="fabricated")
+    assert recorder.requests == []
+
+
+@pytest.mark.integration
+def test_a_non_budget_error_keeps_partial_outputs_and_open_state(pg, tmp_path, monkeypatch):
+    import json
+
+    no_sleep(monkeypatch)
+    protocol = reserved(pg, tmp_path)
+
+    def handler(n, payload):
+        if n == 2:
+            raise RuntimeError("fabricated transport crash")
+        return httpx.Response(200, json=jev_body())
+
+    with pytest.raises(RuntimeError, match="transport crash"):
+        execute(pg, protocol, Recorder(handler), tmp_path)
+    summary = json.loads((tmp_path / "evidence-output" / "summary.json").read_text())
+    assert summary["status"] == "error" and summary["closed"] is False
+    assert "RuntimeError" in summary["error"]
+    statuses = [c["status"] for c in summary["cases"]]
+    assert statuses[:2] == ["responded", "error"] and set(statuses[2:]) <= {"not-dispatched"}
+    lines = (tmp_path / "evidence-output" / "calls.jsonl").read_text().splitlines()
+    assert len(lines) == 2  # the crashed call stays reserved, without a response
+    with psycopg.connect(pg.owner_dsn, autocommit=True) as owner:
+        assert (
+            owner.execute("SELECT count(*) FROM reckoner.v1_protocol_closures").fetchone()[0] == 0
+        )
+
+
+def selected_for(context):
+    from reckoner.v1.calibration import fit_calibration
+    from test_v1_calibration import rehash, sample
+
+    rows = sample()
+    for row in rows:
+        row["context"] = dict(context)
+    artifact = fit_calibration(rows)
+    artifact["qualification"] = {
+        "status": "selected",
+        "validation_id": "b" * 64,
+        "raw_brier": 0.04,
+        "candidate_brier": 0.001,
+        "raw_log_loss": 0.2,
+        "candidate_log_loss": 0.02,
+    }
+    return rehash(artifact)
+
+
+@pytest.mark.integration
+def test_selected_artifact_registers_per_tenant_through_python_and_cli(pg, tmp_path, monkeypatch):
+    import json
+
+    from reckoner.cli import _parser
+    from reckoner.v1.cli import execute as v1
+    from reckoner.v1.experiment.calibration import calibration_context, register_selected
+    from reckoner.v1.storage.repository import V1Repository
+
+    draft, docs = scored_validation(pg, tmp_path, monkeypatch)
+    with V1Repository(pg.owner_dsn) as owner:
+        context = calibration_context(owner, draft, "fabricated")
+    artifact = selected_for(context)
+    report_dir = tmp_path / "report"
+    report_dir.mkdir()
+    (report_dir / "selected-artifact.json").write_text(json.dumps(artifact))
+    with V1Repository(pg.owner_dsn) as owner:
+        assert (
+            register_selected(owner, report_dir=report_dir, tenants=["tenant-a"], context=context)
+            == artifact["calibration_id"]
+        )
+        with pytest.raises(ValueError):
+            register_selected(
+                owner,
+                report_dir=report_dir,
+                tenants=["tenant-a"],
+                context={**context, "evidence_mode": "gds-augmented"},
+            )
+    env = tmp_path / "owner.env"
+    env.write_text(f"RECKONER_OWNER_DSN={pg.owner_dsn}\n")
+    result = v1(
+        _parser().parse_args(
+            ["v1", "protocol", "register-calibration", "--report-dir", str(report_dir),
+             "--protocol-sha256", draft["protocol_sha256"], "--data-kind", "fabricated",
+             "--tenant-id", "tenant-a", "--tenant-id", "tenant-b", "--env-file", str(env)]
+        )
+    )  # fmt: skip
+    assert result == {
+        "calibration_id": artifact["calibration_id"],
+        "tenants": ["tenant-a", "tenant-b"],
+    }
+    with psycopg.connect(pg.owner_dsn, autocommit=True) as owner:
+        tenants = owner.execute(
+            "SELECT tenant_id FROM reckoner.v1_selected_calibrations ORDER BY 1"
+        ).fetchall()
+    assert [t[0] for t in tenants] == ["tenant-a", "tenant-b"]
+
+
+@pytest.mark.integration
+def test_cli_exports_calibration_rows_for_a_recorded_protocol(pg, tmp_path, monkeypatch):
+    import json
+
+    from reckoner.cli import _parser
+    from reckoner.v1.cli import execute as v1
+    from reckoner.v1.experiment import calibration
+
+    draft, docs = scored_validation(pg, tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        calibration, "load_frozen_sample", lambda bundle, purpose: frozen_sample(docs)
+    )
+    env = tmp_path / "owner.env"
+    env.write_text(f"RECKONER_OWNER_DSN={pg.owner_dsn}\n")
+    provenance = v1(
+        _parser().parse_args(
+            ["v1", "protocol", "export-calibration", "--protocol-sha256", draft["protocol_sha256"],
+             "--bundle", str(tmp_path), "--data-kind", "fabricated",
+             "--output", str(tmp_path / "rows.json"), "--env-file", str(env)]
+        )
+    )  # fmt: skip
+    rows = json.loads((tmp_path / "rows.json").read_text())
+    assert len(rows) == 4 and provenance["rows_sha256"] == content_id(rows)
+    assert oct((tmp_path / "rows.json").stat().st_mode)[-3:] == "600"
+
+
+@pytest.mark.integration
+def test_cli_declares_runs_from_the_active_configuration(pg, tmp_path):
+    import json
+
+    from reckoner.cli import _parser
+    from reckoner.v1.cli import execute as v1
+    from test_v1_storage import setup_run
+
+    _, manifest, _ = setup_run(pg)
+    first = saved_configuration(pg, "0.30")
+    activate(pg, first, 0, "activate-a")
+    tasks = tmp_path / "tasks.json"
+    tasks.write_text(json.dumps(manifest["tasks"]))
+    env = tmp_path / "owner.env"
+    env.write_text(f"RECKONER_OWNER_DSN={pg.owner_dsn}\n")
+    args = ["v1", "protocol", "declare-run", "--tenant-id", "tenant-a", "--run-id", "cli-run",
+            "--purpose", "final", "--tasks", str(tasks), "--dataset-version", "a" * 64,
+            "--cohort-version", "a" * 64, "--code-revision", "fabricated-revision",
+            "--created-at", "2026-10-04T00:00:00Z", "--env-file", str(env)]  # fmt: skip
+    declared = v1(_parser().parse_args(args))
+    assert declared["config_id"] == first and declared["config_source"] == "active"
+    assert v1(_parser().parse_args(args))["config_source"] == "declared"
+
+
+@pytest.mark.integration
+def test_cli_settles_an_uncertain_call_from_usage_at_the_recorded_price(pg, tmp_path, monkeypatch):
+    from reckoner.cli import _parser
+    from reckoner.v1.cli import execute as v1
+    from reckoner.v1.storage.budget import ProviderBudget
+
+    no_sleep(monkeypatch)
+    protocol = reserved(pg, tmp_path)
+
+    def handler(n, payload):
+        if n == 1:
+            raise httpx.ReadTimeout("fabricated ambiguous timeout")
+        return httpx.Response(200, json=jev_body())
+
+    execute(pg, protocol, Recorder(handler), tmp_path)
+    with psycopg.connect(pg.owner_dsn, autocommit=True) as owner:
+        call_id = owner.execute(
+            "SELECT call_id FROM reckoner.v1_settlements WHERE status='uncertain'"
+        ).fetchone()[0]
+        assert ProviderBudget(owner).snapshot("typesafe")["unresolved"]
+    env = tmp_path / "owner.env"
+    env.write_text(f"RECKONER_OWNER_DSN={pg.owner_dsn}\n")
+    args = ["v1", "protocol", "settle", "--call-id", call_id, "--input-tokens", "2000",
+            "--output-tokens", "0", "--env-file", str(env)]  # fmt: skip
+    settled = v1(_parser().parse_args(args))
+    assert settled["cost"] == "0.000084"
+    with pytest.raises(ValueError, match="already settled"):
+        v1(_parser().parse_args(args))
+    with psycopg.connect(pg.owner_dsn, autocommit=True) as owner:
+        assert ProviderBudget(owner).snapshot("typesafe")["unresolved"] == []

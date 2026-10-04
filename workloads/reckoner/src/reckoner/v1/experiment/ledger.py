@@ -195,3 +195,44 @@ def copy_legacy_ledger(*, staging_dsn: str, target_owner_dsn: str, dump_sha256: 
         "ledger_sha256": verified,
         "dataset_simulated": True,
     }
+
+
+def reconcile_call(connection, call_id: str, usage: dict) -> dict:
+    """Owner reconciliation of one uncertain or unsettled call from known provider usage.
+
+    The cost is computed from the call's recorded protocol prices, never supplied by
+    the operator. An already settled call cannot be re-priced.
+    """
+    from reckoner.v1.experiment.protocol import PRICES
+    from reckoner.v1.storage.budget import ProviderBudget
+
+    if set(usage) != {"input_tokens", "output_tokens"} or any(
+        type(v) is not int or v < 0 for v in usage.values()
+    ):
+        raise ValueError("reconciliation needs exact nonnegative token counts")
+    cursor = connection.cursor(row_factory=dict_row)
+    row = cursor.execute(
+        "SELECT c.provider, c.call_id, x.document->'prices' AS prices, "
+        "EXISTS (SELECT 1 FROM reckoner.v1_settlements s WHERE s.call_id=c.call_id "
+        "AND s.status='settled') AS settled FROM reckoner.v1_provider_calls c "
+        "JOIN reckoner.v1_protocol_authorizations a USING (protocol_id) "
+        "JOIN reckoner.v1_experiment_protocols x USING (protocol_sha256) WHERE c.call_id=%s",
+        (call_id,),
+    ).fetchone()
+    if row is None:
+        raise ValueError("unknown call under a recorded protocol")
+    if row["settled"]:
+        raise ValueError("call is already settled; settlements are immutable")
+    input_price, output_price = PRICES[row["provider"]]
+    prices = row["prices"] or {}
+    if (
+        Decimal(prices.get("input_per_million", "-1")) != input_price
+        or Decimal(prices.get("output_per_million", "-1")) != output_price
+    ):
+        raise ValueError("recorded protocol prices are not the pinned prices")
+    cost = (
+        Decimal(usage["input_tokens"]) * input_price
+        + Decimal(usage["output_tokens"]) * output_price
+    ) / Decimal(1000000)
+    ProviderBudget(connection).settle(call_id, usage, cost)
+    return {"call_id": call_id, "status": "settled", "cost": format(cost, "f"), "usage": usage}
