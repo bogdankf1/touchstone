@@ -73,7 +73,9 @@ def validate_protocol(protocol):
         "tasks",
         "protocol_id",
     }
-    if not isinstance(protocol, dict) or set(protocol) - {"derivation"} != fields:
+    if not isinstance(protocol, dict) or set(protocol) - {"derivation", "attempt_maximum_usd"} != (
+        fields
+    ):
         raise ValueError("an exact paid-run dispatch protocol is required")
     if protocol["protocol_id"] != content_id(
         {k: v for k, v in protocol.items() if k != "protocol_id"}
@@ -117,7 +119,16 @@ def validate_protocol(protocol):
     ) != len(protocol["tasks"]):
         raise ValueError("protocol cases must be unique")
     money(protocol["usd_cap"])
+    if "attempt_maximum_usd" in protocol:
+        money(protocol["attempt_maximum_usd"])
     return protocol
+
+
+def attempt_maximum(protocol: dict, computed: Decimal) -> Decimal:
+    """The approved per-attempt maximum pinned in the envelope, else the computed one."""
+    if "attempt_maximum_usd" in protocol:
+        return money(protocol["attempt_maximum_usd"])
+    return computed
 
 
 def validate_approval_record(approval: dict) -> dict:
@@ -418,6 +429,8 @@ class ProviderBudget:
     def reserve(self, call: dict, maximum: Decimal, protocol: dict) -> dict:
         validate_protocol(protocol)
         BudgetLedger._validate_maximum(maximum)
+        if "attempt_maximum_usd" in protocol and maximum != money(protocol["attempt_maximum_usd"]):
+            raise ValueError("reservation differs from the approved per-attempt maximum")
         for key in (
             "tenant_id",
             "run_id",

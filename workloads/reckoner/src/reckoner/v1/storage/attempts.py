@@ -14,7 +14,7 @@ from reckoner.storage.budget import ACCOUNTING_LOCK
 from reckoner.v1 import pricing
 from reckoner.v1.contracts import validate_v1
 from reckoner.v1.providers.jev import JevError, build_request, valid_usage, validate_response
-from reckoner.v1.storage.budget import ProviderBudget, validate_protocol
+from reckoner.v1.storage.budget import ProviderBudget, attempt_maximum, validate_protocol
 
 
 def _configuration(repo, task):
@@ -234,8 +234,12 @@ def score_task(repo, client, task: dict, evidence: dict, protocol: dict) -> dict
                 "request_sha256": digest,
                 "request_document": request,
             }
-            maximum = pricing.cost(
-                "typesafe", {"input_tokens": protocol["input_token_ceiling"], "output_tokens": 0}
+            maximum = attempt_maximum(
+                protocol,
+                pricing.cost(
+                    "typesafe",
+                    {"input_tokens": protocol["input_token_ceiling"], "output_tokens": 0},
+                ),
             )
             skip, wait = _claim(repo, ledger, call, maximum, protocol)
             if skip:

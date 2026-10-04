@@ -9,7 +9,7 @@ from reckoner.baseline.pricing import observed_cost
 from reckoner.contracts import content_id
 from reckoner.v1 import pricing
 from reckoner.v1.notes.prompt import MODEL
-from reckoner.v1.storage.budget import ProviderBudget, validate_protocol
+from reckoner.v1.storage.budget import ProviderBudget, attempt_maximum, validate_protocol
 
 NOTE_STAGES = {"note-generation", "note-repair"}
 JUDGE_STAGES = {"judge-verdict", "judge-statements", "judge-faithfulness"}
@@ -118,12 +118,15 @@ class BudgetedCalls:
                 raise ValueError("repair must use the original bounded protocol allowance")
         if not pricing.matches("anthropic", model["price_table"]):
             raise ValueError("unknown pinned generation pricing")
-        return pricing.cost(
-            "anthropic",
-            {
-                "input_tokens": protocol["input_token_ceiling"],
-                "output_tokens": protocol["max_output_tokens"],
-            },
+        return attempt_maximum(
+            protocol,
+            pricing.cost(
+                "anthropic",
+                {
+                    "input_tokens": protocol["input_token_ceiling"],
+                    "output_tokens": protocol["max_output_tokens"],
+                },
+            ),
         )
 
     def execute(self, request, *, stage, protocol):

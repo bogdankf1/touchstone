@@ -391,6 +391,11 @@ def validate_body(protocol: dict) -> dict:
             if key not in case_keys:
                 raise ValueError("dispatch request is outside the frozen case set")
             covered.add(key)
+        per_attempt = _decimal_text(
+            attempt_maximum(provider, bounds["billing_token_bound"], item["max_output_tokens"])
+        )
+        if item.get("attempt_maximum_usd") != per_attempt:
+            raise ValueError("the approved per-attempt maximum must be pinned in each envelope")
         cost = dispatch_worst_case(provider, item, bounds)
         if money(item["usd_cap"]) < cost:
             raise ValueError("dispatch cap is below its worst-case cost")
@@ -863,6 +868,9 @@ def draft_scoring_protocol(
                 for m in sorted(members, key=lambda m: m["task_id"])
             ],
         }
+        item["attempt_maximum_usd"] = _decimal_text(
+            attempt_maximum(provider, bounds["billing_token_bound"], item["max_output_tokens"])
+        )
         cost = dispatch_worst_case(provider, item, bounds)
         item["usd_cap"] = _decimal_text(cost)
         item["protocol_id"] = content_id(item)
@@ -1087,6 +1095,9 @@ def draft_note_protocol(
         }
         if policy:
             item["derivation"] = policy
+        item["attempt_maximum_usd"] = _decimal_text(
+            attempt_maximum(provider, bounds["billing_token_bound"], item["max_output_tokens"])
+        )
         cost = dispatch_worst_case(provider, item, bounds)
         item["usd_cap"] = _decimal_text(cost)
         item["protocol_id"] = content_id(item)
@@ -1178,6 +1189,11 @@ def present_protocol(protocol: dict, ledger: dict) -> str:
         f"{bounds['billing_token_bound']} input tokens, {bounds['max_output_tokens']} output "
         f"tokens, {bounds['maximum_attempts']} attempts per case",
         f"- Retry assumptions: {bounds['retry_assumption']}",
+        "- Per-attempt reservation: per-attempt maximum USD "
+        + ", ".join(sorted({d["attempt_maximum_usd"] for d in protocol["dispatch"]}))
+        + " (billing bound). Dispatch stops for reconciliation when any call reports "
+        "more input tokens than the request ceiling or more output tokens than the output "
+        "bound, or costs more than its per-attempt maximum.",
         f"- Worst-case cost: USD {protocol['worst_case_usd']}; hard cap: USD {protocol['usd_cap']}",
         f"- Reconciled {ledger['provider']} ledger `{ledger['ledger_id']}`: liability USD "
         f"{ledger['liability_usd']}, remaining USD {ledger['remaining_usd']} of "

@@ -2000,3 +2000,25 @@ def test_published_prices_live_in_one_dated_module_used_everywhere():
     for module in (attempts, calls, protocol, ledger):
         source = inspect.getsource(module)
         assert ".042" not in source and "!= 5" not in source and "PRICES = {" not in source
+
+
+def test_envelopes_pin_the_approved_per_attempt_maximum(tmp_path):
+    from reckoner.v1.experiment.protocol import identify, present_protocol, validate_body
+
+    draft = pilot(tmp_path)
+    # 64,000 billed input tokens x USD 0.042 / 1M per attempt, not the 32,000 ceiling.
+    assert {d["attempt_maximum_usd"] for d in draft["dispatch"]} == {"0.002688"}
+    notes = note_draft()
+    assert {d["attempt_maximum_usd"] for d in notes["dispatch"]} == {"0.037"}
+    for change in ({"attempt_maximum_usd": "0.001344"}, {"attempt_maximum_usd": 0.002688}):
+        changed = deepcopy(draft)
+        changed["dispatch"][0] = identified({**changed["dispatch"][0], **change}, "protocol_id")
+        with pytest.raises(ValueError):
+            validate_body(identify(changed))
+    missing = deepcopy(draft)
+    missing["dispatch"][0].pop("attempt_maximum_usd")
+    identified(missing["dispatch"][0], "protocol_id")
+    with pytest.raises(ValueError, match="per-attempt"):
+        validate_body(identify(missing))
+    text = present_protocol(draft, ledger_snapshot())
+    assert "per-attempt maximum USD 0.002688" in text and "request ceiling" in text

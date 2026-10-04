@@ -1294,7 +1294,9 @@ def test_never_answered_call_stays_uncertain_without_evidence_and_is_never_auto_
     reservation = {**call(task, dispatch, "never-answered"), "request_document": {}}
     reservation["request_sha256"] = dispatch["tasks"][0]["request_sha256"]
     with V1Repository(pg.runner_dsn) as repo:
-        ProviderBudget(repo._connection).reserve(reservation, Decimal("0.001344"), dispatch)
+        ProviderBudget(repo._connection).reserve(
+            reservation, Decimal(dispatch["attempt_maximum_usd"]), dispatch
+        )
     zero = {"input_tokens": 0, "output_tokens": 0}
     with psycopg.connect(pg.owner_dsn, autocommit=True) as owner:
         with pytest.raises(ValueError, match="evidence"):
@@ -1381,3 +1383,23 @@ def test_workflow_verification_blocks_scorer_failures_and_records_evidence_gaps(
     assert "failed-calls" in codes and "missing-stage" not in codes
     assert report["coverage_gaps"] == [["tenant-a", "final-tenant-a", "task-1"]]
     assert report["passed"] is False
+
+
+# --- quality round 1: approved per-attempt maximum, coverage gaps -------------
+
+
+@pytest.mark.integration
+def test_uncertain_call_keeps_the_approved_per_attempt_maximum_after_close(
+    pg, tmp_path, monkeypatch
+):
+    from reckoner.v1.storage.budget import ProviderBudget
+
+    protocol, call_id = timed_out_call(pg, tmp_path, monkeypatch)
+    with psycopg.connect(pg.owner_dsn, autocommit=True) as owner:
+        maximum = owner.execute(
+            "SELECT maximum_cost FROM reckoner.v1_provider_calls WHERE call_id=%s", (call_id,)
+        ).fetchone()[0]
+        snapshot = ProviderBudget(owner).snapshot("typesafe")
+    assert maximum == Decimal("0.002688")
+    settled = Decimal("0.000084") * (len(protocol["cases"]) - 1)
+    assert Decimal(snapshot["liability_usd"]) == settled + Decimal("0.002688")
