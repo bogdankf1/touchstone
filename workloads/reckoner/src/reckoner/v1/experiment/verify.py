@@ -190,7 +190,8 @@ def collect_run_facts(repo, protocol: dict) -> dict:
     overage = repo._connection.execute(
         "SELECT EXISTS (SELECT 1 FROM reckoner.v1_provider_calls c JOIN reckoner.v1_settlements s "
         "USING (call_id) WHERE c.protocol_id = ANY(%s) AND (s.cost > c.maximum_cost OR "
-        "(s.usage->>'input_tokens')::numeric > (c.document->>'input_token_ceiling')::numeric))"
+        "(s.usage->>'input_tokens')::numeric > (c.document->>'input_token_ceiling')::numeric "
+        "OR (s.usage->>'output_tokens')::numeric > (c.document->>'max_output_tokens')::numeric))"
         " AS overage",
         (ids,),
     ).fetchone()["overage"]

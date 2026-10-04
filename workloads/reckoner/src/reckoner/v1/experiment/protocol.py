@@ -594,6 +594,9 @@ def reserve_protocol(protocol: dict, ledger, *, approval: dict) -> str:
     approval = bind_approval(approval, protocol)
     from psycopg.rows import dict_row
 
+    # Runs, configurations and decisions are immutable, so checking them before
+    # authorize's locked transaction cannot race; the escalation population of a
+    # still-running run could grow, which the recomputed population hash refuses.
     _check_runs(ledger._connection.cursor(row_factory=dict_row), protocol)
     return ledger.authorize(protocol, protocol["dispatch"], approval=approval)
 

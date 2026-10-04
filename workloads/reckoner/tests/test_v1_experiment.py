@@ -1011,6 +1011,16 @@ def test_a_non_budget_error_keeps_partial_outputs_and_open_state(pg, tmp_path, m
         assert (
             owner.execute("SELECT count(*) FROM reckoner.v1_protocol_closures").fetchone()[0] == 0
         )
+    # Resume: the crashed call becomes uncertain and is never re-sent; only the case
+    # that was never dispatched is sent once.
+    resumed = Recorder(lambda n, payload: httpx.Response(200, json=jev_body()))
+    again = execute(pg, protocol, resumed, tmp_path, output_dir=tmp_path / "resumed")
+    statuses = [c["status"] for c in again["cases"]]
+    assert statuses[:2] == ["responded", "uncertain"]
+    assert len(resumed.requests) == len(protocol["cases"]) - 2
+    crashed = protocol["dispatch"][0]["tasks"][1]["request_sha256"]
+    assert crashed not in {content_id(r) for r in resumed.requests}
+    assert again["uncertain_calls"] == 1
 
 
 def selected_for(context):
@@ -1110,11 +1120,14 @@ def test_selected_artifact_binds_exported_rows_and_registers_per_tenant(pg, tmp_
         register(development["protocol_sha256"], development["protocol_sha256"])
     with pytest.raises(ValueError, match="development-purpose"):
         register(validation["protocol_sha256"], validation["protocol_sha256"])
-    result = register(validation["protocol_sha256"], development["protocol_sha256"])
-    assert result == {
-        "calibration_id": artifact["calibration_id"],
-        "tenants": ["tenant-a", "tenant-b"],
-    }
+    with pytest.raises(ValueError, match="measured"):
+        register(validation["protocol_sha256"], development["protocol_sha256"])
+    with V1Repository(pg.owner_dsn) as owner:
+        identity = calibration.register_selected(
+            owner, report_dir=report_dir, tenants=["tenant-a", "tenant-b"], context=context,
+            development_rows=rows["development"], validation_rows=rows["validation"],
+        )  # fmt: skip
+    assert identity == artifact["calibration_id"]
     with psycopg.connect(pg.owner_dsn, autocommit=True) as owner:
         tenants = owner.execute(
             "SELECT tenant_id FROM reckoner.v1_selected_calibrations ORDER BY 1"
@@ -1124,7 +1137,6 @@ def test_selected_artifact_binds_exported_rows_and_registers_per_tenant(pg, tmp_
 
 @pytest.mark.integration
 def test_cli_exports_calibration_rows_for_a_recorded_protocol(pg, tmp_path, monkeypatch):
-    import json
 
     from reckoner.cli import _parser
     from reckoner.v1.cli import execute as v1
@@ -1136,16 +1148,24 @@ def test_cli_exports_calibration_rows_for_a_recorded_protocol(pg, tmp_path, monk
     )
     env = tmp_path / "owner.env"
     env.write_text(f"RECKONER_OWNER_DSN={pg.owner_dsn}\n")
-    provenance = v1(
-        _parser().parse_args(
-            ["v1", "protocol", "export-calibration", "--protocol-sha256", draft["protocol_sha256"],
-             "--bundle", str(tmp_path), "--data-kind", "fabricated",
-             "--output", str(tmp_path / "rows.json"), "--env-file", str(env)]
+    # Rows from a fixture-transport execution can never feed calibration.
+    with pytest.raises(ValueError, match="measured"):
+        v1(
+            _parser().parse_args(
+                ["v1", "protocol", "export-calibration", "--protocol-sha256",
+                 draft["protocol_sha256"], "--bundle", str(tmp_path), "--data-kind", "fabricated",
+                 "--output", str(tmp_path / "rows.json"), "--env-file", str(env)]
+            )
+        )  # fmt: skip
+    assert not (tmp_path / "rows.json").exists()
+    from reckoner.v1.storage.repository import V1Repository
+
+    with V1Repository(pg.owner_dsn) as owner:
+        exported = calibration.export_calibration_rows(
+            owner, frozen=frozen_sample(docs), protocol=draft, data_kind="fabricated"
         )
-    )  # fmt: skip
-    rows = json.loads((tmp_path / "rows.json").read_text())
-    assert len(rows) == 4 and provenance["rows_sha256"] == content_id(rows)
-    assert oct((tmp_path / "rows.json").stat().st_mode)[-3:] == "600"
+    assert len(exported["rows"]) == 4
+    assert exported["provenance"]["rows_sha256"] == content_id(exported["rows"])
 
 
 @pytest.mark.integration
@@ -1519,3 +1539,117 @@ def test_settle_reference_must_match_a_persisted_provider_request_id(pg, tmp_pat
     record = json.loads(wrong.read_text()) | {"reference": "fabricated-request-7"}
     right.write_text(json.dumps(record))
     assert settle_cli(pg, tmp_path, "with-request-id", usage, right)["status"] == "settled"
+
+
+# --- quality round 1: execution bookkeeping and provider-key scope ------------
+
+
+@pytest.mark.integration
+def test_outputs_prefer_settled_billing_and_telemetry_failures_are_captured(
+    pg, tmp_path, monkeypatch
+):
+    import json
+
+    from reckoner.v1.experiment import execute as execution
+    from reckoner.v1.storage.repository import V1Repository
+
+    protocol, call_id = timed_out_call(pg, tmp_path, monkeypatch)
+    usage = {"input_tokens": 2000, "output_tokens": 0}
+    settle_cli(pg, tmp_path, call_id, usage, evidence_file(tmp_path, call_id, usage))
+    with V1Repository(pg.runner_dsn) as repo:
+        execution.retain_outputs(repo, protocol, execution._output(tmp_path / "after-settle"))
+    records = [
+        json.loads(line)
+        for line in (tmp_path / "after-settle" / "calls.jsonl").read_text().splitlines()
+    ]
+    assert next(r for r in records if r["call_id"] == call_id)["billing_status"] == "settled"
+
+    second = reserved_again(pg, tmp_path)
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("fabricated collector outage")
+
+    monkeypatch.setattr(execution, "_telemetry", broken)
+    result = execute(
+        pg, second, Recorder(lambda n, p: httpx.Response(200, json=jev_body())), tmp_path,
+        output_dir=tmp_path / "telemetry-down",
+    )  # fmt: skip
+    assert result["telemetry"]["collected"] is False and "outage" in result["telemetry"]["error"]
+    assert (tmp_path / "telemetry-down" / "summary.json").exists()
+
+
+def reserved_again(pg, tmp_path):
+    """A second scoring protocol over new runs of the same fabricated cases."""
+    from test_v1_protocol import experiment_scenario, fixture_approval, reserve
+
+    (tmp_path / "again").mkdir(exist_ok=True)
+    draft, _, _ = experiment_scenario(pg, tmp_path / "again", purpose="development", seed=False)
+    reserve(pg, draft, fixture_approval(draft))
+    return draft
+
+
+@pytest.mark.integration
+def test_existing_output_directory_refuses_before_recording_a_transport_label(pg, tmp_path):
+    protocol = reserved(pg, tmp_path)
+    taken = tmp_path / "taken"
+    taken.mkdir()
+    (taken / "previous.txt").write_text("earlier output")
+    recorder = Recorder(lambda n, payload: pytest.fail("no dispatch"))
+    with pytest.raises(FileExistsError):
+        execute(pg, protocol, recorder, tmp_path, output_dir=taken)
+    with psycopg.connect(pg.owner_dsn, autocommit=True) as owner:
+        assert (
+            owner.execute("SELECT count(*) FROM reckoner.v1_protocol_executions").fetchone()[0] == 0
+        )
+
+
+@pytest.mark.integration
+def test_output_token_overage_is_reported_as_the_stop_reason(pg, tmp_path, monkeypatch):
+    from reckoner.v1.experiment.verify import collect_run_facts
+    from reckoner.v1.storage.repository import V1Repository
+
+    no_sleep(monkeypatch)
+    protocol = reserved(pg, tmp_path)
+    recorder = Recorder(
+        lambda n, payload: httpx.Response(
+            200, json=jev_body({"input_tokens": 100, "output_tokens": 2000})
+        )
+    )
+    result = execute(pg, protocol, recorder, tmp_path)
+    assert result["status"] == "stopped"
+    with V1Repository(pg.runner_dsn) as repo:
+        run = collect_run_facts(repo, protocol)
+    assert run["stopped"] and "overage" in run["stop_reason"]
+
+
+@pytest.mark.integration
+def test_cli_execute_loads_only_the_protocol_providers_key(pg, tmp_path, monkeypatch):
+    from reckoner.cli import _parser
+    from reckoner.v1.cli import execute as v1
+    from reckoner.v1.experiment import execute as execution
+    from reckoner.v1.notes import provider as notes_provider
+
+    protocol = reserved(pg, tmp_path)
+    captured = {}
+
+    def capture(protocol_id, **kwargs):
+        captured.update(kwargs)
+        return {"captured": True}
+
+    def no_anthropic(*args, **kwargs):
+        raise AssertionError("the Anthropic key must not be loaded for a Jev protocol")
+
+    monkeypatch.setattr(execution, "execute_protocol", capture)
+    monkeypatch.setattr(notes_provider, "NoteProvider", no_anthropic)
+    env = tmp_path / "keys.env"
+    env.write_text(
+        f"RECKONER_RUNNER_DSN={pg.runner_dsn}\nJEV_API_KEY=fabricated-not-a-key\n"
+        "ANTHROPIC_API_KEY=fabricated-not-a-key\n"
+    )
+    args = ["v1", "protocol", "execute", "--protocol-sha256", protocol["protocol_sha256"],
+            "--output", str(tmp_path / "unused"), "--env-file", str(env)]  # fmt: skip
+    assert v1(_parser().parse_args(args)) == {"captured": True}
+    assert set(captured["provider_clients"]) == {"typesafe"}
+    env.write_text(f"RECKONER_RUNNER_DSN={pg.runner_dsn}\nANTHROPIC_API_KEY=fabricated-not-a-key\n")
+    with pytest.raises(ValueError, match="JEV_API_KEY"):
+        v1(_parser().parse_args(args))

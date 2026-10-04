@@ -346,6 +346,13 @@ class ProviderBudget:
             raise ValueError("protocol document identity mismatch")
         if approval["protocol_sha256"] != digest:
             raise ValueError("approval does not bind this protocol SHA-256")
+        if protocol_document.get("schema_version") == "reckoner-paid-protocol-v1":
+            # Full binding (approver, purpose, exact cap, case count, attempts).
+            from reckoner.v1.experiment.protocol import bind_approval
+
+            bind_approval(approval, protocol_document)
+        elif approval["approver"] != protocol_document.get("approver"):
+            raise ValueError("approval is not from the protocol document's approver")
         if not dispatch:
             raise ValueError("approval must cover at least one dispatch protocol")
         if protocol_document.get("dispatch") != dispatch:
@@ -362,7 +369,7 @@ class ProviderBudget:
         if len({p["protocol_id"] for p in dispatch}) != len(dispatch):
             raise ValueError("duplicate dispatch protocol")
         cases, total = _scope(dispatch)
-        if len(cases) != scope["case_count"] or total > money(scope["usd_cap"]):
+        if len(cases) != scope["case_count"] or total != money(scope["usd_cap"]):
             raise ValueError("dispatch cases or caps differ from the approved scope")
         provider = scope["provider"]
         with self._connection.transaction():

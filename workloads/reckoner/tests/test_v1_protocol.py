@@ -2076,3 +2076,28 @@ def test_database_refuses_runner_or_evidence_free_reconciliation(pg):
             ).fetchone()[0]
             == 1
         )
+
+
+@pytest.mark.integration
+def test_authorize_itself_binds_approver_purpose_and_exact_cap(pg, tmp_path):
+    from reckoner.v1.experiment.protocol import approval_scope
+
+    draft, _, _ = experiment_scenario(pg, tmp_path)
+    good = fixture_approval(draft)
+    for change in (
+        {"scope": {**approval_scope(draft), "purpose": "development"}},
+        {"approver": "someone-else"},
+        {"scope": {**approval_scope(draft), "usd_cap": "9"}},
+    ):
+        with psycopg.connect(pg.owner_dsn, autocommit=True) as owner:
+            with pytest.raises(ValueError):
+                ProviderBudget(owner).authorize(
+                    draft, draft["dispatch"], approval={**good, **change}
+                )
+    p = protocol(TASK)
+    document = fixture_protocol_document([p])
+    wrong = approval_fixture(document["protocol_sha256"], dispatch_scope([p]))
+    wrong["approver"] = "not-the-fixture-approver"
+    with psycopg.connect(pg.owner_dsn, autocommit=True) as owner:
+        with pytest.raises(ValueError, match="approver"):
+            ProviderBudget(owner).authorize(document, [p], approval=wrong)

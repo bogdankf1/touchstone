@@ -73,12 +73,13 @@ def retain_outputs(repo, protocol, directory: Path) -> dict:
     ids = [d["protocol_id"] for d in protocol["dispatch"]]
     rows = repo._connection.execute(
         "SELECT c.call_id,c.tenant_id,c.run_id,c.task_id,c.protocol_id,c.document,"
-        "c.dispatched_at,r.category,r.body,r.received_at,s.usage,s.cost,s.status "
-        "FROM reckoner.v1_provider_calls c "
+        "c.dispatched_at,r.category,r.body,r.received_at,"
+        "COALESCE(k.usage,u.usage) AS usage,COALESCE(k.cost,u.cost) AS cost,"
+        "COALESCE(k.status,u.status) AS status FROM reckoner.v1_provider_calls c "
         "LEFT JOIN reckoner.v1_provider_responses r USING (call_id) "
-        "LEFT JOIN reckoner.v1_settlements s ON s.call_id=c.call_id "
-        "AND s.status=(SELECT max(x.status) FROM reckoner.v1_settlements x "
-        "WHERE x.call_id=c.call_id) "
+        # A later settled record supersedes an earlier uncertain one.
+        "LEFT JOIN reckoner.v1_settlements k ON k.call_id=c.call_id AND k.status='settled' "
+        "LEFT JOIN reckoner.v1_settlements u ON u.call_id=c.call_id AND u.status='uncertain' "
         "WHERE c.protocol_id = ANY(%s) ORDER BY c.dispatched_at,c.call_id",
         (ids,),
     ).fetchall()
@@ -314,8 +315,8 @@ def execute_protocol(
         if protocol["telemetry_mode"] == "workflow" and protocol["provider"] == "typesafe":
             if data_kind not in {"fabricated", "simulated-cctd"}:
                 raise ValueError("workflow execution needs an explicit data kind")
+        directory = _output(output_dir)  # refuse an existing directory before recording
         _record_kind(repo, protocol_id, execution_kind)
-        directory = _output(output_dir)
         if protocol["provider"] == "anthropic":
             results, stop, error = _note_cases(repo, protocol, client)
         elif protocol["telemetry_mode"] == "workflow":
@@ -336,12 +337,14 @@ def execute_protocol(
             for dispatch in protocol["dispatch"]:
                 if dispatch["purpose"] != "judge":
                     ledger.close(dispatch["protocol_id"])
-        telemetry = (
-            _telemetry(repo, protocol, closed)
-            if error is None
-            else {"collected": False, "reason": "execution error"}
-        )
-        retained = retain_outputs(repo, protocol, directory)
+        retained = retain_outputs(repo, protocol, directory)  # before telemetry can fail
+        if error is not None:
+            telemetry = {"collected": False, "reason": "execution error"}
+        else:
+            try:
+                telemetry = _telemetry(repo, protocol, closed)
+            except Exception as exc:  # recorded in the summary; outputs already retained
+                telemetry = {"collected": False, "error": f"{type(exc).__name__}: {exc}"}
         totals = repo._connection.execute(
             "SELECT COALESCE(sum(s.cost),0) AS settled, count(*) FILTER (WHERE s.cost IS NULL) "
             "AS uncertain FROM reckoner.v1_provider_calls c LEFT JOIN reckoner.v1_settlements s "

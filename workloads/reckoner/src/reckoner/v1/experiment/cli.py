@@ -251,18 +251,22 @@ def run(args):
             )
         return {"protocol_sha256": digest, "reserved": True}
     if step == "execute":
-        from reckoner.v1.experiment.execute import execute_protocol
+        from reckoner.v1.experiment.execute import execute_protocol, load_recorded
 
         (runner,) = _need(values, "RECKONER_RUNNER_DSN")
-        clients = {}
-        if values.get("JEV_API_KEY"):
+        with V1Repository(runner) as repo:
+            provider = load_recorded(repo, args.protocol_sha256)["provider"]
+        # Only the recorded protocol's own provider key is read and used.
+        if provider == "typesafe":
+            (key,) = _need(values, "JEV_API_KEY")
             from reckoner.v1.providers.jev import JevClient
 
-            clients["typesafe"] = JevClient(values["JEV_API_KEY"])
-        if values.get("ANTHROPIC_API_KEY"):
+            clients = {"typesafe": JevClient(key)}
+        else:
+            (key,) = _need(values, "ANTHROPIC_API_KEY")
             from reckoner.v1.notes.provider import NoteProvider
 
-            clients["anthropic"] = NoteProvider(values["ANTHROPIC_API_KEY"])
+            clients = {"anthropic": NoteProvider(key)}
         return execute_protocol(
             args.protocol_sha256,
             provider_clients=clients,
@@ -357,6 +361,14 @@ def run(args):
         (owner,) = _need(values, "RECKONER_OWNER_DSN")
         with V1Repository(owner) as repo:
             protocol = load_recorded(repo, args.protocol_sha256)
+            from reckoner.v1.experiment.verify import recorded_execution_kind
+
+            def measured(sha):
+                if recorded_execution_kind(repo, sha) != "measured":
+                    raise ValueError(
+                        "calibration needs a protocol recorded as a measured execution"
+                    )
+
             if step == "register-calibration":
                 if protocol["purpose"] != "validation":
                     raise ValueError("--protocol-sha256 must be a validation-purpose protocol")
@@ -365,6 +377,9 @@ def run(args):
                     raise ValueError(
                         "--development-protocol-sha256 must be a development-purpose protocol"
                     )
+                measured(args.development_protocol_sha256)
+            measured(args.protocol_sha256)
+            if step == "register-calibration":
                 context = calibration.calibration_context(repo, protocol, args.data_kind)
                 if calibration.calibration_context(repo, development, args.data_kind) != context:
                     raise ValueError("development and validation contexts differ")
