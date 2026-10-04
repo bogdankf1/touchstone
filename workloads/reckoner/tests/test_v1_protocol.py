@@ -1136,3 +1136,73 @@ def test_unrecorded_derived_stage_cannot_dispatch(pg):
         with pytest.raises(BudgetExceeded, match="recorded approval"):
             verdict.evaluate(persisted_note(repo, task))
         assert transport.calls == []
+
+
+# --- CLI: offline drafting/validation, allowlisted environments --------------------
+
+
+def cli(argv):
+    from reckoner.cli import _parser
+    from reckoner.v1.cli import execute
+
+    return execute(_parser().parse_args(["v1", "protocol", *argv]))
+
+
+def test_cli_drafts_presents_and_validates_without_overwrite(tmp_path):
+    import json
+
+    inputs = draft_inputs(tmp_path)
+    paths = {}
+    for name in ("runs", "measurements", "price_table", "ledger"):
+        paths[name] = tmp_path / f"{name}.json"
+        paths[name].write_text(json.dumps(inputs[name]))
+    args = [
+        "draft",
+        "--purpose", "pilot",
+        "--approver", FIXTURE,
+        "--manifest", str(tmp_path / "pilot-relational.json"),
+        "--runs", str(paths["runs"]),
+        "--measurements", str(paths["measurements"]),
+        "--prices", str(paths["price_table"]),
+        "--ledger", str(paths["ledger"]),
+        "--code-revision", "fabricated-revision",
+        "--output", str(tmp_path / "draft.json"),
+    ]  # fmt: skip
+    result = cli(args)
+    assert result["execution_authorized"] is False
+    draft = json.loads((tmp_path / "draft.json").read_text())
+    assert draft["protocol_sha256"] == result["protocol_sha256"]
+    assert "not execution" in (tmp_path / "draft.json.md").read_text()
+    with pytest.raises(FileExistsError):
+        cli(args)
+    receipt = cli(
+        ["validate", "--protocol", str(tmp_path / "draft.json"), "--ledger", str(paths["ledger"])]
+    )
+    assert receipt["status"] == "valid" and receipt["execution_authorized"] is False
+    development = [a if a != "pilot" else "development" for a in args]
+    development[-1] = str(tmp_path / "development.json")
+    with pytest.raises(ValueError, match="token_overhead"):
+        cli(development)
+
+
+@pytest.mark.parametrize(
+    "step,extra,line",
+    [
+        ("reserve", ["--protocol", "p.json", "--approval", "a.json"], "JEV_API_KEY=fabricated"),
+        ("ledger", ["--provider", "typesafe", "--output", "x.json"], "RECKONER_RUNNER_DSN=x"),
+        ("execute", ["--protocol-sha256", "a" * 64, "--output", "out"], "RECKONER_OWNER_DSN=x"),
+    ],
+)
+def test_cli_steps_accept_only_their_allowlisted_environment(tmp_path, step, extra, line):
+    env = tmp_path / "step.env"
+    env.write_text(line + "\n")
+    with pytest.raises(ValueError, match="accepts only"):
+        cli([step, *extra, "--env-file", str(env)])
+
+
+def test_cli_execute_requires_runner_dsn_before_any_connection(tmp_path):
+    env = tmp_path / "keys-only.env"
+    env.write_text("JEV_API_KEY=fabricated-not-a-key\n")
+    with pytest.raises(ValueError, match="RECKONER_RUNNER_DSN"):
+        cli(["execute", "--protocol-sha256", "a" * 64, "--output", str(tmp_path / "o"),
+             "--env-file", str(env)])  # fmt: skip
