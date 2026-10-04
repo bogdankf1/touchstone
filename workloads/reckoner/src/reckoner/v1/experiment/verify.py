@@ -82,6 +82,7 @@ def verify_experiment(protocol: dict, run: dict, report: dict) -> dict:
         "protocol_sha256": protocol["protocol_sha256"],
         "status": status,
         "passed": passed,
+        "coverage_gaps": [list(k) for k, t in tasks.items() if t.get("coverage_gap")],
         "blockers": blockers,
         "false_claims": false_claims,
         "attempts": len(calls),
@@ -227,6 +228,8 @@ def collect_run_facts(repo, protocol: dict) -> dict:
             ),
             "calibration_id": None,
             "note_status": None,
+            "degraded_reason": None,
+            "coverage_gap": None,
             "status": status,
             "stages": stages,
             "calls": calls,
@@ -242,7 +245,18 @@ def collect_run_facts(repo, protocol: dict) -> dict:
             )
             if protocol["provider"] == "typesafe":
                 binding = repo.workflow_document("v1_workflow_tasks", identity)
-                task["status"] = "decided"
+                reason = decision["degraded_reason"]
+                task["degraded_reason"] = reason
+                if reason == "evidence_unavailable":
+                    # Legitimately never scored: no score stage is expected, and the
+                    # case is an explicit coverage gap, never a correctness pass.
+                    task["stages"] = [s for s in stages if s["stage"] != "score"]
+                    task["coverage_gap"] = reason
+                    task["status"] = "failed" if calls else "decided"
+                elif reason is not None or decision["scorer_status"] != "succeeded":
+                    task["status"] = "failed"  # scorer_* degradation is a failed call
+                elif task["status"] == "scored":
+                    task["status"] = "decided"
                 task["evidence_id"] = decision["evidence_id"]
                 task["calibration_id"] = binding["calibration_id"] if binding else None
                 if decision["outcome"] == "escalate":

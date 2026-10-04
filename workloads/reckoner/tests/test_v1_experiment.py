@@ -1147,3 +1147,46 @@ def test_cli_settles_an_uncertain_call_from_usage_at_the_recorded_price(pg, tmp_
         v1(_parser().parse_args(args))
     with psycopg.connect(pg.owner_dsn, autocommit=True) as owner:
         assert ProviderBudget(owner).snapshot("typesafe")["unresolved"] == []
+
+
+# --- fix round 2: workflow verification keeps scorer failures and evidence gaps --
+
+
+@pytest.mark.integration
+def test_workflow_verification_blocks_scorer_failures_and_records_evidence_gaps(
+    pg, tmp_path, monkeypatch
+):
+    from reckoner.v1.experiment.verify import collect_run_facts, verify_experiment
+    from reckoner.v1.storage.repository import V1Repository
+    from test_v1_protocol import experiment_scenario, fixture_approval, reserve
+
+    no_sleep(monkeypatch)
+    draft, _, _ = experiment_scenario(
+        pg, tmp_path, purpose="final", per_tenant=(3, 0), unavailable={1}
+    )
+    reserve(pg, draft, fixture_approval(draft))
+
+    def handler(n, payload):
+        if n == 1:
+            return httpx.Response(401, text="fabricated authentication failure")
+        body = jev_body({"input_tokens": 100, "output_tokens": 0})
+        body["answers"]["risk"]["probabilities"] = {"fraud": 0.001, "legitimate": 0.999}
+        return httpx.Response(200, json=body)
+
+    recorder = Recorder(handler)
+    execute(pg, draft, recorder, tmp_path, data_kind="fabricated")
+    assert len(recorder.requests) == 2  # the unavailable-evidence case is never dispatched
+    with V1Repository(pg.runner_dsn) as repo:
+        facts = collect_run_facts(repo, draft)
+    by_task = {t["task_id"]: t for t in facts["tasks"]}
+    assert by_task["task-0"]["status"] == "failed"
+    assert by_task["task-0"]["degraded_reason"] == "scorer_failed"
+    assert by_task["task-1"]["stages"] == [] and by_task["task-1"]["coverage_gap"] == (
+        "evidence_unavailable"
+    )
+    assert by_task["task-2"]["status"] == "decided"
+    report = verify_experiment(draft, facts, {"status": "complete", "passed": True, "attempts": 2})
+    codes = {b["code"] for b in report["blockers"]}
+    assert "failed-calls" in codes and "missing-stage" not in codes
+    assert report["coverage_gaps"] == [["tenant-a", "final-tenant-a", "task-1"]]
+    assert report["passed"] is False

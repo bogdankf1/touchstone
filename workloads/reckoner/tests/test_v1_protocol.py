@@ -748,7 +748,14 @@ def test_presentation_lists_exact_scope_balance_and_is_not_consent(tmp_path):
 
 
 def experiment_scenario(
-    pg, tmp_path, *, purpose="pilot", per_tenant=(2, 1), transactions=None, seed=True
+    pg,
+    tmp_path,
+    *,
+    purpose="pilot",
+    per_tenant=(2, 1),
+    transactions=None,
+    seed=True,
+    unavailable=frozenset(),
 ):
     """Fabricated runs/evidence/manifest in a disposable database; no provider call."""
     import json
@@ -813,6 +820,8 @@ def experiment_scenario(
                 evidence["query_time"] = tx["occurred_at"]
                 evidence["cutoffs"]["history_before"] = tx["occurred_at"]
                 evidence["cutoffs"]["resolved_before"] = tx["occurred_at"]
+                if len(persisted) in unavailable:
+                    evidence["coverage"] = {"status": "unavailable", "missing": ["history"]}
                 identified(evidence, "evidence_id")
                 owner.persist_evidence(evidence)
                 persisted.append(evidence)
@@ -830,8 +839,8 @@ def experiment_scenario(
                 "tenant_id": e["tenant_id"],
                 "transaction_id": e["transaction_id"],
                 "evidence_id": e["evidence_id"],
-                "coverage_status": "available",
-                "missing": [],
+                "coverage_status": e["coverage"]["status"],
+                "missing": e["coverage"]["missing"],
                 "projection_id": None,
                 "page_rank_converged": None,
                 "snapshot_age_seconds": None,
