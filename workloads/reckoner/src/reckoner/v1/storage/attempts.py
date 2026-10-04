@@ -11,7 +11,7 @@ from psycopg.types.json import Jsonb
 from reckoner.contracts import content_id
 from reckoner.resources import PROMPTS
 from reckoner.storage.budget import ACCOUNTING_LOCK
-from reckoner.v1 import pricing
+from reckoner.v1 import pricing, projection
 from reckoner.v1.contracts import validate_v1
 from reckoner.v1.providers.jev import JevError, build_request, valid_usage, validate_response
 from reckoner.v1.storage.budget import ProviderBudget, attempt_maximum, validate_protocol
@@ -233,6 +233,7 @@ def score_task(repo, client, task: dict, evidence: dict, protocol: dict) -> dict
                 "call_id": str(uuid.uuid4()),
                 "request_sha256": digest,
                 "request_document": request,
+                "request_projection": projection.VERSION,
             }
             maximum = attempt_maximum(
                 protocol,

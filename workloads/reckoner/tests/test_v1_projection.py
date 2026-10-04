@@ -85,7 +85,11 @@ def test_large_indicator_is_projected_with_count_hash_and_ordered_exemplars():
         "evidence_refs": full[: projection.REF_SAMPLE],
         "evidence_refs_truncated": True,
     }
-    assert request["state"]["request_projection"] == projection.VERSION == "bounded-evidence-v1"
+    # The Jev Choice contract in this repository documents no extra state keys, so the
+    # projection version is recorded with the call and the protocol, never sent.
+    assert "request_projection" not in request["state"]
+    assert set(request["state"]) == {"dataset_simulated", "transaction", "evidence"}
+    assert projection.VERSION == "bounded-evidence-v1"
     assert size(request) < 8000
 
 

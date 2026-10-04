@@ -64,13 +64,14 @@ def build_request(transaction: dict, evidence: dict) -> dict:
     )
     summary = {key: validated[key] for key in evidence_keys if key in validated}
     # Only the request is bounded (count, hash and ordered exemplars); evidence is unchanged.
+    # The projection version is recorded with each call and protocol, not sent: the Jev
+    # Choice contract documented here defines no further state keys.
     summary["risk_indicators"] = projection.indicators(validated)
     summary["comparable_cases"] = projection.comparables(validated)
     return {
         "model": MODEL,
         "state": {
             "dataset_simulated": True,
-            "request_projection": projection.VERSION,
             "transaction": {
                 key: transaction[key] for key in transaction_keys if key in transaction
             },

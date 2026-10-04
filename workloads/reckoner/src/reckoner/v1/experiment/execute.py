@@ -93,6 +93,7 @@ def retain_outputs(repo, protocol, directory: Path) -> dict:
             "task_id": row["task_id"],
             "protocol_id": row["protocol_id"],
             "request_sha256": row["document"]["request_sha256"],
+            "request_projection": row["document"].get("request_projection"),
             "response_sha256": content_id(row["body"]) if row["body"] is not None else None,
             "category": row["category"],
             "usage": row["usage"],

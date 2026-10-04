@@ -239,6 +239,28 @@ def test_score_cost_response_persisted_restart_does_not_send_again(pg):
     assert len(count) == 1
 
 
+def test_each_scoring_call_records_its_request_projection_version(pg):
+    from reckoner.v1 import projection
+
+    repo, task, evidence, p, attempts, jev = scoring(pg)
+    sent = []
+
+    def handle(request):
+        sent.append(request.content)
+        return httpx.Response(200, json=response())
+
+    client = jev.JevClient("fabricated-only", transport=httpx.MockTransport(handle))
+    with repo:
+        score = attempts.score_task(repo, client, task, evidence, p)
+        document = repo._connection.execute(
+            "SELECT document FROM reckoner.v1_provider_calls WHERE call_id=%s",
+            (score["call_id"],),
+        ).fetchone()["document"]
+    assert document["request_projection"] == projection.VERSION
+    assert document["request_sha256"] == content_id(document["request_document"])
+    assert b"request_projection" not in sent[0]
+
+
 @pytest.mark.parametrize("status,want", [(401, 1), (422, 1), (429, 3), (529, 3)])
 def test_retry_bounds_and_separate_liability(pg, monkeypatch, status, want):
     repo, task, evidence, p, attempts, jev = scoring(pg)
