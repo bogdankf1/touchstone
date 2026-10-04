@@ -100,6 +100,8 @@ def register(subcommands):
     register = steps.add_parser("register-calibration")
     register.add_argument("--report-dir", type=Path, required=True)
     register.add_argument("--protocol-sha256", required=True)
+    register.add_argument("--development-protocol-sha256", required=True)
+    register.add_argument("--bundle", type=Path, required=True)
     register.add_argument("--data-kind", choices=("simulated-cctd", "fabricated"), required=True)
     register.add_argument("--tenant-id", action="append", required=True)
     settle = steps.add_parser("settle")
@@ -356,9 +358,32 @@ def run(args):
         with V1Repository(owner) as repo:
             protocol = load_recorded(repo, args.protocol_sha256)
             if step == "register-calibration":
+                if protocol["purpose"] != "validation":
+                    raise ValueError("--protocol-sha256 must be a validation-purpose protocol")
+                development = load_recorded(repo, args.development_protocol_sha256)
+                if development["purpose"] != "development":
+                    raise ValueError(
+                        "--development-protocol-sha256 must be a development-purpose protocol"
+                    )
                 context = calibration.calibration_context(repo, protocol, args.data_kind)
+                if calibration.calibration_context(repo, development, args.data_kind) != context:
+                    raise ValueError("development and validation contexts differ")
+                rows = {
+                    name: calibration.export_calibration_rows(
+                        repo,
+                        frozen=calibration.load_frozen_sample(args.bundle, name),
+                        protocol=recorded,
+                        data_kind=args.data_kind,
+                    )["rows"]
+                    for name, recorded in (("development", development), ("validation", protocol))
+                }
                 identity = calibration.register_selected(
-                    repo, report_dir=args.report_dir, tenants=args.tenant_id, context=context
+                    repo,
+                    report_dir=args.report_dir,
+                    tenants=args.tenant_id,
+                    context=context,
+                    development_rows=rows["development"],
+                    validation_rows=rows["validation"],
                 )
                 return {"calibration_id": identity, "tenants": sorted(args.tenant_id)}
             frozen = calibration.load_frozen_sample(args.bundle, protocol["purpose"])

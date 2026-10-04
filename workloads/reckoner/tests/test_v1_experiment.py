@@ -487,12 +487,13 @@ def test_activation_changes_only_future_run_declarations(pg):
 # --- calibration export: privileged evaluator joins of authentic scored runs -----
 
 
-def calibration_case_transactions(pg, count=4):
-    """Fabricated 2018 transactions (simulated fixture rows), resolved before 2019."""
+def calibration_case_transactions(pg, count=4, year=2018, seed=True):
+    """Fabricated transactions (simulated fixture rows), resolved before the next year."""
     from reckoner.v1.storage.repository import V1Repository
     from test_v1_storage import setup_run
 
-    setup_run(pg)
+    if seed:
+        setup_run(pg)
     with V1Repository(pg.owner_dsn) as owner:
         template = owner._connection.execute(
             "SELECT document FROM reckoner.transactions WHERE tenant_id='tenant-a' LIMIT 1"
@@ -500,8 +501,8 @@ def calibration_case_transactions(pg, count=4):
         docs = []
         for n in range(count):
             tx = dict(template)
-            tx["transaction_id"] = f"fabricated-calibration-{n}"
-            tx["occurred_at"] = f"2018-06-0{n + 1}T12:00:00Z"
+            tx["transaction_id"] = f"fabricated-calibration-{year}-{n}"
+            tx["occurred_at"] = f"{year}-06-0{n + 1}T12:00:00Z"
             tx["account_id"] = f"fabricated-user-{n % 2}"
             owner._connection.execute(
                 "INSERT INTO reckoner.transactions VALUES (%s,%s,%s)",
@@ -511,13 +512,20 @@ def calibration_case_transactions(pg, count=4):
     return docs
 
 
-def scored_validation(pg, tmp_path, monkeypatch):
+def scored_validation(pg, tmp_path, monkeypatch, purpose="validation", seed=True):
     from test_v1_protocol import experiment_scenario, fixture_approval, reserve
 
     no_sleep(monkeypatch)
-    docs = calibration_case_transactions(pg)
+    year = 2018 if purpose == "validation" else 2017
+    (tmp_path / purpose).mkdir(exist_ok=True)
+    docs = calibration_case_transactions(pg, year=year, seed=seed)
     draft, _, runs = experiment_scenario(
-        pg, tmp_path, purpose="validation", per_tenant=(4, 0), transactions=docs, seed=False
+        pg,
+        tmp_path / purpose,
+        purpose=purpose,
+        per_tenant=(4, 0),
+        transactions=docs,
+        seed=False,
     )
     reserve(pg, draft, fixture_approval(draft))
     probabilities = iter([0.7, 0.2, 0.6, 0.1])
@@ -529,12 +537,14 @@ def scored_validation(pg, tmp_path, monkeypatch):
         body["answers"]["risk"]["choice"] = "fraud" if fraud > 0.5 else "legitimate"
         return httpx.Response(200, json=body)
 
-    result = execute(pg, draft, Recorder(handler), tmp_path)
+    result = execute(pg, draft, Recorder(handler), tmp_path, output_dir=tmp_path / f"out-{purpose}")
     assert result["status"] == "complete", result["stop_reason"]
     return draft, docs
 
 
-def frozen_sample(docs, labels=("fraud", "legitimate", "fraud", "legitimate")):
+def frozen_sample(
+    docs, labels=("fraud", "legitimate", "fraud", "legitimate"), purpose="validation"
+):
     from decimal import Decimal as D
 
     runtime = [dict(d) for d in docs]
@@ -551,9 +561,9 @@ def frozen_sample(docs, labels=("fraud", "legitimate", "fraud", "legitimate")):
     counts = {label: labels.count(label) for label in ("fraud", "legitimate")}
     population = {"fraud": 6, "legitimate": 40}
     sample = {
-        "purpose": "validation",
-        "year": 2018,
-        "sample_id": "5" * 64,
+        "purpose": purpose,
+        "year": 2018 if purpose == "validation" else 2017,
+        "sample_id": ("5" if purpose == "validation" else "7") * 64,
         "selected_transaction_ids": sorted(d["transaction_id"] for d in docs),
         "strata": {
             label: {
@@ -656,7 +666,10 @@ def test_selected_artifact_registration_requires_a_selected_report(tmp_path):
 
     (tmp_path / "selected-artifact.json").write_text("null")
     with pytest.raises(ValueError, match="raw scores retained"):
-        register_selected(object(), report_dir=tmp_path, tenants=["tenant-a"], context={})
+        register_selected(
+            object(), report_dir=tmp_path, tenants=["tenant-a"], context={},
+            development_rows=[], validation_rows=[],
+        )  # fmt: skip
 
 
 # --- Anthropic legacy ledger restore: dump -> disposable staging -> copy + verify -
@@ -1019,43 +1032,85 @@ def selected_for(context):
     return rehash(artifact)
 
 
+def bound_artifact(context, development_rows, validation_rows):
+    """A selected artifact whose identities are the exported rows' content IDs."""
+    from reckoner.v1.calibration import fit_calibration
+    from test_v1_calibration import rehash
+
+    artifact = fit_calibration(development_rows)
+    artifact["qualification"] = {
+        "status": "selected",
+        "validation_id": content_id(validation_rows),
+        "raw_brier": 0.04,
+        "candidate_brier": 0.001,
+        "raw_log_loss": 0.2,
+        "candidate_log_loss": 0.02,
+    }
+    return rehash(artifact)
+
+
+def scored_pair(pg, tmp_path, monkeypatch):
+    development, dev_docs = scored_validation(pg, tmp_path, monkeypatch, purpose="development")
+    validation, val_docs = scored_validation(pg, tmp_path, monkeypatch, seed=False)
+    samples = {
+        "development": frozen_sample(dev_docs, purpose="development"),
+        "validation": frozen_sample(val_docs),
+    }
+    return development, validation, samples
+
+
 @pytest.mark.integration
-def test_selected_artifact_registers_per_tenant_through_python_and_cli(pg, tmp_path, monkeypatch):
+def test_selected_artifact_binds_exported_rows_and_registers_per_tenant(pg, tmp_path, monkeypatch):
     import json
 
     from reckoner.cli import _parser
     from reckoner.v1.cli import execute as v1
-    from reckoner.v1.experiment.calibration import calibration_context, register_selected
+    from reckoner.v1.experiment import calibration
     from reckoner.v1.storage.repository import V1Repository
 
-    draft, docs = scored_validation(pg, tmp_path, monkeypatch)
+    development, validation, samples = scored_pair(pg, tmp_path, monkeypatch)
+    monkeypatch.setattr(calibration, "load_frozen_sample", lambda bundle, purpose: samples[purpose])
     with V1Repository(pg.owner_dsn) as owner:
-        context = calibration_context(owner, draft, "fabricated")
-    artifact = selected_for(context)
+        context = calibration.calibration_context(owner, validation, "fabricated")
+        rows = {
+            name: calibration.export_calibration_rows(
+                owner, frozen=samples[name], protocol=protocol, data_kind="fabricated"
+            )["rows"]
+            for name, protocol in (("development", development), ("validation", validation))
+        }
+    artifact = bound_artifact(context, rows["development"], rows["validation"])
     report_dir = tmp_path / "report"
     report_dir.mkdir()
     (report_dir / "selected-artifact.json").write_text(json.dumps(artifact))
     with V1Repository(pg.owner_dsn) as owner:
-        assert (
-            register_selected(owner, report_dir=report_dir, tenants=["tenant-a"], context=context)
-            == artifact["calibration_id"]
-        )
-        with pytest.raises(ValueError):
-            register_selected(
-                owner,
-                report_dir=report_dir,
-                tenants=["tenant-a"],
-                context={**context, "evidence_mode": "gds-augmented"},
-            )
+        with pytest.raises(ValueError, match="development rows"):
+            calibration.register_selected(
+                owner, report_dir=report_dir, tenants=["tenant-a"], context=context,
+                development_rows=rows["validation"], validation_rows=rows["validation"],
+            )  # fmt: skip
+        with pytest.raises(ValueError, match="validation rows"):
+            calibration.register_selected(
+                owner, report_dir=report_dir, tenants=["tenant-a"], context=context,
+                development_rows=rows["development"], validation_rows=rows["development"],
+            )  # fmt: skip
     env = tmp_path / "owner.env"
     env.write_text(f"RECKONER_OWNER_DSN={pg.owner_dsn}\n")
-    result = v1(
-        _parser().parse_args(
-            ["v1", "protocol", "register-calibration", "--report-dir", str(report_dir),
-             "--protocol-sha256", draft["protocol_sha256"], "--data-kind", "fabricated",
-             "--tenant-id", "tenant-a", "--tenant-id", "tenant-b", "--env-file", str(env)]
-        )
-    )  # fmt: skip
+
+    def register(validation_sha, development_sha):
+        return v1(
+            _parser().parse_args(
+                ["v1", "protocol", "register-calibration", "--report-dir", str(report_dir),
+                 "--protocol-sha256", validation_sha, "--development-protocol-sha256",
+                 development_sha, "--bundle", str(tmp_path), "--data-kind", "fabricated",
+                 "--tenant-id", "tenant-a", "--tenant-id", "tenant-b", "--env-file", str(env)]
+            )
+        )  # fmt: skip
+
+    with pytest.raises(ValueError, match="validation-purpose"):
+        register(development["protocol_sha256"], development["protocol_sha256"])
+    with pytest.raises(ValueError, match="development-purpose"):
+        register(validation["protocol_sha256"], validation["protocol_sha256"])
+    result = register(validation["protocol_sha256"], development["protocol_sha256"])
     assert result == {
         "calibration_id": artifact["calibration_id"],
         "tenants": ["tenant-a", "tenant-b"],

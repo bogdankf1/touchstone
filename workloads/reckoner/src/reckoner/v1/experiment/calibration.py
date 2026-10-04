@@ -193,13 +193,29 @@ def export_calibration_rows(
     return {"rows": rows, "provenance": provenance}
 
 
-def register_selected(repo, *, report_dir: Path, tenants: list[str], context: dict) -> str:
-    """Owner-side registration of a Task 5 selected artifact for each tenant."""
+def register_selected(
+    repo,
+    *,
+    report_dir: Path,
+    tenants: list[str],
+    context: dict,
+    development_rows: list[dict],
+    validation_rows: list[dict],
+) -> str:
+    """Owner-side registration of a Task 5 selected artifact for each tenant.
+
+    The artifact must have been fitted on exactly the exported development rows and
+    qualified on exactly the exported validation rows of the recorded protocols.
+    """
     from reckoner.v1.storage.configurations import register_calibration
 
     artifact = json.loads((Path(report_dir) / "selected-artifact.json").read_text())
     if artifact is None:
         raise ValueError("raw scores retained; no selected calibration to register")
+    if artifact.get("development_id") != content_id(development_rows):
+        raise ValueError("artifact was not fitted on the exported development rows")
+    if (artifact.get("qualification") or {}).get("validation_id") != content_id(validation_rows):
+        raise ValueError("artifact was not qualified on the exported validation rows")
     for tenant in tenants:
         register_calibration(repo, tenant_id=tenant, artifact=artifact, context=context)
     return artifact["calibration_id"]
