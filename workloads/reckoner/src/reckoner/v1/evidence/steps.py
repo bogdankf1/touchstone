@@ -28,6 +28,33 @@ EVIDENCE_KEYS = frozenset(
     }
 )
 LOCK_SPACE = 0x3B
+# Exit status for a hard stop the retry wrapper must not repeat: a preparation fault, a
+# resource-guard breach, an identity/ownership refusal, a refused overwrite or a held lock.
+NO_RETRY = 3
+
+
+class RunLockHeld(RuntimeError):
+    """Another run of this preparation holds its lock."""
+
+
+def retryable(error: BaseException) -> bool:
+    """Transient failures (a dead child, a dropped connection, an unavailable or busy graph)
+    may succeed on an identical, idempotent rerun; everything else is a hard stop."""
+    import psycopg
+    from neo4j.exceptions import ServiceUnavailable, SessionExpired, TransientError
+
+    from reckoner.v1.evidence.rolling import ChildDied
+
+    transient = (
+        ChildDied,
+        psycopg.OperationalError,
+        ServiceUnavailable,
+        SessionExpired,
+        TransientError,
+        ConnectionError,
+        TimeoutError,
+    )
+    return isinstance(error, transient)
 
 
 def read_environment(env_file) -> dict:
@@ -232,7 +259,7 @@ class RunLock:
             "SELECT pg_try_advisory_lock(%s, %s)", (LOCK_SPACE, key & 0x7FFFFFFF)
         ).fetchone()[0]:
             self.connection.close()
-            raise RuntimeError("another evidence run holds this preparation's lock")
+            raise RunLockHeld("another evidence run holds this preparation's lock")
 
     def __enter__(self):
         return self
@@ -242,6 +269,7 @@ class RunLock:
 
 
 def _guard(args, output):
+    from reckoner.v1.benchmark.resources import FREE_FLOOR
     from reckoner.v1.evidence.rolling import StoreGuard
 
     return StoreGuard(
@@ -249,7 +277,7 @@ def _guard(args, output):
         free_floor_bytes=args.free_floor_bytes,
         max_store_bytes=args.max_store_bytes,
         vm_free_path=getattr(args, "vm_free_path", None),
-        vm_free_floor_bytes=getattr(args, "vm_free_floor_bytes", 0),
+        vm_free_floor_bytes=getattr(args, "vm_free_floor_bytes", FREE_FLOOR),
     )
 
 
@@ -680,9 +708,14 @@ def _drop(context: Context) -> dict:
 def run(args):
     try:
         return _dispatch(args)
-    except BaseException as error:
-        _log(f"evidence {args.evidence_step} failed: {type(error).__name__}: {error}")
-        raise
+    except Exception as error:
+        if retryable(error):
+            _log(
+                f"evidence {args.evidence_step} failed (retryable): {type(error).__name__}: {error}"
+            )
+            raise
+        _log(f"evidence {args.evidence_step} failed (no retry): {type(error).__name__}: {error}")
+        raise SystemExit(NO_RETRY) from error
 
 
 def _dispatch(args):

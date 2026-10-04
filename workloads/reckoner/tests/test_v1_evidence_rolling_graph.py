@@ -15,7 +15,14 @@ import psycopg
 import pytest
 from reckoner.contracts import content_id
 from test_v1_evidence_preparation import SNAPSHOT, build_inputs, fabricated_scaler
-from test_v1_evidence_rolling import _declare, _environment, _run, config, identities
+from test_v1_evidence_rolling import (
+    _declare,
+    _environment,
+    _run,
+    config,
+    hard_stop,
+    identities,
+)
 
 pytestmark = [pytest.mark.neo4j_integration, pytest.mark.integration]
 TENANTS = ("tenant-a", "tenant-b")
@@ -430,7 +437,7 @@ def test_graph_pass_end_to_end_and_an_unreachable_graph_fails_the_day(
         )
 
     try:
-        with pytest.raises(ValueError, match="publish"):
+        with hard_stop(ValueError, "publish"):
             graph_run(GRAPH_DAYS)
         _run(declaration, through="2019-01-31")
         published = publish("relational")
@@ -474,15 +481,16 @@ def test_graph_pass_end_to_end_and_an_unreachable_graph_fails_the_day(
         monkeypatch.setattr(Neo4jEvidence, "for_task", unreachable)
         # Assembly normally runs in a spawned child; run it inline so the patch applies.
         monkeypatch.setattr(rolling, "isolated", lambda function, *args: function(*args))
-        with pytest.raises(PreparationFault) as raised:
+        with hard_stop(PreparationFault) as stopped:
             graph_run("2019-01-04")
-        assert raised.value.failures and all(
-            "graph unavailable: service unreachable" in f["reasons"] for f in raised.value.failures
+        failures = stopped["cause"].failures
+        assert failures and all(
+            "graph unavailable: service unreachable" in f["reasons"] for f in failures
         )
         with psycopg.connect(pg.owner_dsn) as connection:
             after = connection.execute("SELECT count(*) FROM reckoner.v1_evidence").fetchone()[0]
         assert after == before
-        with pytest.raises(ValueError, match="missing"):
+        with hard_stop(ValueError, "missing"):
             publish("graph")
     finally:
         drop_working_set(pg.owner_dsn, declared["preparation_id"])

@@ -252,22 +252,28 @@ v1e() { e run --rm --no-deps -T -e RECKONER_SOURCE_DIR=/inputs/source \
 ```
 
 Long passes run in the background through a bounded retry of the same idempotent command.
-Every run resumes from persisted facts, so a retry after a host sleep, a killed child or a
-dropped connection continues where the last one stopped. Attempts and exit codes are logged:
+Every run resumes from persisted facts, so a retry after a host sleep, a killed assembly
+child or a dropped connection continues where the last one stopped. A hard stop exits with
+status 3 and is never retried: a preparation fault, a disk-floor or budget breach, an
+identity or ownership refusal, a refused overwrite, or a lock held by another run. Each
+attempt's final JSON (stdout) is kept in its own result file; attempts and exit codes go to
+stderr:
 
 ```bash
-v1e_retry() {   # usage: v1e_retry <max attempts> <evidence arguments...>
-  local limit=$1 attempt=1 code; shift
-  until v1e "$@"; do
-    code=$?
+v1e_retry() {   # usage: v1e_retry <max attempts> <result prefix> <evidence arguments...>
+  local limit=$1 prefix=$2 attempt=1 code; shift 2
+  while :; do
+    v1e "$@" > "$prefix.attempt-$attempt.json"; code=$?
     echo "$(date -u +%FT%TZ) evidence attempt $attempt exit $code" >&2
+    if [ "$code" -eq 0 ]; then return 0; fi
+    if [ "$code" -eq 3 ]; then echo "evidence: hard stop, not retried" >&2; return 3; fi
     if [ "$attempt" -ge "$limit" ]; then return "$code"; fi
     attempt=$((attempt + 1)); sleep 60
   done
-  echo "$(date -u +%FT%TZ) evidence attempt $attempt exit 0" >&2
 }
-v1e_retry 5 run --declaration $P --pass relational --through 2017-12-24 $G \
-  2>> artifacts/phase3/evidence-v1/<prep12>/run.log &
+R=artifacts/phase3/evidence-v1/<prep12>
+v1e_retry 5 "$R/stage1-result" run --declaration $P --pass relational --through 2017-12-24 $G \
+  2>> "$R/run.log" &
 ```
 
 Progress is a timestamped, flushed stderr line: `start relational <day> (<n> cases)`, one line

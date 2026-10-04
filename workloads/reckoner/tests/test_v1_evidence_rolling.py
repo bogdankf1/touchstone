@@ -1,8 +1,10 @@
 """Postgres rolling working set on a fabricated simulated source (disposable stores only)."""
 
 import json
+import re
 import uuid
 from argparse import Namespace
+from contextlib import contextmanager
 from datetime import timedelta
 
 import psycopg
@@ -14,6 +16,21 @@ from test_v1_evidence_preparation import SNAPSHOT, build_inputs, fabricated_scal
 pytestmark = pytest.mark.integration
 
 FIRST_DAYS = "2017-01-12"
+
+
+@contextmanager
+def hard_stop(kind, match=""):
+    """`steps.run` exits with the no-retry status 3; the original error is its cause."""
+    holder = {}
+    try:
+        yield holder
+    except SystemExit as error:
+        assert error.code == 3, error.code
+        assert isinstance(error.__cause__, kind), error.__cause__
+        assert re.search(match, str(error.__cause__)), error.__cause__
+        holder["cause"] = error.__cause__
+    else:
+        pytest.fail("expected a no-retry exit")
 
 
 @pytest.fixture(scope="module")
@@ -494,7 +511,7 @@ def test_crash_before_persist_resumes_to_identical_evidence_without_duplicates(
 
     monkeypatch.setattr(rolling, "persist_documents", crash)
     try:
-        with pytest.raises(RuntimeError, match="injected"):
+        with hard_stop(RuntimeError, "injected"):
             _run(declaration)
         partial = _evidence(pg.owner_dsn)
         assert partial and len(partial) == sum(calls[:2])
@@ -502,7 +519,7 @@ def test_crash_before_persist_resumes_to_identical_evidence_without_duplicates(
         receipts = declaration.parent / "days-relational.jsonl"
         receipts.unlink()
         with RunLock(pg.owner_dsn, declared["preparation_id"]):
-            with pytest.raises(RuntimeError, match="lock"):
+            with hard_stop(RuntimeError, "lock"):
                 _run(declaration)
         result = _run(declaration)
         assert result["runtime_identity"]["oracle_usage"] is False
@@ -510,7 +527,7 @@ def test_crash_before_persist_resumes_to_identical_evidence_without_duplicates(
 
         drop = Namespace(evidence_step="drop-working-set", declaration=declaration, env_file="-")
         with RunLock(pg.owner_dsn, declared["preparation_id"]):
-            with pytest.raises(RuntimeError, match="lock"):
+            with hard_stop(RuntimeError, "lock"):
                 run_step(drop)  # never terminates a concurrent run's working set
         assert _evidence(pg.owner_dsn)
         assert result["complete_days"] == 2 and result["reconstructed_receipts"] == 2
@@ -519,7 +536,7 @@ def test_crash_before_persist_resumes_to_identical_evidence_without_duplicates(
             "start relational 2017-01-",
             "imported source day 2016-09-26",
             "assembled relational case 1/",
-            "evidence run failed: RuntimeError",
+            "evidence run failed (no retry): RuntimeError",
         ):
             assert line in log, line
         resumed = _evidence(pg.owner_dsn)
@@ -563,7 +580,7 @@ def test_query_document_differing_from_its_source_row_fails_with_no_partial_rows
 
     monkeypatch.setattr(preparation, "query_schedule", tampered)
     try:
-        with pytest.raises(ValueError, match="source canonical"):
+        with hard_stop(ValueError, "source canonical"):
             _run(declaration)
         assert _evidence(pg.owner_dsn) == []
         with psycopg.connect(pg.owner_dsn) as connection:

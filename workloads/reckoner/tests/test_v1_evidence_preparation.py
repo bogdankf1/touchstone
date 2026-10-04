@@ -1068,3 +1068,95 @@ def test_progress_lines_are_timestamped_and_flushed(capsys):
     _log("start 2017-01-01 (4 cases)")
     line = capsys.readouterr().err
     assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ start 2017-01-01 \(4 cases\)\n", line)
+
+
+def _retry_cases():
+    import psycopg
+    from neo4j.exceptions import ClientError, ServiceUnavailable, SessionExpired, TransientError
+    from reckoner.v1.benchmark.resources import ResourceGuardError
+    from reckoner.v1.evidence.preparation import PreparationFault
+    from reckoner.v1.evidence.rolling import ChildDied
+    from reckoner.v1.evidence.steps import RunLockHeld
+
+    stop = [
+        PreparationFault("2018-03-15", [{"transaction_id": "q", "reasons": ["x"]}]),
+        ResourceGuardError("free disk below floor"),
+        ValueError("inputs no longer reproduce the declared preparation"),
+        ValueError("refusing a store owned by another preparation or purpose"),
+        FileExistsError("refusing to overwrite a different manifest"),
+        RunLockHeld("another evidence run holds this preparation's lock"),
+        psycopg.errors.UniqueViolation("conflict"),
+        ClientError("syntax"),
+    ]
+    retry = [
+        ChildDied("assembly child process died"),
+        psycopg.OperationalError("server closed the connection unexpectedly"),
+        ServiceUnavailable("graph stopped"),
+        SessionExpired("session expired"),
+        TransientError("deadlock"),
+        ConnectionResetError("reset by peer"),
+    ]
+    return [(e, True) for e in stop] + [(e, False) for e in retry]
+
+
+@pytest.mark.parametrize(
+    "error,hard_stop",
+    _retry_cases(),
+    ids=lambda v: type(v).__name__ if not isinstance(v, bool) else "",
+)
+def test_hard_stops_exit_with_the_no_retry_status_and_transient_failures_stay_retryable(
+    error, hard_stop, monkeypatch, capsys
+):
+    """The retry wrapper stops on status 3; a transient failure exits non-zero but not 3."""
+    from argparse import Namespace
+
+    from reckoner.v1.evidence import steps
+
+    def fail(args):
+        raise error
+
+    monkeypatch.setattr(steps, "_dispatch", fail)
+    args = Namespace(evidence_step="run")
+    if hard_stop:
+        with pytest.raises(SystemExit) as raised:
+            steps.run(args)
+        assert raised.value.code == steps.NO_RETRY == 3
+        assert "no retry" in capsys.readouterr().err
+    else:
+        with pytest.raises(type(error)):
+            steps.run(args)
+        assert "retryable" in capsys.readouterr().err
+
+
+def test_the_cli_returns_the_no_retry_status_through_main(monkeypatch):
+    import psycopg
+    from reckoner.cli import main
+    from reckoner.v1.evidence import steps
+
+    arguments = ["v1", "evidence", "drop-working-set", "--declaration", "d.json", "--env-file", "-"]
+
+    def fault(args):
+        raise ValueError("refusing to drop: owner comment differs")
+
+    monkeypatch.setattr(steps, "_dispatch", fault)
+    with pytest.raises(SystemExit) as raised:
+        main(arguments)
+    assert raised.value.code == 3
+
+    def transient(args):
+        raise psycopg.OperationalError("connection refused")
+
+    monkeypatch.setattr(steps, "_dispatch", transient)
+    assert main(arguments) not in (0, 3)
+
+
+def test_guard_defaults_to_the_hard_vm_floor_when_the_option_is_absent(tmp_path):
+    from argparse import Namespace
+
+    from reckoner.v1.benchmark.resources import FREE_FLOOR
+    from reckoner.v1.evidence.steps import _guard
+
+    guard = _guard(
+        Namespace(free_path=None, free_floor_bytes=FREE_FLOOR, max_store_bytes=None), tmp_path
+    )
+    assert guard.vm_free_floor_bytes == FREE_FLOOR

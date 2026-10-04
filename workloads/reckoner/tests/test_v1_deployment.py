@@ -1357,3 +1357,41 @@ def test_runbook_documents_a_bounded_retry_of_the_idempotent_run():
     block = block[: block.index("}") + 1]
     for needed in ("attempt", "exit", "-ge", "return"):
         assert needed in block, needed
+
+
+def _retry_function():
+    text = (ROOT / "docs/operations/reckoner-v1-runbook.md").read_text()
+    start = text.index("v1e_retry() {")
+    end = text.index("\n}\n", start) + 3
+    return text[start:end]
+
+
+@pytest.mark.parametrize(
+    "codes,calls,status",
+    [
+        ("2 1 0", 3, 0),  # transient failures are retried until success
+        ("3 0", 1, 3),  # the no-retry status stops at once
+        ("2 3 0", 2, 3),
+        ("2 2 2", 3, 2),  # the attempt cap holds
+    ],
+)
+def test_runbook_retry_wrapper_retries_transients_stops_on_no_retry_and_keeps_results(
+    tmp_path, codes, calls, status
+):
+    script = tmp_path / "retry.sh"
+    script.write_text(
+        "set -u\n"
+        f"codes=({codes}); calls=0\n"
+        'v1e() { calls=$((calls + 1)); echo "{\\"attempt\\": $calls}"; '
+        'return "${codes[$((calls - 1))]}"; }\n'
+        "sleep() { :; }\n"
+        + _retry_function()
+        + f'\nv1e_retry 3 "{tmp_path}/result" run --declaration d; status=$?\n'
+        'echo "$calls $status"\n'
+    )
+    result = subprocess.run(["bash", str(script)], capture_output=True, text=True, check=True)
+    assert result.stdout.split() == [str(calls), str(status)]
+    for attempt in range(1, calls + 1):
+        saved = (tmp_path / f"result.attempt-{attempt}.json").read_text()
+        assert json.loads(saved) == {"attempt": attempt}
+    assert "exit" in result.stderr
