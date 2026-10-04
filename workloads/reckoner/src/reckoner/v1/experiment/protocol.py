@@ -35,11 +35,23 @@ PURPOSES = {
     "pilot": ("typesafe", {"pilot"}, "scoring-only"),
     "development": ("typesafe", {"development"}, "scoring-only"),
     "validation": ("typesafe", {"validation"}, "scoring-only"),
-    "graph-comparison": ("typesafe", {"graph-comparison"}, "scoring-only"),
+    # Routing and CPST are compared, so both arms run the workflow; notes are deferred.
+    "graph-comparison": ("typesafe", {"graph-comparison"}, "workflow"),
     "final": ("typesafe", {"final"}, "workflow"),
     "note-judge-pilot": ("anthropic", {"online-note", "judge"}, "workflow"),
     "final-notes": ("anthropic", {"online-note"}, "workflow"),
     "final-judges": ("anthropic", {"judge"}, "workflow"),
+}
+NOTES_DEFERRED = {"graph-comparison"}
+MODES = {"relational", "gds-augmented"}
+SELECTIONS = {"all-escalations", "hash-sample-v1"}
+SELECTION_FIELDS = {
+    "method",
+    "seed",
+    "count",
+    "population_sha256",
+    "population_count",
+    "selected_sha256",
 }
 # Pinned published prices (USD per million tokens); unknown/changed prices block.
 PRICES = {
@@ -67,6 +79,7 @@ FIELDS = {
     "worst_case_usd",
     "usd_cap",
     "dispatch",
+    "selection",
     "protocol_sha256",
 }
 BOUNDS = {
@@ -77,7 +90,15 @@ BOUNDS = {
     "retry_assumption",
 }
 CASE = {"tenant_id", "run_id", "task_id", "transaction_id", "evidence_id", "evidence_mode"}
-RUN = {"tenant_id", "run_id", "experiment_id", "config_id", "purpose", "telemetry_mode"}
+RUN = {
+    "tenant_id",
+    "run_id",
+    "experiment_id",
+    "config_id",
+    "purpose",
+    "telemetry_mode",
+    "evidence_mode",
+}
 PIN = {
     "population",
     "mode",
@@ -158,12 +179,107 @@ def _price(provider, model, table):
         raise ValueError("unknown or changed pinned pricing blocks dispatch")
 
 
+def keys_digest(keys) -> str:
+    """Content identity of an exact set of (tenant_id, run_id, task_id) case keys."""
+    return content_id(sorted([list(key) for key in keys]))
+
+
+def select_cases(population, *, method, seed=None, count=None) -> list[tuple]:
+    """Deterministic recorded selection of escalated tasks (never chosen by result)."""
+    population = sorted({tuple(key) for key in population})
+    if method == "all-escalations":
+        if seed is not None or count is not None:
+            raise ValueError("all-escalations takes no seed or count")
+        return population
+    if method != "hash-sample-v1":
+        raise ValueError("unknown case selection method")
+    if not isinstance(seed, str) or not seed or type(count) is not int:
+        raise ValueError("hash-sample-v1 needs a recorded seed and count")
+    if not 0 < count <= len(population):
+        raise ValueError("selection count exceeds the escalated population")
+
+    def rank(key):
+        text = json.dumps([seed, *key], separators=(",", ":"))
+        return hashlib.sha256(text.encode()).hexdigest(), key
+
+    return sorted(sorted(population, key=rank)[:count])
+
+
+def selection_record(population, *, method, seed=None, count=None) -> dict:
+    selected = select_cases(population, method=method, seed=seed, count=count)
+    population = sorted({tuple(key) for key in population})
+    return {
+        "method": method,
+        "seed": seed,
+        "count": count,
+        "population_sha256": keys_digest(population),
+        "population_count": len(population),
+        "selected_sha256": keys_digest(selected),
+    }
+
+
 def _strings(value, *, allow_empty=False):
     return (
         isinstance(value, list)
         and (allow_empty or value)
         and all(isinstance(v, str) and v.strip() for v in value)
     )
+
+
+def _check_selection(protocol, provider):
+    selection = protocol["selection"]
+    if provider == "typesafe":
+        if selection != {"method": "whole-runs"}:
+            raise ValueError("scoring/workflow protocols cover whole declared runs")
+        return
+    if (
+        not isinstance(selection, dict)
+        or set(selection) != SELECTION_FIELDS
+        or selection["method"] not in SELECTIONS
+        or not HEX.match(str(selection["population_sha256"]))
+        or type(selection["population_count"]) is not int
+    ):
+        raise ValueError("note/judge protocols need a recorded escalation selection")
+    keys = [(c["tenant_id"], c["run_id"], c["task_id"]) for c in protocol["cases"]]
+    if selection["selected_sha256"] != keys_digest(keys):
+        raise ValueError("frozen cases differ from the recorded selection")
+    if selection["method"] == "all-escalations":
+        if (
+            selection["seed"] is not None
+            or selection["count"] is not None
+            or selection["population_sha256"] != selection["selected_sha256"]
+            or selection["population_count"] != len(keys)
+        ):
+            raise ValueError("all-escalations must select the whole escalated population")
+    elif (
+        not isinstance(selection["seed"], str)
+        or selection["count"] != len(keys)
+        or selection["population_count"] < len(keys)
+    ):
+        raise ValueError("hash-sample selection count or seed is inconsistent")
+
+
+def _check_arms(protocol):
+    """Paired graph comparison: two arms, identical membership and configuration."""
+    arms = {}
+    for run in protocol["runs"]:
+        arms.setdefault(run["tenant_id"], {}).setdefault(run["evidence_mode"], []).append(run)
+    for tenant, modes in arms.items():
+        if set(modes) != MODES or any(len(r) != 1 for r in modes.values()):
+            raise ValueError("graph comparison needs one relational and one gds run per tenant")
+        relational, gds = modes["relational"][0], modes["gds-augmented"][0]
+        if relational["config_id"] != gds["config_id"]:
+            raise ValueError("arms must share model, prompt, thresholds and cost assumptions")
+        members = {
+            mode: {
+                c["transaction_id"]
+                for c in protocol["cases"]
+                if (c["tenant_id"], c["run_id"]) == (tenant, run[0]["run_id"])
+            }
+            for mode, run in modes.items()
+        }
+        if members["relational"] != members["gds-augmented"]:
+            raise ValueError("graph comparison arms need identical case membership")
 
 
 def validate_body(protocol: dict) -> dict:
@@ -221,9 +337,13 @@ def validate_body(protocol: dict) -> dict:
             or not HEX.match(str(run["experiment_id"]))
             or not HEX.match(str(run["config_id"]))
             or run["telemetry_mode"] != telemetry
+            or run["evidence_mode"] not in MODES
         ):
             raise ValueError("invalid run pin")
         run_keys.add((run["tenant_id"], run["run_id"]))
+        if provider == "typesafe" and run["evidence_mode"] not in {p["mode"] for p in pins}:
+            raise ValueError("a run's evidence arm has no pinned published manifest")
+    arms = {(r["tenant_id"], r["run_id"]): r["evidence_mode"] for r in runs}
     if len(run_keys) != len(runs):
         raise ValueError("duplicate run pin")
     cases = protocol["cases"]
@@ -235,11 +355,16 @@ def validate_body(protocol: dict) -> dict:
             raise ValueError("invalid case pin")
         if (case["tenant_id"], case["run_id"]) not in run_keys:
             raise ValueError("case belongs to an undeclared run")
+        if case["evidence_mode"] != arms[(case["tenant_id"], case["run_id"])]:
+            raise ValueError("a case's evidence arm differs from its run (cross-arm mixing)")
         case_keys.add((case["tenant_id"], case["run_id"], case["task_id"], case["transaction_id"]))
     if len(case_keys) != len(cases) or len(
         {(c["tenant_id"], c["run_id"], c["task_id"]) for c in cases}
     ) != len(cases):
         raise ValueError("duplicate frozen case")
+    _check_selection(protocol, provider)
+    if protocol["purpose"] == "graph-comparison":
+        _check_arms(protocol)
     covered, total, worst = set(), Decimal(0), Decimal(0)
     dispatch = protocol["dispatch"]
     if not isinstance(dispatch, list) or not dispatch:
@@ -369,12 +494,15 @@ def _check_runs(cursor, protocol):
             for c in protocol["cases"]
             if (c["tenant_id"], c["run_id"]) == (run["tenant_id"], run["run_id"])
         }
+        tasks = {(t["task_id"], t["transaction_id"]) for t in document["tasks"]}
         if (
             document["experiment_id"] != run["experiment_id"]
             or document["config_id"] != run["config_id"]
             or document["purpose"] != run["purpose"]
             or row["telemetry_mode"] != run["telemetry_mode"]
-            or {(t["task_id"], t["transaction_id"]) for t in document["tasks"]} != expected
+            # Scoring/workflow protocols cover the whole run; note/judge protocols an
+            # exact recorded subset of its persisted escalations (checked below).
+            or (tasks != expected if part else not expected <= tasks)
         ):
             raise ValueError("declared run differs from the protocol's frozen cases")
         models = [config[part]] if part else [config["note_model"], config["judge_model"]]
@@ -390,6 +518,64 @@ def _check_runs(cursor, protocol):
             for key in ("input_token_ceiling", "max_output_tokens", "maximum_attempts")
         ):
             raise ValueError("pinned run configuration differs from protocol model/prices/bounds")
+    if part is None:
+        _check_escalations(cursor, protocol)
+
+
+def escalations(cursor, runs) -> dict:
+    """Persisted escalated decisions of the given runs, keyed (tenant, run, task)."""
+    found = {}
+    for run in runs:
+        policy = cursor.execute(
+            "SELECT document FROM reckoner.v1_workflow_runs WHERE tenant_id=%s AND run_id=%s",
+            (run["tenant_id"], run["run_id"]),
+        ).fetchone()
+        for row in cursor.execute(
+            "SELECT document FROM reckoner.v1_decisions WHERE tenant_id=%s AND run_id=%s "
+            "AND outcome='escalate'",
+            (run["tenant_id"], run["run_id"]),
+        ).fetchall():
+            decision = row["document"]
+            found[(decision["tenant_id"], decision["run_id"], decision["task_id"])] = {
+                "decision": decision,
+                "evidence_mode": policy["document"]["evidence_mode"] if policy else None,
+            }
+    return found
+
+
+def _check_escalations(cursor, protocol):
+    """Every case is a persisted escalation; population and selection are recomputed."""
+    population = escalations(cursor, protocol["runs"])
+    selection = protocol["selection"]
+    if (
+        keys_digest(population) != selection["population_sha256"]
+        or len(population) != selection["population_count"]
+    ):
+        raise ValueError("persisted escalation population differs from the recorded one")
+    selected = select_cases(
+        population, method=selection["method"], seed=selection["seed"], count=selection["count"]
+    )
+    if keys_digest(selected) != selection["selected_sha256"]:
+        raise ValueError("deterministic selection differs from the recorded cases")
+    for case in protocol["cases"]:
+        found = population.get((case["tenant_id"], case["run_id"], case["task_id"]))
+        if (
+            found is None
+            or found["decision"]["transaction_id"] != case["transaction_id"]
+            or found["decision"]["evidence_id"] != case["evidence_id"]
+            or found["evidence_mode"] != case["evidence_mode"]
+        ):
+            raise ValueError("a note/judge case is not that run's persisted escalation")
+
+
+def escalation_selection(repo, runs, *, method="all-escalations", seed=None, count=None):
+    """Recorded deterministic selection over the runs' persisted escalations."""
+    from psycopg.rows import dict_row
+
+    population = escalations(repo._connection.cursor(row_factory=dict_row), runs)
+    record = selection_record(population, method=method, seed=seed, count=count)
+    keys = select_cases(population, method=method, seed=seed, count=count)
+    return {"selection": record, "keys": keys}
 
 
 def reserve_protocol(protocol: dict, ledger, *, approval: dict) -> str:
@@ -489,7 +675,16 @@ def measure_scoring_requests(repo, protocol_cases) -> dict:
         )
         if evidence is None or evidence["transaction_id"] != case["transaction_id"]:
             raise ValueError("pinned prepared evidence is missing")
-        entries.append((task, evidence, build_request(task["transaction"], evidence)))
+        mode = "gds-augmented" if evidence.get("graph_projection") is not None else "relational"
+        if case.get("evidence_mode", mode) != mode:
+            raise ValueError("persisted evidence is from another arm than the run declares")
+        entries.append(
+            (
+                task,
+                {"evidence_id": evidence["evidence_id"], "evidence_mode": mode},
+                build_request(task["transaction"], evidence),
+            )
+        )
     return request_measurements(entries)
 
 
@@ -540,8 +735,13 @@ def draft_scoring_protocol(
     ledger: dict | None,
     code_revision: str | None,
     token_overhead: dict | None = None,
+    arms: list[dict] | None = None,
 ) -> dict:
-    """Draft (never execute) a Jev scoring protocol from measured inputs only."""
+    """Draft (never execute) a Jev scoring/workflow protocol from measured inputs only.
+
+    `arms` pins each declared run to one evidence mode ({tenant_id, run_id,
+    evidence_mode}); it is required whenever more than one manifest mode is pinned.
+    """
     if purpose not in PURPOSES or PURPOSES[purpose][0] != "typesafe":
         raise ValueError("not a scoring protocol purpose")
     required = {
@@ -580,10 +780,21 @@ def draft_scoring_protocol(
         )
         for entry in manifest["cases"]:
             by_case.setdefault((entry["tenant_id"], entry["evidence_id"]), (manifest, entry))
+    modes = {item["manifest"]["mode"] for item in manifests}
+    if arms is None:
+        if len(modes) != 1:
+            raise MissingInputs({"run_evidence_modes"})
+        arms = [
+            {"tenant_id": r["tenant_id"], "run_id": r["run_id"], "evidence_mode": next(iter(modes))}
+            for r in runs
+        ]
+    arm = {(a["tenant_id"], a["run_id"]): a["evidence_mode"] for a in arms}
     run_pins, declared = [], set()
     for run in runs:
         if run["purpose"] != purpose:
             raise ValueError("declared run purpose differs from the protocol")
+        if arm.get((run["tenant_id"], run["run_id"])) not in modes:
+            raise ValueError("each declared run needs one pinned evidence arm")
         run_pins.append(
             {
                 "tenant_id": run["tenant_id"],
@@ -592,6 +803,7 @@ def draft_scoring_protocol(
                 "config_id": run["config_id"],
                 "purpose": run["purpose"],
                 "telemetry_mode": telemetry,
+                "evidence_mode": arm[(run["tenant_id"], run["run_id"])],
             }
         )
         declared |= {
@@ -606,6 +818,11 @@ def draft_scoring_protocol(
         found = by_case.get((case["tenant_id"], case["evidence_id"]))
         if found is None or found[1]["transaction_id"] != case["transaction_id"]:
             raise ValueError("measured evidence is not the published manifest document")
+        if (
+            found[0]["mode"] != arm[(case["tenant_id"], case["run_id"])]
+            or case.get("evidence_mode", found[0]["mode"]) != found[0]["mode"]
+        ):
+            raise ValueError("measured evidence comes from another arm (cross-arm mixing)")
         cases.append(
             {
                 "tenant_id": case["tenant_id"],
@@ -666,7 +883,17 @@ def draft_scoring_protocol(
         "approver": approver,
         "statement_of_purpose": (
             f"Jev {purpose} scoring of {len(cases)} frozen simulated cases with published "
-            "prepared evidence; scores only, no routing or notes."
+            "prepared evidence; "
+            + (
+                "scores only, no routing or notes."
+                if telemetry == "scoring-only"
+                else "workflow routing decisions; "
+                + (
+                    "case notes deferred (no note dispatch)."
+                    if purpose in NOTES_DEFERRED
+                    else "notes need their own protocol."
+                )
+            )
         ),
         "expected_outputs": [
             "persisted raw Jev distributions, confidence and usage per case",
@@ -693,8 +920,11 @@ def draft_scoring_protocol(
         "worst_case_usd": _decimal_text(worst),
         "usd_cap": _decimal_text(worst),
         "dispatch": dispatch,
+        "selection": {"method": "whole-runs"},
     }
-    return identify(body)
+    draft = identify(body)
+    validate_body(draft)
+    return draft
 
 
 def measure_note_requests(repo, keys) -> dict:
@@ -744,8 +974,12 @@ def draft_note_protocol(
     price_table: dict | None,
     ledger: dict | None,
     code_revision: str | None,
+    selection: dict | None = None,
 ) -> dict:
     """Draft (never execute) an Anthropic note and/or judge protocol from measurements.
+
+    `selection` is the recorded escalation selection from `escalation_selection`; the
+    measured cases must be exactly its selected persisted escalations.
 
     Note generation lists each exact request hash (one generation plus at most one
     repair of the same request). Judge stages use derived-request-v1: fixed builders
@@ -765,6 +999,7 @@ def draft_note_protocol(
         "price_snapshot": price_table,
         "ledger_snapshot": ledger,
         "code_revision": code_revision,
+        "escalation_selection": selection,
     }
     missing = {name for name, value in required.items() if not value}
     if missing:
@@ -794,9 +1029,17 @@ def draft_note_protocol(
         ),
     }
     declared, run_pins = set(), []
+    run_modes = {}
+    for case in measurements["cases"]:
+        run_modes.setdefault((case["tenant_id"], case["run_id"]), set()).add(
+            case.get("evidence_mode")
+        )
     for run in runs:
         if run["config_id"] != config["config_id"]:
             raise ValueError("declared run uses another frozen configuration")
+        mode = run_modes.get((run["tenant_id"], run["run_id"]), set())
+        if len(mode) != 1 or None in mode:
+            raise ValueError("each run's escalations must come from one evidence arm")
         run_pins.append(
             {
                 "tenant_id": run["tenant_id"],
@@ -805,12 +1048,16 @@ def draft_note_protocol(
                 "config_id": run["config_id"],
                 "purpose": run["purpose"],
                 "telemetry_mode": telemetry,
+                "evidence_mode": next(iter(mode)),
             }
         )
         declared |= {
             (run["tenant_id"], run["run_id"], t["task_id"], t["transaction_id"])
             for t in run["tasks"]
         }
+    measured_keys = [(c["tenant_id"], c["run_id"], c["task_id"]) for c in measurements["cases"]]
+    if keys_digest(measured_keys) != selection["selected_sha256"]:
+        raise ValueError("measured note requests differ from the recorded selection")
     groups, cases = {}, []
     for case in measurements["cases"]:
         key = (case["tenant_id"], case["run_id"], case["task_id"], case["transaction_id"])
@@ -896,8 +1143,11 @@ def draft_note_protocol(
         "worst_case_usd": _decimal_text(worst),
         "usd_cap": _decimal_text(worst),
         "dispatch": dispatch,
+        "selection": selection,
     }
-    return identify(body)
+    draft = identify(body)
+    validate_body(draft)
+    return draft
 
 
 def present_protocol(protocol: dict, ledger: dict) -> str:

@@ -111,98 +111,134 @@ def _cases(protocol):
     return {(c["tenant_id"], c["run_id"], c["task_id"]): c for c in protocol["cases"]}
 
 
+def _dispatch(prepared, run_one):
+    """Sequential dispatch: a budget stop or any error halts every later case."""
+    results, stop, error = [], None, None
+    for key, *item in prepared:
+        if stop is not None or error is not None:
+            results.append({"key": key, "status": "not-dispatched"})
+            continue
+        try:
+            results.append({"key": key, **run_one(*item)})
+        except BudgetExceeded as exc:
+            stop = str(exc)
+            results.append({"key": key, "status": "not-dispatched"})
+        except Exception as exc:  # recorded, outputs retained, then re-raised
+            error = exc
+            results.append({"key": key, "status": "error", "error": type(exc).__name__})
+    return results, stop, error
+
+
+def _ordered(protocol):
+    for dispatch in sorted(protocol["dispatch"], key=lambda d: (d["tenant_id"], d["run_id"])):
+        for item in dispatch["tasks"]:
+            yield dispatch, (dispatch["tenant_id"], dispatch["run_id"], item["task_id"])
+
+
+def _pinned_evidence(repo, cases, key):
+    evidence = repo.workflow_document(
+        "v1_evidence", {"tenant_id": key[0], "evidence_id": cases[key]["evidence_id"]}
+    )
+    if evidence is None:
+        raise ValueError("pinned prepared evidence is missing; nothing dispatched")
+    mode = "gds-augmented" if evidence.get("graph_projection") is not None else "relational"
+    if mode != cases[key]["evidence_mode"]:
+        raise ValueError("pinned evidence belongs to another arm; nothing dispatched")
+    return evidence
+
+
 def _score_cases(repo, protocol, client):
     from reckoner.v1.storage.attempts import _preflight, score_task
 
     cases = _cases(protocol)
     prepared = []
-    for dispatch in sorted(protocol["dispatch"], key=lambda d: (d["tenant_id"], d["run_id"])):
-        for item in dispatch["tasks"]:
-            key = (dispatch["tenant_id"], dispatch["run_id"], item["task_id"])
-            task = repo.task(*key)
-            evidence = repo.workflow_document(
-                "v1_evidence", {"tenant_id": key[0], "evidence_id": cases[key]["evidence_id"]}
-            )
-            if evidence is None:
-                raise ValueError("pinned prepared evidence is missing; nothing dispatched")
-            # Exact request/case/model/pricing/bounds are checked for every case first.
-            _preflight(repo, task, evidence, dispatch)
-            prepared.append((key, task, evidence, dispatch))
-    results, stop = [], None
-    for key, task, evidence, dispatch in prepared:
-        if stop is not None:
-            results.append({"key": key, "status": "not-dispatched"})
-            continue
-        try:
-            score = score_task(repo, client, task, evidence, dispatch)
-        except BudgetExceeded as error:
-            stop = str(error)
-            results.append({"key": key, "status": "not-dispatched"})
-            continue
-        results.append({"key": key, "status": score.get("attempt_status") or "deferred"})
-    return results, stop
+    for dispatch, key in _ordered(protocol):
+        task = repo.task(*key)
+        evidence = _pinned_evidence(repo, cases, key)
+        # Exact request/case/model/pricing/bounds are checked for every case first.
+        _preflight(repo, task, evidence, dispatch)
+        prepared.append((key, task, evidence, dispatch))
+
+    def run_one(task, evidence, dispatch):
+        score = score_task(repo, client, task, evidence, dispatch)
+        return {"status": score.get("attempt_status") or "deferred"}
+
+    return _dispatch(prepared, run_one)
 
 
 def _workflow_cases(repo, protocol, client, dsn, settings):
+    from reckoner.v1.storage.attempts import _preflight
     from reckoner.v1.storage.checkpoints import PostgresCheckpointer
     from reckoner.v1.workflow import build_graph, run_task
 
     cases = _cases(protocol)
     repo.scorer_client = client
-    results, stop = [], None
-    for dispatch in sorted(protocol["dispatch"], key=lambda d: (d["tenant_id"], d["run_id"])):
-        graph = build_graph(PostgresCheckpointer(dsn, dispatch["tenant_id"]))
-        for item in dispatch["tasks"]:
-            key = (dispatch["tenant_id"], dispatch["run_id"], item["task_id"])
-            if stop is not None:
-                results.append({"key": key, "status": "not-dispatched"})
-                continue
-            task = repo.task(*key)
-            config = {
-                "evidence_id": cases[key]["evidence_id"],
-                "evidence_mode": cases[key]["evidence_mode"],
-                "data_kind": settings["data_kind"],
-                "protocol": dispatch,
-                "calibration": settings["calibration"],
-            }
-            try:
-                decision = run_task(repo, graph, task, config)
-            except BudgetExceeded as error:
-                stop = str(error)
-                results.append({"key": key, "status": "not-dispatched"})
-                continue
-            results.append({"key": key, "status": "decided", "outcome": decision["outcome"]})
-    return results, stop
+    graphs, prepared = {}, []
+    for dispatch, key in _ordered(protocol):
+        task = repo.task(*key)
+        evidence = _pinned_evidence(repo, cases, key)
+        if evidence["coverage"]["status"] == "available":
+            _preflight(repo, task, evidence, dispatch)
+        if key[0] not in graphs:
+            graphs[key[0]] = build_graph(PostgresCheckpointer(dsn, key[0]))
+        settings_for = {
+            "evidence_id": cases[key]["evidence_id"],
+            "evidence_mode": cases[key]["evidence_mode"],
+            "data_kind": settings["data_kind"],
+            "protocol": dispatch,
+            "calibration": settings["calibration"],
+        }
+        prepared.append((key, task, graphs[key[0]], settings_for))
+
+    def run_one(task, graph, settings_for):
+        decision = run_task(repo, graph, task, settings_for)
+        return {"status": "decided", "outcome": decision["outcome"]}
+
+    return _dispatch(prepared, run_one)
 
 
 def _note_cases(repo, protocol, client):
+    from reckoner.v1.notes.calls import BudgetedCalls
     from reckoner.v1.notes.lifecycle import continue_note, note_work
+    from reckoner.v1.notes.prompt import build_note_request
 
-    results, stop = [], None
-    for dispatch in sorted(protocol["dispatch"], key=lambda d: (d["tenant_id"], d["run_id"])):
-        for item in dispatch["tasks"]:
-            key = (dispatch["tenant_id"], dispatch["run_id"], item["task_id"])
-            if dispatch["purpose"] != "online-note":
-                # Judge stages run through the evaluator's evaluate_note_fixtures.
-                results.append({"key": key, "status": "evaluator-owned"})
-                continue
-            if stop is not None:
-                results.append({"key": key, "status": "not-dispatched"})
-                continue
-            decision = repo.workflow_document(
-                "v1_decisions", dict(zip(("tenant_id", "run_id", "task_id"), key, strict=True))
-            )
-            if decision is None or decision["outcome"] != "escalate":
-                raise ValueError("note protocol case is not a persisted escalation")
-            repo.note_client, repo.note_protocol = client, dispatch
-            try:
-                continue_note(repo, decision)
-            except BudgetExceeded as error:
-                stop = str(error)
-                results.append({"key": key, "status": "not-dispatched"})
-                continue
-            results.append({"key": key, "status": note_work(repo, decision)["status"]})
-    return results, stop
+    prepared, judged = [], []
+    for dispatch, key in _ordered(protocol):
+        if dispatch["purpose"] != "online-note":
+            # Judge stages run through the evaluator's evaluate_note_fixtures.
+            judged.append({"key": key, "status": "evaluator-owned"})
+            continue
+        identity = dict(zip(("tenant_id", "run_id", "task_id"), key, strict=True))
+        decision = repo.workflow_document("v1_decisions", identity)
+        if decision is None or decision["outcome"] != "escalate":
+            raise ValueError("note protocol case is not a persisted escalation")
+        task = repo.task(*key)
+        config = repo.workflow_document(
+            "v1_configs", {"tenant_id": key[0], "config_id": task["config_id"]}
+        )
+        evidence = repo.workflow_document(
+            "v1_evidence", {"tenant_id": key[0], "evidence_id": decision["evidence_id"]}
+        )
+        score = {}
+        if decision["call_id"] is not None:
+            score = repo._connection.execute(
+                "SELECT score FROM reckoner.v1_provider_responses WHERE tenant_id=%s "
+                "AND call_id=%s",
+                (key[0], decision["call_id"]),
+            ).fetchone()["score"]
+        # Every note request is checked against its exact approved hash before any call.
+        BudgetedCalls(repo, client, task, config, kind="note").preflight(
+            build_note_request(decision, evidence, score, config), "note-generation", dispatch
+        )
+        prepared.append((key, decision, dispatch))
+
+    def run_one(decision, dispatch):
+        repo.note_client, repo.note_protocol = client, dispatch
+        continue_note(repo, decision)
+        return {"status": note_work(repo, decision)["status"]}
+
+    results, stop, error = _dispatch(prepared, run_one)
+    return results + judged, stop, error
 
 
 def _telemetry(repo, protocol, closed):
@@ -229,6 +265,22 @@ def _telemetry(repo, protocol, closed):
                         {"task_id": case["task_id"], "scope": scope, "reason": str(error)}
                     )
     return {"collected": True, "enqueued": enqueued, "pending": pending}
+
+
+def _record_kind(repo, protocol_id, execution_kind):
+    """Persist the transport label once; a later run cannot relabel the protocol."""
+    with repo._connection.transaction():
+        repo._connection.execute(
+            "INSERT INTO reckoner.v1_protocol_executions (protocol_sha256, execution_kind) "
+            "VALUES (%s,%s) ON CONFLICT DO NOTHING",
+            (protocol_id, execution_kind),
+        )
+        recorded = repo._connection.execute(
+            "SELECT execution_kind FROM reckoner.v1_protocol_executions WHERE protocol_sha256=%s",
+            (protocol_id,),
+        ).fetchone()["execution_kind"]
+    if recorded != execution_kind:
+        raise ValueError(f"this protocol was already executed as {recorded}")
 
 
 def close_protocol(protocol_id: str, *, dsn: str) -> dict:
@@ -259,35 +311,36 @@ def execute_protocol(
         client = provider_clients.get(protocol["provider"])
         if client is None:
             raise ValueError("no provider client injected for this protocol; nothing dispatched")
-        directory = _output(output_dir)
-        if protocol["provider"] == "anthropic":
-            results, stop = _note_cases(repo, protocol, client)
-        elif protocol["telemetry_mode"] == "workflow":
+        if protocol["telemetry_mode"] == "workflow" and protocol["provider"] == "typesafe":
             if data_kind not in {"fabricated", "simulated-cctd"}:
                 raise ValueError("workflow execution needs an explicit data kind")
-            results, stop = _workflow_cases(
+        _record_kind(repo, protocol_id, execution_kind)
+        directory = _output(output_dir)
+        if protocol["provider"] == "anthropic":
+            results, stop, error = _note_cases(repo, protocol, client)
+        elif protocol["telemetry_mode"] == "workflow":
+            results, stop, error = _workflow_cases(
                 repo, protocol, client, dsn, {"data_kind": data_kind, "calibration": calibration}
             )
         else:
-            results, stop = _score_cases(repo, protocol, client)
-        terminal = {
-            "responded",
-            "failed",
-            "uncertain",
-            "decided",
-            "succeeded",
-            "invalid",
-            "evaluator-owned",
-        }
-        resumable = any(r["status"] not in terminal | {"not-dispatched"} for r in results)
-        closed = stop is not None or not resumable
+            results, stop, error = _score_cases(repo, protocol, client)
+        terminal = {"responded", "failed", "uncertain", "decided", "succeeded", "invalid"}
+        own = [r for r in results if r["status"] != "evaluator-owned"]
+        resumable = any(r["status"] not in terminal | {"not-dispatched"} for r in own)
+        # An error leaves envelopes open (state explicit and resumable after repair);
+        # a budget stop or terminal results close the executed (non-judge) envelopes.
+        closed = error is None and (stop is not None or not resumable)
         ledger = ProviderBudget(repo._connection)
         if closed:
             # Judge envelopes stay open for the evaluator; close them with close_protocol.
             for dispatch in protocol["dispatch"]:
                 if dispatch["purpose"] != "judge":
                     ledger.close(dispatch["protocol_id"])
-        telemetry = _telemetry(repo, protocol, closed)
+        telemetry = (
+            _telemetry(repo, protocol, closed)
+            if error is None
+            else {"collected": False, "reason": "execution error"}
+        )
         retained = retain_outputs(repo, protocol, directory)
         totals = repo._connection.execute(
             "SELECT COALESCE(sum(s.cost),0) AS settled, count(*) FILTER (WHERE s.cost IS NULL) "
@@ -295,22 +348,30 @@ def execute_protocol(
             "ON s.call_id=c.call_id AND s.status='settled' WHERE c.protocol_id = ANY(%s)",
             ([d["protocol_id"] for d in protocol["dispatch"]],),
         ).fetchone()
-        complete = (
+        dispatched = (
             stop is None
-            and all(
-                r["status"] in {"responded", "decided", "succeeded", "evaluator-owned"}
-                for r in results
-            )
+            and error is None
+            and all(r["status"] in {"responded", "decided", "succeeded"} for r in own)
             and totals["uncertain"] == 0
         )
+        judges_pending = any(r["status"] == "evaluator-owned" for r in results)
+        if error is not None:
+            status = "error"
+        elif stop:
+            status = "stopped"
+        elif not dispatched:
+            status = "incomplete"
+        else:
+            status = "dispatched; judges pending" if judges_pending else "complete"
         summary = {
             "protocol_sha256": protocol_id,
             "provider": protocol["provider"],
             "purpose": protocol["purpose"],
             "execution_kind": execution_kind,
-            "status": "stopped" if stop else ("complete" if complete else "incomplete"),
+            "status": status,
             "stop_reason": stop,
-            "closed": closed and all(d["purpose"] != "judge" for d in protocol["dispatch"]),
+            "error": None if error is None else f"{type(error).__name__}: {error}",
+            "closed": closed and not judges_pending,
             "cases": [
                 {
                     **dict(zip(("tenant_id", "run_id", "task_id"), r["key"], strict=True)),
@@ -326,4 +387,6 @@ def execute_protocol(
             "dataset_simulated": True,
         }
         _write(directory / "summary.json", json.dumps(summary, sort_keys=True, indent=2))
+        if error is not None:
+            raise error
         return summary
