@@ -381,7 +381,7 @@ def test_offline_scoring_without_routing_decision_exports_and_closes_only_after_
     from reckoner.v1.storage.attempts import score_task
     from reckoner.v1.storage.budget import ProviderBudget
     from test_v1_budget import scoring
-    from v1_fixtures import identified
+    from v1_fixtures import identified, reauthorize
 
     repo, task, evidence, protocol, _, jev = scoring(pg, attempts=1)
     import httpx
@@ -401,8 +401,10 @@ def test_offline_scoring_without_routing_decision_exports_and_closes_only_after_
         with repository(pg.owner_dsn) as owner:
             owner.create_run(run, run["config_id"], telemetry_mode="scoring-only")
         task = repo.task(task["tenant_id"], run["run_id"], task["task_id"])
+        previous = protocol["protocol_id"]
         protocol = protocol | {"run_id": run["run_id"], "purpose": "calibration"}
         identified(protocol, "protocol_id")
+        reauthorize(pg.owner_dsn, previous, protocol)
         score_task(repo, client, task, evidence, protocol)
         api = outbox()
         with pytest.raises(ValueError, match="mode"):
@@ -454,7 +456,7 @@ def test_scoring_settlement_and_attempt_outcomes_survive_collection(
     from reckoner.v1.storage.budget import ProviderBudget
     from test_v1_budget import scoring
     from test_v1_jev import response
-    from v1_fixtures import identified
+    from v1_fixtures import identified, reauthorize
 
     repo, task, evidence, protocol, _, jev = scoring(pg, attempts=2 if scenario == "retry" else 1)
     sent = []
@@ -481,8 +483,10 @@ def test_scoring_settlement_and_attempt_outcomes_survive_collection(
         with repository(pg.owner_dsn) as owner:
             owner.create_run(run, run["config_id"], telemetry_mode="scoring-only")
         task = repo.task(task["tenant_id"], run["run_id"], task["task_id"])
+        previous = protocol["protocol_id"]
         protocol = protocol | {"run_id": run["run_id"], "purpose": "calibration"}
         identified(protocol, "protocol_id")
+        reauthorize(pg.owner_dsn, previous, protocol)
         score = score_task(repo, client, task, evidence, protocol)
         ledger = ProviderBudget(repo._connection)
         ledger.close(protocol["protocol_id"])

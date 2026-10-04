@@ -12,7 +12,7 @@ from reckoner.contracts import content_id
 from reckoner.v1.storage.repository import V1Repository
 from test_v1_jev import response
 from test_v1_storage import setup_run
-from v1_fixtures import evidence_fixture, identified
+from v1_fixtures import authorize, evidence_fixture, identified
 
 pytestmark = pytest.mark.integration
 
@@ -42,7 +42,6 @@ def protocol(task, request_hash="a" * 64, cap="0.01", provider="typesafe", attem
             "max_output_tokens": 1000,
             "maximum_attempts": attempts,
             "usd_cap": cap,
-            "approved": True,
             "tasks": [
                 {
                     "task_id": task["task_id"],
@@ -85,22 +84,23 @@ def test_last_cent_concurrency_and_protocol_allocations_are_counted_once(pg):
         "task_id": "task-a",
         "transaction_id": manifest["tasks"][0]["transaction_id"],
     }
-    first = protocol(task, cap="9.99")
+    first = protocol(task, cap="0.02")
+    authorize(pg.owner_dsn, first)
     with V1Repository(pg.runner_dsn) as repo:
         ledger = budget.ProviderBudget(repo._connection)
         ledger.reserve(call(task, first), Decimal("0.01"), first)
-        assert ledger.remaining("typesafe") == Decimal("0.01")
+        # The recorded envelope is counted once; attempts are allocated inside it.
+        assert ledger.remaining("typesafe") == Decimal("9.98")
     outcomes, errors = [], []
     barrier = Barrier(2)
 
     def reserve(number):
         try:
             with V1Repository(pg.runner_dsn) as repo:
-                p = protocol(task, request_hash=str(number) * 64)
                 barrier.wait()
                 try:
                     budget.ProviderBudget(repo._connection).reserve(
-                        call(task, p, f"call-{number}"), Decimal(".01"), p
+                        call(task, first, f"call-{number}"), Decimal(".01"), first
                     )
                 except budget.BudgetExceeded:
                     outcomes.append("blocked")
@@ -123,6 +123,7 @@ def test_uncertain_settlement_and_idempotency_overage_and_close(pg):
     _, manifest, _ = setup_run(pg)
     task = {"tenant_id": "tenant-a", "run_id": manifest["run_id"], **manifest["tasks"][0]}
     p = protocol(task, cap="1")
+    authorize(pg.owner_dsn, p)
     with V1Repository(pg.runner_dsn) as repo:
         ledger = budget.ProviderBudget(repo._connection)
         reservation = ledger.reserve(call(task, p), Decimal(".01"), p)
@@ -147,9 +148,8 @@ def test_anthropic_requires_verified_legacy_provenance_and_counts_it_once(pg):
     _, manifest, legacy = setup_run(pg)
     task = {"tenant_id": "tenant-a", "run_id": manifest["run_id"], **manifest["tasks"][0]}
     p = protocol(task, cap="1", provider="anthropic")
-    with V1Repository(pg.runner_dsn) as repo:
-        with pytest.raises(budget.BudgetExceeded, match="legacy"):
-            budget.ProviderBudget(repo._connection).reserve(call(task, p), Decimal(".1"), p)
+    with pytest.raises(budget.BudgetExceeded, match="legacy"):
+        authorize(pg.owner_dsn, p)
     # Explicitly fabricated 1,040-row legacy fixture with the original aggregate.
     with PostgresRepository(pg.runner_dsn) as repo:
         first = BudgetLedger(repo).reserve(legacy, Decimal(".493151"))
@@ -171,6 +171,7 @@ def test_anthropic_requires_verified_legacy_provenance_and_counts_it_once(pg):
             "FROM reckoner.attempts WHERE call_id LIKE 'fabricated-legacy-%'"
         )
         budget.ProviderBudget(owner).verify_legacy()
+    authorize(pg.owner_dsn, p)
     with V1Repository(pg.runner_dsn) as repo:
         ledger = budget.ProviderBudget(repo._connection)
         ledger.reserve(call(task, p), Decimal(".1"), p)
@@ -178,7 +179,7 @@ def test_anthropic_requires_verified_legacy_provenance_and_counts_it_once(pg):
         assert ledger.remaining("typesafe") == Decimal("10")
 
 
-def scoring(pg, attempts=3):
+def scoring(pg, attempts=3, authorized=True):
     _, attempts_module, jev = modules()
     config, manifest, _ = setup_run(pg)
     config["limits"]["maximum_attempts"] = attempts
@@ -198,6 +199,8 @@ def scoring(pg, attempts=3):
     identified(evidence, "evidence_id")
     request = jev.build_request(task["transaction"], evidence)
     p = protocol(task, content_id(request), attempts=attempts)
+    if authorized:
+        authorize(pg.owner_dsn, p)
     return repo, task, evidence, p, attempts_module, jev
 
 
@@ -271,6 +274,7 @@ def test_protocol_request_hash_model_and_bounds_checked_before_http(pg):
             {"input_token_ceiling": 1},
             {"maximum_attempts": 4},
             {"approved": False},
+            {"approved": True},
         ):
             invalid = identified({**p, **change}, "protocol_id")
             with pytest.raises(ValueError):
@@ -373,7 +377,7 @@ def test_retry_after_over_60_defers_without_second_http(pg, monkeypatch):
 
 
 def test_provider_five_transient_failures_open_circuit_and_successful_probe_closes(pg, monkeypatch):
-    repo, task, evidence, p, attempts, jev = scoring(pg)
+    repo, task, evidence, p, attempts, jev = scoring(pg, authorized=False)
     monkeypatch.setattr(attempts.time, "sleep", lambda _: None)
     calls = []
 
@@ -383,7 +387,6 @@ def test_provider_five_transient_failures_open_circuit_and_successful_probe_clos
 
     with repo:
         client = jev.JevClient("fabricated-only", transport=httpx.MockTransport(handle))
-        attempts.score_task(repo, client, task, evidence, p)
         with V1Repository(pg.owner_dsn) as owner:
             run = owner._connection.execute(
                 "SELECT document FROM reckoner.v1_runs WHERE tenant_id=%s AND run_id=%s",
@@ -394,6 +397,9 @@ def test_provider_five_transient_failures_open_circuit_and_successful_probe_clos
             owner.create_run(run, run["config_id"])
         other = repo.task(task["tenant_id"], run["run_id"], task["task_id"])
         second = protocol(other, content_id(jev.build_request(other["transaction"], evidence)))
+        # One fabricated approval covers both runs' envelopes before any dispatch.
+        authorize(pg.owner_dsn, p, second)
+        attempts.score_task(repo, client, task, evidence, p)
         skipped = attempts.score_task(repo, client, other, evidence, second)
         assert skipped["scorer_status"] == "unavailable"
         assert len(calls) == 5

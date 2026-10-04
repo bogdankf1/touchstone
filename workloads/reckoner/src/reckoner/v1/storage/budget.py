@@ -1,5 +1,14 @@
-"""Provider-wide protocol envelopes, attempt allocations, immutable settlements."""
+"""Provider-wide protocol envelopes, attempt allocations, immutable settlements.
 
+Consent is never a field inside a protocol. An owner records an external approval
+bound to the exact protocol SHA-256 (`authorize`), which also reserves each dispatch
+envelope's full maximum before any attempt. `reserve` admits attempts only inside
+an envelope that was recorded that way.
+"""
+
+import json
+import re
+from datetime import datetime
 from decimal import Decimal
 
 from psycopg.rows import dict_row
@@ -10,9 +19,47 @@ from reckoner.storage.budget import ACCOUNTING_LOCK, BudgetExceeded, BudgetLedge
 from reckoner.v1.providers.jev import valid_usage
 
 PROVIDERS = {"typesafe": "jev-1.13.0", "anthropic": "anthropic/claude-haiku-4-5-20251001"}
+PROVIDER_CAP = Decimal(10)
+HEX = re.compile(r"^[a-f0-9]{64}$")
+MONEY = re.compile(r"^([0-9]+(\.[0-9]+)?|\.[0-9]+)$")
+APPROVAL_SCHEMA = "reckoner-protocol-approval-v1"
+APPROVAL_FIELDS = {
+    "schema_version",
+    "approval_id",
+    "protocol_sha256",
+    "approver",
+    "approved_at",
+    "scope",
+    "owner_statement",
+}
+SCOPE_FIELDS = {"provider", "model", "purpose", "case_count", "maximum_attempts", "usd_cap"}
+DERIVATION_FIELDS = {
+    "policy_version",
+    "stage",
+    "builder",
+    "parent_stage",
+    "template_sha256",
+    "library",
+    "library_version",
+}
+
+
+def money(value) -> Decimal:
+    """A positive exact decimal string; never a wildcard, float or remaining balance."""
+    if not isinstance(value, str) or not MONEY.match(value):
+        raise ValueError("USD amounts must be exact positive decimal strings")
+    amount = Decimal(value)
+    if amount <= 0:
+        raise ValueError("USD amounts must be positive")
+    return amount
+
+
+def _text(value, limit=256):
+    return isinstance(value, str) and value.strip() != "" and len(value) <= limit
 
 
 def validate_protocol(protocol):
+    """Structural dispatch protocol (one tenant/run/provider). Consent lives elsewhere."""
     fields = {
         "tenant_id",
         "run_id",
@@ -23,12 +70,11 @@ def validate_protocol(protocol):
         "max_output_tokens",
         "maximum_attempts",
         "usd_cap",
-        "approved",
         "tasks",
         "protocol_id",
     }
-    if set(protocol) != fields or protocol["approved"] is not True:
-        raise ValueError("an exact approved paid-run protocol is required")
+    if not isinstance(protocol, dict) or set(protocol) - {"derivation"} != fields:
+        raise ValueError("an exact paid-run dispatch protocol is required")
     if protocol["protocol_id"] != content_id(
         {k: v for k, v in protocol.items() if k != "protocol_id"}
     ):
@@ -42,18 +88,75 @@ def validate_protocol(protocol):
         raise ValueError("protocol exceeds supported bounds")
     if not isinstance(protocol["tasks"], list) or not protocol["tasks"]:
         raise ValueError("protocol must list exact cases")
+    derivation = protocol.get("derivation")
+    if derivation is not None and (
+        not isinstance(derivation, dict)
+        or set(derivation) != DERIVATION_FIELDS
+        or not all(_text(v) for v in derivation.values())
+        or derivation["policy_version"] != "derived-request-v1"
+        or not HEX.match(derivation["template_sha256"])
+        or protocol["provider"] != "anthropic"
+        or protocol["maximum_attempts"] != 1
+    ):
+        raise ValueError("unsupported derived-request policy")
     for task in protocol["tasks"]:
-        if set(task) != {"task_id", "transaction_id", "request_sha256"} or any(
-            not isinstance(v, str) or not v for v in task.values()
+        if (
+            not isinstance(task, dict)
+            or set(task) != {"task_id", "transaction_id", "request_sha256"}
+            or not _text(task["task_id"])
+            or not _text(task["transaction_id"])
         ):
             raise ValueError("protocol must list exact requests")
+        if derivation is None:
+            if not isinstance(task["request_sha256"], str) or not task["request_sha256"]:
+                raise ValueError("protocol must list exact requests")
+        elif task["request_sha256"] is not None:
+            raise ValueError("derived requests are reconstructed, never pre-listed")
     if len({t["task_id"] for t in protocol["tasks"]}) != len(protocol["tasks"]) or len(
         {t["transaction_id"] for t in protocol["tasks"]}
     ) != len(protocol["tasks"]):
         raise ValueError("protocol cases must be unique")
-    maximum = Decimal(protocol["usd_cap"])
-    BudgetLedger._validate_maximum(maximum)
+    money(protocol["usd_cap"])
     return protocol
+
+
+def validate_approval_record(approval: dict) -> dict:
+    """External owner approval of one exact protocol SHA. Returns a detached copy."""
+    if not isinstance(approval, dict) or set(approval) != APPROVAL_FIELDS:
+        raise ValueError("an exact external approval record is required")
+    if approval["schema_version"] != APPROVAL_SCHEMA:
+        raise ValueError("unsupported approval record version")
+    if not _text(approval["approval_id"]) or not _text(approval["approver"]):
+        raise ValueError("approval identity and approver are required")
+    if not isinstance(approval["protocol_sha256"], str) or not HEX.match(
+        approval["protocol_sha256"]
+    ):
+        raise ValueError("approval must bind one exact protocol SHA-256")
+    if not _text(approval["owner_statement"], 4000):
+        raise ValueError("approval must retain the owner's recorded statement")
+    try:
+        moment = datetime.fromisoformat(approval["approved_at"])
+    except (TypeError, ValueError) as exc:
+        raise ValueError("approval time must be an ISO timestamp") from exc
+    if moment.tzinfo is None:
+        raise ValueError("approval time requires a UTC offset")
+    scope = approval["scope"]
+    if not isinstance(scope, dict) or set(scope) != SCOPE_FIELDS:
+        raise ValueError("approval scope must restate exact bounds")
+    if PROVIDERS.get(scope["provider"]) != scope["model"]:
+        raise ValueError("approval scope model is not pinned")
+    if not _text(scope["purpose"]):
+        raise ValueError("approval scope purpose is required")
+    for key in ("case_count", "maximum_attempts"):
+        if type(scope[key]) is not int or scope[key] <= 0:
+            raise ValueError("approval scope counts must be positive integers")
+    money(scope["usd_cap"])
+    return json.loads(json.dumps(approval))
+
+
+def _scope(protocols):
+    cases = {(p["tenant_id"], p["run_id"], t["task_id"]) for p in protocols for t in p["tasks"]}
+    return cases, sum((Decimal(p["usd_cap"]) for p in protocols), Decimal(0))
 
 
 class ProviderBudget:
@@ -143,7 +246,172 @@ class ProviderBudget:
         with self._connection.transaction():
             cursor = self._cursor()
             cursor.execute("SELECT pg_advisory_xact_lock(%s)", (ACCOUNTING_LOCK,))
-            return max(Decimal(0), Decimal(10) - self._liability(cursor, provider))
+            return max(Decimal(0), PROVIDER_CAP - self._liability(cursor, provider))
+
+    @staticmethod
+    def _unresolved(cursor, provider):
+        """Prior liabilities that must settle before another protocol may start."""
+        rows = cursor.execute(
+            "SELECT 'open protocol' AS kind, p.protocol_id AS identity "
+            "FROM reckoner.v1_protocols p LEFT JOIN reckoner.v1_protocol_closures c "
+            "USING (protocol_id) WHERE p.provider=%s AND c.protocol_id IS NULL "
+            "UNION ALL SELECT 'unsettled call', c.call_id FROM reckoner.v1_provider_calls c "
+            "WHERE c.provider=%s AND NOT EXISTS (SELECT 1 FROM reckoner.v1_settlements s "
+            "WHERE s.call_id=c.call_id AND s.status='settled') ORDER BY 1,2",
+            (provider, provider),
+        ).fetchall()
+        unresolved = [{"kind": r["kind"], "identity": r["identity"]} for r in rows]
+        if provider == "anthropic":
+            unresolved += [
+                {"kind": "unsettled legacy call", "identity": r["call_id"]}
+                for r in cursor.execute(
+                    "SELECT call_id FROM reckoner.budget_entries WHERE status<>'settled' "
+                    "ORDER BY call_id"
+                ).fetchall()
+            ]
+        return unresolved
+
+    def _ledger_id(self, cursor, provider):
+        identity = cursor.execute(
+            "SELECT ledger_uuid::text AS ledger_uuid FROM reckoner.v1_ledger_identity"
+        ).fetchone()
+        legacy = None
+        if provider == "anthropic":
+            rows = cursor.execute(
+                "SELECT DISTINCT document->>'ledger_sha256' AS digest "
+                "FROM reckoner.v1_legacy_provenance"
+            ).fetchall()
+            legacy = rows[0]["digest"] if len(rows) == 1 else None
+        return (
+            content_id(
+                {
+                    "provider": provider,
+                    "ledger_uuid": identity["ledger_uuid"],
+                    "legacy_ledger_sha256": legacy,
+                }
+            ),
+            legacy,
+        )
+
+    def snapshot(self, provider: str) -> dict:
+        """Reconciled provider-specific ledger state; a displayed credit is not consent."""
+        if provider not in PROVIDERS:
+            raise ValueError("unknown provider")
+        with self._connection.transaction():
+            cursor = self._cursor()
+            cursor.execute("SELECT pg_advisory_xact_lock(%s)", (ACCOUNTING_LOCK,))
+            ledger_id, legacy = self._ledger_id(cursor, provider)
+            liability = self._liability(cursor, provider)
+            legacy_verified = True
+            if provider == "anthropic":
+                try:
+                    self._check_legacy(cursor)
+                except BudgetExceeded:
+                    legacy_verified = False
+            return {
+                "schema_version": "reckoner-ledger-snapshot-v1",
+                "provider": provider,
+                "ledger_id": ledger_id,
+                "legacy_ledger_sha256": legacy,
+                "legacy_verified": legacy_verified,
+                "provider_cap_usd": format(PROVIDER_CAP, "f"),
+                "liability_usd": format(liability, "f"),
+                "remaining_usd": format(max(Decimal(0), PROVIDER_CAP - liability), "f"),
+                "unresolved": self._unresolved(cursor, provider),
+                "billing_basis": "local reservations and settlements; not a provider invoice",
+            }
+
+    def authorize(self, protocol_document: dict, dispatch: list[dict], *, approval: dict) -> str:
+        """Owner action: record one external approval and reserve every full envelope.
+
+        The approval binds the SHA-256 of the immutable protocol document. Duplicate
+        approval IDs, a second approval of the same protocol, unresolved prior
+        liabilities and provider-wide over-limit caps all block, atomically.
+        """
+        approval = validate_approval_record(approval)
+        body = {k: v for k, v in protocol_document.items() if k != "protocol_sha256"}
+        digest = protocol_document.get("protocol_sha256")
+        if "approved" in protocol_document or digest != content_id(body):
+            raise ValueError("protocol document identity mismatch")
+        if approval["protocol_sha256"] != digest:
+            raise ValueError("approval does not bind this protocol SHA-256")
+        if not dispatch:
+            raise ValueError("approval must cover at least one dispatch protocol")
+        scope = approval["scope"]
+        for protocol in dispatch:
+            validate_protocol(protocol)
+            if (
+                protocol["provider"] != scope["provider"]
+                or protocol["model"] != scope["model"]
+                or protocol["maximum_attempts"] > scope["maximum_attempts"]
+            ):
+                raise ValueError("dispatch protocol exceeds the approved scope")
+        if len({p["protocol_id"] for p in dispatch}) != len(dispatch):
+            raise ValueError("duplicate dispatch protocol")
+        cases, total = _scope(dispatch)
+        if len(cases) != scope["case_count"] or total > money(scope["usd_cap"]):
+            raise ValueError("dispatch cases or caps differ from the approved scope")
+        provider = scope["provider"]
+        with self._connection.transaction():
+            cursor = self._cursor()
+            cursor.execute("SELECT pg_advisory_xact_lock(%s)", (ACCOUNTING_LOCK,))
+            if cursor.execute(
+                "SELECT 1 FROM reckoner.v1_protocol_approvals WHERE approval_id=%s",
+                (approval["approval_id"],),
+            ).fetchone():
+                raise ValueError("duplicate approval identity")
+            if cursor.execute(
+                "SELECT 1 FROM reckoner.v1_protocol_approvals WHERE protocol_sha256=%s",
+                (digest,),
+            ).fetchone():
+                raise ValueError("protocol is already approved")
+            if provider == "anthropic":
+                self._check_legacy(cursor)
+            unresolved = self._unresolved(cursor, provider)
+            if unresolved:
+                raise BudgetExceeded(f"unresolved prior reservation: {unresolved[:5]}")
+            if self._liability(cursor, provider) + total > PROVIDER_CAP:
+                raise BudgetExceeded("provider-wide budget exceeded")
+            cursor.execute(
+                "INSERT INTO reckoner.v1_protocol_approvals (approval_id,protocol_sha256,document) "
+                "VALUES (%s,%s,%s)",
+                (approval["approval_id"], digest, Jsonb(approval)),
+            )
+            cursor.execute(
+                "INSERT INTO reckoner.v1_experiment_protocols (protocol_sha256,document) "
+                "VALUES (%s,%s)",
+                (digest, Jsonb(protocol_document)),
+            )
+            for protocol in dispatch:
+                if cursor.execute(
+                    "SELECT 1 FROM reckoner.v1_protocols WHERE protocol_id=%s",
+                    (protocol["protocol_id"],),
+                ).fetchone():
+                    raise ValueError("dispatch protocol was already reserved")
+                cursor.execute(
+                    "INSERT INTO reckoner.v1_protocols "
+                    "(tenant_id,protocol_id,provider,run_id,maximum_cost,document) "
+                    "VALUES (%s,%s,%s,%s,%s,%s)",
+                    (
+                        protocol["tenant_id"],
+                        protocol["protocol_id"],
+                        protocol["provider"],
+                        protocol["run_id"],
+                        Decimal(protocol["usd_cap"]),
+                        Jsonb(protocol),
+                    ),
+                )
+                cursor.execute(
+                    "INSERT INTO reckoner.v1_protocol_authorizations "
+                    "(tenant_id,protocol_id,protocol_sha256,approval_id) VALUES (%s,%s,%s,%s)",
+                    (
+                        protocol["tenant_id"],
+                        protocol["protocol_id"],
+                        digest,
+                        approval["approval_id"],
+                    ),
+                )
+        return digest
 
     def reserve(self, call: dict, maximum: Decimal, protocol: dict) -> dict:
         validate_protocol(protocol)
@@ -201,27 +469,14 @@ class ProviderBudget:
             if overage:
                 raise BudgetExceeded("provider overage requires reconciliation")
             current = cursor.execute(
-                "SELECT document FROM reckoner.v1_protocols WHERE protocol_id=%s",
+                "SELECT p.document FROM reckoner.v1_protocols p "
+                "JOIN reckoner.v1_protocol_authorizations a USING (tenant_id,protocol_id) "
+                "WHERE p.protocol_id=%s",
                 (protocol["protocol_id"],),
             ).fetchone()
             if not current:
-                cap = Decimal(protocol["usd_cap"])
-                if self._liability(cursor, call["provider"]) + cap > Decimal(10):
-                    raise BudgetExceeded("provider-wide budget exceeded")
-                cursor.execute(
-                    "INSERT INTO reckoner.v1_protocols "
-                    "(tenant_id,protocol_id,provider,run_id,maximum_cost,document) "
-                    "VALUES (%s,%s,%s,%s,%s,%s)",
-                    (
-                        call["tenant_id"],
-                        protocol["protocol_id"],
-                        call["provider"],
-                        call["run_id"],
-                        cap,
-                        Jsonb(protocol),
-                    ),
-                )
-            elif current["document"] != protocol:
+                raise BudgetExceeded("protocol is not reserved under a recorded approval")
+            if current["document"] != protocol:
                 raise ValueError("conflicting protocol")
             if cursor.execute(
                 "SELECT 1 FROM reckoner.v1_protocol_closures WHERE protocol_id=%s",

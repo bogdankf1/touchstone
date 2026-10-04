@@ -226,6 +226,7 @@ def calibrated_setup(pg):
         owner.register_config(config)
         owner.create_run(manifest, config["config_id"])
     task = repo.task("tenant-a", manifest["run_id"], "task-a")
+    previous = settings["protocol"]["protocol_id"]
     settings["protocol"]["run_id"] = task["run_id"]
     settings["protocol"]["tasks"] = [
         {
@@ -235,6 +236,9 @@ def calibrated_setup(pg):
         }
     ]
     identified(settings["protocol"], "protocol_id")
+    from v1_fixtures import reauthorize
+
+    reauthorize(pg.owner_dsn, previous, settings["protocol"])
     settings["calibration"] = artifact
     return repo, task, settings, calls
 

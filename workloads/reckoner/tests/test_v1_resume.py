@@ -13,7 +13,7 @@ from reckoner.v1.storage.repository import V1Repository
 from test_v1_budget import call
 from test_v1_graph_workflow import execute, prepared, workflow
 from test_v1_jev import response
-from v1_fixtures import identified
+from v1_fixtures import identified, reauthorize
 
 pytestmark = pytest.mark.integration
 
@@ -108,8 +108,10 @@ def test_budget_exhaustion_keeps_task_incomplete_and_no_decision(pg):
     repo, task, _, settings, calls = prepared(pg)
     from reckoner.v1.storage.budget import BudgetExceeded
 
+    previous = settings["protocol"]["protocol_id"]
     settings["protocol"]["usd_cap"] = "0.000001"
     identified(settings["protocol"], "protocol_id")
+    reauthorize(pg.owner_dsn, previous, settings["protocol"])
     with repo:
         with pytest.raises(BudgetExceeded):
             execute(repo, task, settings)
@@ -199,6 +201,7 @@ def test_opaque_ids_and_cross_task_policy_conflict(pg):
     with repo:
         task = repo.task("tenant-a", manifest["run_id"], manifest["tasks"][0]["task_id"])
         p = settings["protocol"]
+        previous = p["protocol_id"]
         p["run_id"] = task["run_id"]
         p["tasks"] = [
             {
@@ -208,6 +211,7 @@ def test_opaque_ids_and_cross_task_policy_conflict(pg):
             }
         ]
         identified(p, "protocol_id")
+        reauthorize(pg.owner_dsn, previous, p)
         decision, _ = execute(repo, task, settings)
         assert decision["run_id"] == manifest["run_id"]
         assert decision["task_id"] == "task/one/<x>"

@@ -22,7 +22,7 @@ def test_deepeval_custom_metric_only_exposes_note_to_judge():
     from deepeval.test_case import LLMTestCase
 
     calls = Calls([body('{"verdict":"approve"}')])
-    judge = module.NoteVerdict(calls, config_fixture(), {"approved": True})
+    judge = module.NoteVerdict(calls, config_fixture(), {"fixture": "fabricated-protocol"})
     assert isinstance(judge, BaseMetric)
     note, _, _ = sample()
     test = LLMTestCase(
@@ -47,7 +47,7 @@ def test_ragas_runs_both_real_framework_stages():
             ),
         ]
     )
-    judge = module.RagasFaithfulness(calls, config_fixture(), {"approved": True})
+    judge = module.RagasFaithfulness(calls, config_fixture(), {"fixture": "fabricated-protocol"})
     assert (
         judge.evaluate(
             note,
@@ -66,7 +66,7 @@ def test_ragas_invalid_or_claim_free_output_never_passes_or_retries(response):
     module = api()
     note, evidence, score = sample()
     calls = Calls([body(response)])
-    judge = module.RagasFaithfulness(calls, config_fixture(), {"approved": True})
+    judge = module.RagasFaithfulness(calls, config_fixture(), {"fixture": "fabricated-protocol"})
     with pytest.raises(ValueError):
         judge.evaluate(
             note,
@@ -110,7 +110,7 @@ def test_ragas_uses_exact_generation_context_including_frozen_routing():
             ),
         ]
     )
-    judge = module.RagasFaithfulness(calls, config, {"approved": True})
+    judge = module.RagasFaithfulness(calls, config, {"fixture": "fabricated-protocol"})
     assert judge.evaluate(note, context=context) == 1
     # Parse the actual Ragas NLI data, whose JSON context must match generation exactly.
     text = captured[1]["messages"][0]["content"]

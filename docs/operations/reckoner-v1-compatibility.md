@@ -285,15 +285,27 @@ Anthropic request implementation and budget enforcement were left unchanged.
 `reckoner v1 score --manifest PATH --protocol PATH --env-file PATH` requires an
 already registered immutable experiment, prepared evidence, and a runner-only
 file containing `RECKONER_RUNNER_DSN` and `JEV_API_KEY` (or `--env-file -` for explicit
-environment loading). The protocol is an immutable content-hashed document:
+environment loading). The dispatch protocol is an immutable content-hashed document:
 `tenant_id`, `run_id`, `provider`, `purpose`, `model`, `input_token_ceiling`,
-`max_output_tokens`, `maximum_attempts`, decimal `usd_cap`, `approved: true`,
-`tasks: [{task_id, transaction_id, request_sha256}]`, and `protocol_id`. Cases
-must match the manifest exactly; each hash selects one prepared evidence/request.
-All cases, configuration/model/question/pricing and bounds are checked before
-any dispatch. This artifact represents separately obtained concrete paid-run
-approval; approving the implementation does not authorize producing or executing
-one. CLI returns task statuses without protected bodies or secrets.
+`max_output_tokens`, `maximum_attempts`, decimal `usd_cap`,
+`tasks: [{task_id, transaction_id, request_sha256}]`, optional `derivation`, and
+`protocol_id`. It carries no consent field: an `approved` key of any value is
+rejected. Cases must match the manifest exactly; each hash selects one prepared
+evidence/request. All cases, configuration/model/question/pricing and bounds are
+checked before any dispatch.
+
+Consent is a separate external approval record (`reckoner-protocol-approval-v1`:
+`approval_id`, `protocol_sha256`, `approver`, `approved_at` with offset, exact
+`scope` restating provider, model, purpose, case count, maximum attempts and a
+positive decimal USD cap, and the owner's recorded `owner_statement`). Only the
+owner connection can record it, via `ProviderBudget.authorize` (Task 13
+`reserve_protocol`), which atomically stores the approval and the protocol document
+it binds, and reserves every dispatch envelope's full maximum. Duplicate approval
+IDs, a second approval of one protocol SHA, unresolved prior reservations (open
+envelopes or calls without a settled settlement) and provider-wide over-limit caps
+block. Attempts are admitted only inside a recorded envelope; the runner can no
+longer create envelopes (migration 014). Generating a protocol draft never
+authorizes executing it. CLI returns task statuses without protected bodies or secrets.
 
 Input bounds use the complete request's UTF-8 byte count as a conservative local
 text-token bound, avoiding an invented provider tokenizer. Output usage is checked
@@ -348,7 +360,7 @@ checkpoint or JSON field. `run_task(repo, graph, task, config)` accepts exactly:
   graph references; GDS policy with no projection degrades to escalation.
 - `data_kind`: explicitly `fabricated` or `simulated-cctd`, supplied by the caller's
   established experiment inputs. These software tests use fabricated records only.
-- `protocol`: the strict Task4 approved protocol, or null when mandatory evidence
+- `protocol`: the strict dispatch protocol recorded under an external approval, or null when mandatory evidence
   is unavailable and no scoring dispatch can happen. This interface does not grant
   paid-run approval. Available evidence requires a protocol before binding the task.
 - `calibration`: the selected Task5 artifact, or null in raw mode. Runtime checks

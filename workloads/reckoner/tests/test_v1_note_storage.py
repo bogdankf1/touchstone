@@ -14,7 +14,7 @@ from reckoner.v1.storage.repository import V1Repository
 from test_v1_budget import protocol
 from test_v1_note_generation import body, sample
 from test_v1_storage import setup_run
-from v1_fixtures import identified
+from v1_fixtures import authorize, identified
 
 pytestmark = pytest.mark.integration
 
@@ -92,6 +92,7 @@ def prepared_call(pg):
     p = protocol(task, content_id(request), provider="anthropic", attempts=1)
     p["purpose"] = "online-note"
     identified(p, "protocol_id")
+    authorize(pg.owner_dsn, p)
     return repo, task, config, request, p
 
 
@@ -197,6 +198,7 @@ def test_note_declaration_exists_after_decision_and_late_continuation(pg):
         p["input_token_ceiling"] = config["limits"]["input_token_ceiling"]
         p["purpose"] = "online-note"
         identified(p, "protocol_id")
+        authorize(pg.owner_dsn, p)
         repo.note_client = Transport([paid_body(json.dumps(fields))])
         repo.note_protocol = p
         execute(repo, task, settings)
@@ -276,7 +278,7 @@ def test_each_ragas_stage_is_reserved_and_saved_individually(pg):
         transport = Transport(responses)
         calls = api.BudgetedCalls(repo, transport, task, config, kind="judge")
         note, evidence, score = sample()
-        envelope = {"approved": True, "stages": {}}
+        envelope = {"stages": {}}
         judge = RagasFaithfulness(calls, config, envelope)
         from reckoner.v1.notes import build_note_context
         from v1_fixtures import decision_fixture
@@ -293,6 +295,9 @@ def test_each_ragas_stage_is_reserved_and_saved_individually(pg):
             p = protocol(task, pending.value.request_sha256, provider="anthropic", attempts=1)
             p.update(input_token_ceiling=16000, usd_cap=".1", purpose="judge")
             identified(p, "protocol_id")
+            for previous in envelope["stages"].values():
+                ProviderBudget(repo._connection).close(previous["protocol_id"])
+            authorize(pg.owner_dsn, p)
             envelope["stages"][expected_stage] = p
         assert judge.evaluate(note, context=context) == 1
         assert judge.evaluate(note, context=context) == 1
@@ -386,6 +391,7 @@ def test_late_note_is_evaluated_without_changing_manual_review_snapshot(pg):
         )
         p["purpose"] = "online-note"
         identified(p, "protocol_id")
+        authorize(pg.owner_dsn, p)
         repo.note_client = Transport([paid_body(json.dumps(fields))])
         repo.note_protocol = p
         execute(repo, task, settings)
@@ -487,6 +493,7 @@ def test_valid_schema_repair_has_two_separate_settlements_in_one_envelope(pg):
         p = protocol(task, content_id(request), provider="anthropic", attempts=2)
         p["purpose"] = "online-note"
         identified(p, "protocol_id")
+        authorize(pg.owner_dsn, p)
         transport = Transport([paid_body("bad JSON"), paid_body("{}")])
         calls = api.BudgetedCalls(repo, transport, task, config, kind="note")
         first = calls.execute(request, stage="note-generation", protocol=p)
@@ -552,6 +559,7 @@ def test_durable_eval_verifies_actual_note_and_inputs_before_judging(pg, state):
             approval = protocol(task, content_id(req), provider="anthropic", attempts=1)
             approval["purpose"] = "online-note"
             identified(approval, "protocol_id")
+            authorize(pg.owner_dsn, approval)
             response = paid_body(json.dumps({k: note[k] for k in CONTENT_FIELDS}))
             if state == "failed":
                 response["finish_reason"] = "refusal"
@@ -679,6 +687,7 @@ def test_calibrated_note_and_eval_share_persisted_routing_without_rewriting_scor
         approval = protocol(task, content_id(request), provider="anthropic", attempts=1)
         approval["purpose"] = "online-note"
         identified(approval, "protocol_id")
+        authorize(pg.owner_dsn, approval)
         repo.note_protocol = approval
         repo.note_client = Transport([paid_body(json.dumps(fields))])
         execute(repo, task, settings)

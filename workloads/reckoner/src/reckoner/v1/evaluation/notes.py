@@ -65,7 +65,10 @@ def evaluate_note_fixtures(
         raise ValueError("invalid expected case population")
     if len({(c["tenant_id"], c["case_id"]) for c in cases}) != len(cases):
         raise ValueError("duplicate expected case")
-    authorized = protocol is not None and protocol.get("approved") is True and budget is not None
+    if protocol is not None and "approved" in protocol:
+        # Consent is an external SHA-bound approval record, never a protocol flag.
+        raise ValueError("protocol flags cannot establish consent")
+    authorized = protocol is not None and budget is not None
     if authorized and isinstance(budget, ProviderBudget):
         stages = list(protocol.get("stages", {}).values()) or [protocol]
         for stage in stages:

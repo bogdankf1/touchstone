@@ -225,3 +225,69 @@ def resolution_fixture():
         },
         "resolution_id",
     )
+
+
+FIXTURE_APPROVER = "fabricated-test-fixture"
+
+
+def approval_fixture(protocol_sha256, scope, approval_id=None):
+    """An explicitly fabricated test approval; never an owner's words or consent."""
+    return {
+        "schema_version": "reckoner-protocol-approval-v1",
+        "approval_id": approval_id or "fabricated-approval-" + protocol_sha256[:16],
+        "protocol_sha256": protocol_sha256,
+        "approver": FIXTURE_APPROVER,
+        "approved_at": "2026-10-04T00:00:00+00:00",
+        "scope": scope,
+        "owner_statement": "Fabricated test fixture; not an owner approval.",
+    }
+
+
+def dispatch_scope(protocols):
+    from decimal import Decimal
+
+    cases = {(p["tenant_id"], p["run_id"], t["task_id"]) for p in protocols for t in p["tasks"]}
+    return {
+        "provider": protocols[0]["provider"],
+        "model": protocols[0]["model"],
+        "purpose": protocols[0]["purpose"],
+        "case_count": len(cases),
+        "maximum_attempts": max(p["maximum_attempts"] for p in protocols),
+        "usd_cap": str(sum(Decimal(p["usd_cap"]) for p in protocols)),
+    }
+
+
+def fixture_protocol_document(protocols):
+    return identified(
+        {
+            "schema_version": "fabricated-test-protocol",
+            "dataset_simulated": True,
+            "approver": FIXTURE_APPROVER,
+            "dispatch_protocol_ids": sorted(p["protocol_id"] for p in protocols),
+        },
+        "protocol_sha256",
+    )
+
+
+def authorize(owner_dsn, *protocols, approval_id=None):
+    """Record a fabricated approval and reserve the dispatch envelopes as the owner."""
+    import psycopg
+    from reckoner.v1.storage.budget import ProviderBudget
+
+    document = fixture_protocol_document(protocols)
+    approval = approval_fixture(document["protocol_sha256"], dispatch_scope(protocols), approval_id)
+    with psycopg.connect(owner_dsn, autocommit=True) as connection:
+        ProviderBudget(connection).authorize(document, list(protocols), approval=approval)
+    return document, approval
+
+
+def reauthorize(owner_dsn, previous, *protocols):
+    """Close a superseded fixture envelope (unused capacity only), then record the next."""
+    import psycopg
+    from reckoner.v1.storage.budget import ProviderBudget
+
+    with psycopg.connect(owner_dsn, autocommit=True) as connection:
+        ProviderBudget(connection).close(
+            previous if isinstance(previous, str) else previous["protocol_id"]
+        )
+    return authorize(owner_dsn, *protocols)

@@ -140,7 +140,7 @@ def test_generation_parses_content_and_repairs_at_most_once():
         score,
         calls,
         config_fixture(),
-        protocol={"approved": True, "maximum_attempts": 2},
+        protocol={"fixture": "fabricated-protocol", "maximum_attempts": 2},
     )
     assert result["status"] == "succeeded"
     assert result["note"]["confidence"] == note["confidence"]
@@ -158,7 +158,7 @@ def test_invalid_content_exhausts_bounded_repair(content):
         score,
         calls,
         config_fixture(),
-        protocol={"approved": True, "maximum_attempts": 2},
+        protocol={"fixture": "fabricated-protocol", "maximum_attempts": 2},
     )
     assert result["status"] == "invalid"
     assert len(calls.stages) == 2
@@ -183,7 +183,7 @@ def test_refusal_is_not_schema_repair():
         score,
         calls,
         config_fixture(),
-        protocol={"approved": True, "maximum_attempts": 2},
+        protocol={"fixture": "fabricated-protocol", "maximum_attempts": 2},
     )
     assert result["status"] == "failed"
     assert len(calls.stages) == 1

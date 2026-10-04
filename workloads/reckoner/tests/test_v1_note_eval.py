@@ -66,7 +66,7 @@ def test_inclusive_gates_and_note_only_judge_boundary():
         cases(),
         {"verdict": verdict, "faithfulness": faith},
         10,
-        protocol={"approved": True},
+        protocol={"fixture": "fabricated-protocol"},
         budget=object(),
     )
     assert result["status"] == "passed"
@@ -96,7 +96,7 @@ def test_missing_and_errors_block_passing(problem):
         items,
         {"verdict": Judge(["approve"] * 2), "faithfulness": faith},
         2,
-        protocol={"approved": True},
+        protocol={"fixture": "fabricated-protocol"},
         budget=object(),
     )
     assert result["status"] != "passed"
@@ -125,7 +125,7 @@ def test_actual_framework_adapters_share_harness_budget():
         cases(1),
         {"verdict": verdict, "faithfulness": Judge([1])},
         1,
-        protocol={"approved": True},
+        protocol={"fixture": "fabricated-protocol"},
         budget=object(),
     )
     assert result["status"] == "failed" and verdict.inputs == []
@@ -141,7 +141,7 @@ def test_note_cannot_substitute_another_declared_case():
         items,
         {"verdict": Judge(["approve"]), "faithfulness": Judge([1])},
         1,
-        protocol={"approved": True},
+        protocol={"fixture": "fabricated-protocol"},
         budget=object(),
     )
     assert result["status"] == "failed"
@@ -158,7 +158,7 @@ def test_per_case_factories_receive_only_identity_and_cover_complete_suite():
         cases(2),
         {"verdict": factory, "faithfulness": lambda identity: Judge([1])},
         2,
-        protocol={"approved": True},
+        protocol={"fixture": "fabricated-protocol"},
         budget=object(),
     )
     assert result["status"] == "passed"
@@ -170,7 +170,7 @@ def test_harness_uses_actual_deepeval_metric_comparison_locally():
     from test_v1_note_generation import Calls, body
     from v1_fixtures import config_fixture
 
-    protocol = {"approved": True}
+    protocol = {"fixture": "fabricated-protocol"}
     judge = NoteVerdict(Calls([body('{"verdict":"approve"}')]), config_fixture(), protocol)
     result = api().evaluate_note_fixtures(
         cases(1),

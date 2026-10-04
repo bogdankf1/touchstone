@@ -34,8 +34,9 @@ def generate_note(
 ) -> dict:
     if protocol is None or client is None:
         return {"status": "pending", "note": None, "attempts": []}
-    if protocol.get("approved") is not True:
-        raise ValueError("explicit approved note protocol required")
+    if "approved" in protocol:
+        # Consent is an external SHA-bound approval record, never a protocol flag.
+        raise ValueError("protocol flags cannot establish consent")
     request = build_note_request(case, evidence, score, config)
     attempts = []
     # The same exact approved request is sent for repair. No provider retry layer.
