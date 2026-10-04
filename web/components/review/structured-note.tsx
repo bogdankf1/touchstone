@@ -1,13 +1,30 @@
 import type { CaseNote } from '../../lib/reckoner-types';
 type Indicator = CaseNote['risk_indicators'][number];
+export type ProvenancedIndicator = Indicator & {
+  evidence_ref_count: number;
+  evidence_refs_sha256: string;
+  evidence_refs_truncated: boolean;
+};
+// All three provenance fields together, or no coverage claim at all.
+export function hasSourceProvenance(item: Indicator): item is ProvenancedIndicator {
+  return (
+    item.evidence_ref_count !== undefined &&
+    item.evidence_refs_sha256 !== undefined &&
+    item.evidence_refs_truncated !== undefined
+  );
+}
 export function sourceCoverage(item: Indicator): string | null {
-  if (item.evidence_ref_count === undefined || item.evidence_refs_sha256 === undefined) return null;
+  if (!hasSourceProvenance(item)) return null;
   return (
     `${item.evidence_refs.length.toLocaleString('en-US')} of ` +
     `${item.evidence_ref_count.toLocaleString('en-US')} sources shown ` +
     `(${item.evidence_refs_truncated ? 'truncated' : 'complete'}; ` +
     `full list SHA-256 ${item.evidence_refs_sha256})`
   );
+}
+function SourceCoverage({ item }: { item: Indicator }) {
+  const coverage = sourceCoverage(item);
+  return coverage ? <small className="source-coverage">{coverage}</small> : null;
 }
 function Sources({ refs }: { refs: string[] }) {
   return (
@@ -68,7 +85,7 @@ export function StructuredNote({ note, status }: { note: CaseNote | null; status
                     Rank {item.rank} · {item.method}
                   </small>
                   <Sources refs={item.evidence_refs} />
-                  {sourceCoverage(item) && <small>{sourceCoverage(item)}</small>}
+                  <SourceCoverage item={item} />
                 </li>
               ))}
             </ol>

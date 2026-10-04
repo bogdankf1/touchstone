@@ -163,6 +163,15 @@ function detail(tenant, id, s) {
         evidence_refs_sha256: 'b'.repeat(64),
         evidence_refs_truncated: false,
       },
+      {
+        // Incomplete provenance (schema-invalid) must never render a coverage claim.
+        rank: 3,
+        indicator_id: 'amount-ratio',
+        description: 'USD amount is 4 times the mean of 6 prior 30-day card purchases.',
+        method: 'risk-indicators-v1: fabricated',
+        evidence_refs: ['tx-6'],
+        evidence_ref_count: 6,
+      },
     ];
   }
   if (s === 'crowded-graph') {

@@ -1,5 +1,5 @@
 import type { CaseDetail as Detail } from '../../lib/reckoner-types';
-import { StructuredNote } from './structured-note';
+import { StructuredNote, hasSourceProvenance } from './structured-note';
 import { GraphViewer } from './graph-viewer';
 export function CaseDetail({ detail }: { detail: Detail }) {
   return (
@@ -60,19 +60,17 @@ export function CaseDetail({ detail }: { detail: Detail }) {
               <dd>{value ?? 'Unavailable cutoff'}</dd>
             </div>
           ))}
-          {(detail.note?.risk_indicators ?? [])
-            .filter((item) => item.evidence_ref_count !== undefined)
-            .map((item) => (
-              <div className="provenance-row" key={`sources-${item.indicator_id}`}>
-                <dt>{item.indicator_id} sources</dt>
-                <dd>
-                  {item.evidence_ref_count!.toLocaleString('en-US')} references ·{' '}
-                  {item.evidence_refs.length.toLocaleString('en-US')} shown in note
-                  {item.evidence_refs_truncated ? ' (truncated)' : ''} · full list SHA-256{' '}
-                  {item.evidence_refs_sha256}
-                </dd>
-              </div>
-            ))}
+          {(detail.note?.risk_indicators ?? []).filter(hasSourceProvenance).map((item) => (
+            <div className="provenance-row" key={`sources-${item.indicator_id}`}>
+              <dt>{item.indicator_id} sources</dt>
+              <dd>
+                {item.evidence_ref_count.toLocaleString('en-US')} references ·{' '}
+                {item.evidence_refs.length.toLocaleString('en-US')} shown in note
+                {item.evidence_refs_truncated ? ' (truncated)' : ''} · full list SHA-256{' '}
+                {item.evidence_refs_sha256}
+              </dd>
+            </div>
+          ))}
           {Object.entries(detail.source_snapshot_ids).map(([key, value]) => (
             <div className="provenance-row" key={key}>
               <dt>{key} snapshot</dt>

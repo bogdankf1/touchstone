@@ -69,6 +69,10 @@ test('truncated indicator sources state the full count and list hash', async ({ 
   await expect(
     provenance.getByText(`2,944 references · 32 shown in note (truncated) · full list SHA-256 ${full}`),
   ).toBeVisible();
+  await expect(provenance.getByText('amount-ratio sources')).toHaveCount(0);
+  await expect(page.getByText(/of 6 sources shown/)).toHaveCount(0);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.locator('body')).toHaveJSProperty('scrollWidth', 390);
 });
 for (const [s, label] of [
   ['note-failed', 'Note failed'],

@@ -631,6 +631,9 @@ th small {
   margin-top: 7px;
   overflow-wrap: anywhere;
 }
+.source-coverage {
+  overflow-wrap: anywhere;
+}
 .source-links a {
   margin-right: 8px;
   text-decoration: underline;
