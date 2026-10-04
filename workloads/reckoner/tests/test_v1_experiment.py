@@ -271,6 +271,45 @@ def test_fixture_dry_run_executes_exact_requests_settles_and_verifies(pg, tmp_pa
 
 
 @pytest.mark.integration
+def test_recorded_protocol_closes_and_verifies_after_a_projection_bump_but_never_dispatches(
+    pg, tmp_path, monkeypatch
+):
+    from decimal import Decimal
+
+    from reckoner.v1 import projection
+    from reckoner.v1.experiment.execute import close_protocol, load_recorded
+    from reckoner.v1.experiment.verify import collect_run_facts
+    from reckoner.v1.storage.budget import ProviderBudget
+    from reckoner.v1.storage.repository import V1Repository
+    from test_v1_budget import call
+
+    no_sleep(monkeypatch)
+    protocol = reserved(pg, tmp_path)
+    recorder = Recorder(lambda n, payload: httpx.Response(200, json=jev_body()))
+    monkeypatch.setattr(projection, "VERSION", "bounded-evidence-v2")  # simulated new build
+    with pytest.raises(ValueError, match="projection"):
+        execute(pg, protocol, recorder, tmp_path)
+    assert recorder.requests == []
+    dispatch = protocol["dispatch"][0]
+    task = {**dispatch["tasks"][0]}
+    with V1Repository(pg.runner_dsn) as repo:
+        assert load_recorded(repo, protocol["protocol_sha256"]) == protocol
+        assert collect_run_facts(repo, protocol)["execution_kind"] == "unexecuted"
+        with pytest.raises(ValueError, match="projection"):
+            ProviderBudget(repo._connection).reserve(
+                call(task, dispatch), Decimal(dispatch["attempt_maximum_usd"]), dispatch
+            )
+        assert (
+            repo._connection.execute(
+                "SELECT count(*) AS n FROM reckoner.v1_provider_calls"
+            ).fetchone()["n"]
+            == 0
+        )
+    closed = close_protocol(protocol["protocol_sha256"], dsn=pg.runner_dsn)
+    assert closed["closed"] == len(protocol["dispatch"])
+
+
+@pytest.mark.integration
 def test_unrecorded_protocol_and_missing_client_dispatch_nothing(pg, tmp_path):
     from reckoner.v1.experiment.execute import execute_protocol
     from test_v1_protocol import experiment_scenario

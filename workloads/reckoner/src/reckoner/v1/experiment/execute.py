@@ -18,7 +18,7 @@ from pathlib import Path
 
 from reckoner.contracts import content_id
 from reckoner.storage.budget import BudgetExceeded
-from reckoner.v1.experiment.protocol import validate_body
+from reckoner.v1.experiment.protocol import require_current_projection, validate_body
 from reckoner.v1.storage.budget import ProviderBudget
 from reckoner.v1.storage.repository import V1Repository
 
@@ -36,7 +36,8 @@ def load_recorded(repo, protocol_id: str) -> dict:
     if row is None:
         raise ValueError("protocol has no recorded approval; nothing dispatched")
     protocol = row["document"]
-    validate_body(protocol)
+    # Recorded protocols stay closable and verifiable after a projection change.
+    validate_body(protocol, current_build=False)
     if protocol["protocol_sha256"] != protocol_id:
         raise ValueError("recorded protocol identity mismatch")
     authorized = {
@@ -310,6 +311,7 @@ def execute_protocol(
         raise ValueError("unknown execution kind; use fixture or measured")
     with V1Repository(dsn) as repo:
         protocol = load_recorded(repo, protocol_id)
+        require_current_projection(protocol)  # never dispatch under another projection
         client = provider_clients.get(protocol["provider"])
         if client is None:
             raise ValueError("no provider client injected for this protocol; nothing dispatched")

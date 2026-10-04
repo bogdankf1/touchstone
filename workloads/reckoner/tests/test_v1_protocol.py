@@ -582,6 +582,19 @@ def test_drafts_pin_the_request_projection_and_measured_maximum(tmp_path):
             validate_body(identify(changed))
 
 
+def test_recorded_protocols_stay_structurally_valid_across_a_projection_bump(tmp_path, monkeypatch):
+    from reckoner.v1 import projection
+    from reckoner.v1.experiment.protocol import validate_body, validate_protocol
+
+    draft = pilot(tmp_path)
+    monkeypatch.setattr(projection, "VERSION", "bounded-evidence-v2")  # simulated new build
+    with pytest.raises(ValueError, match="projection"):
+        validate_body(draft)  # drafting and new reservations need this build's projection
+    with pytest.raises(ValueError, match="projection"):
+        validate_protocol(draft, ledger_snapshot())
+    assert validate_body(draft, current_build=False)["cap"] == Decimal(draft["usd_cap"])
+
+
 def overhead(ratio="0.5", extra=200):
     body = {
         "schema_version": "reckoner-token-overhead-v1",

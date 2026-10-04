@@ -16,7 +16,7 @@ from psycopg.types.json import Jsonb
 
 from reckoner.contracts import content_id
 from reckoner.storage.budget import ACCOUNTING_LOCK, BudgetExceeded, BudgetLedger
-from reckoner.v1 import pricing
+from reckoner.v1 import pricing, projection
 from reckoner.v1.providers.jev import valid_usage
 
 # Pinned provider models come from the single dated pricing source.
@@ -454,7 +454,8 @@ class ProviderBudget:
         caller explicitly passes `fixture=True` (test transports only).
         """
         current = cursor.execute(
-            "SELECT p.document, x.document->>'schema_version' AS schema "
+            "SELECT p.document, x.document->>'schema_version' AS schema, "
+            "x.document->'versions'->>'request_projection' AS projection "
             "FROM reckoner.v1_protocols p "
             "JOIN reckoner.v1_protocol_authorizations a USING (tenant_id,protocol_id) "
             "JOIN reckoner.v1_experiment_protocols x USING (protocol_sha256) "
@@ -467,6 +468,11 @@ class ProviderBudget:
             fixture is True and current["schema"] == FIXTURE_SCHEMA
         ):
             raise ValueError("fixture-labelled approvals cannot authorize a provider dispatch")
+        if current["schema"] == PAID_SCHEMA:
+            if current["projection"] != projection.VERSION:
+                raise ValueError(
+                    "recorded protocol request projection differs from this build; no new dispatch"
+                )
         return current["document"]
 
     def require_dispatchable(self, protocol_id: str) -> dict:

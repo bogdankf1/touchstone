@@ -100,7 +100,7 @@ def export_calibration_rows(
     evidence_mode: str | None = None,
 ) -> dict:
     """Task 5 evaluator rows for one executed protocol, with provenance hashes."""
-    validate_body(protocol)
+    validate_body(protocol, current_build=False)  # an already executed, recorded protocol
     sample = frozen["sample"]
     purpose, year = sample["purpose"], sample["year"]
     if purpose not in {"development", "validation"} or protocol["purpose"] != purpose:

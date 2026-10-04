@@ -281,8 +281,19 @@ def _check_arms(protocol):
             raise ValueError("graph comparison arms need identical case membership")
 
 
-def validate_body(protocol: dict) -> dict:
-    """Ledger-independent checks of an immutable protocol body and its SHA-256."""
+def require_current_projection(protocol: dict) -> None:
+    """New drafts, reservations and dispatch need this build's request projection."""
+    if protocol["versions"].get("request_projection") != projection.VERSION:
+        raise ValueError("protocol request projection version differs from this build")
+
+
+def validate_body(protocol: dict, *, current_build: bool = True) -> dict:
+    """Ledger-independent checks of an immutable protocol body and its SHA-256.
+
+    `current_build=False` is for protocols already recorded under an approval (close,
+    verify, resume, export): identity and structure are checked, but not equality with
+    this build's projection version. Drafting, reservation and dispatch keep it strict.
+    """
     if not isinstance(protocol, dict) or set(protocol) != FIELDS:
         raise ValueError("an exact paid-run protocol body is required")
     if protocol["protocol_sha256"] != content_id(_body(protocol)):
@@ -305,8 +316,10 @@ def validate_body(protocol: dict) -> dict:
         isinstance(k, str) and isinstance(v, str) and v for k, v in protocol["versions"].items()
     ):
         raise ValueError("versions must be exact strings")
-    if protocol["versions"].get("request_projection") != projection.VERSION:
-        raise ValueError("protocol request projection version differs from this build")
+    if not protocol["versions"].get("request_projection"):
+        raise ValueError("protocol must pin its request projection version")
+    if current_build:
+        require_current_projection(protocol)
     _price(provider, protocol["model"], protocol["prices"])
     bounds = protocol["bounds"]
     if not isinstance(bounds, dict) or set(bounds) != BOUNDS:
