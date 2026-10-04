@@ -2148,3 +2148,64 @@ def test_settlement_guard_resists_pg_roles_shadowing_and_binds_evidence_amounts(
                 )  # fmt: skip
                 ProviderBudget(owner).settle("mismatched", usage, Decimal("0.00000042"))
     owner_settle(pg.owner_dsn, "mismatched", usage, Decimal("0.00000042"))
+
+
+@pytest.mark.integration
+def test_authorize_validates_paid_bodies_and_only_accepts_labelled_fixture_documents(pg, tmp_path):
+    from reckoner.v1.experiment.protocol import identify
+
+    draft, _, _ = experiment_scenario(pg, tmp_path)
+    broken = identify({**draft, "statement_of_purpose": "   "})
+    with psycopg.connect(pg.owner_dsn, autocommit=True) as owner:
+        with pytest.raises(ValueError, match="statement"):
+            ProviderBudget(owner).authorize(
+                broken, broken["dispatch"], approval=fixture_approval(broken)
+            )
+    p = protocol(TASK)
+    unlabelled = identified(
+        {"schema_version": "operator-notes", "approver": FIXTURE, "dispatch": [p]},
+        "protocol_sha256",
+    )
+    with psycopg.connect(pg.owner_dsn, autocommit=True) as owner:
+        with pytest.raises(ValueError, match="fixture-labelled"):
+            ProviderBudget(owner).authorize(
+                unlabelled,
+                [p],
+                approval=approval_fixture(unlabelled["protocol_sha256"], dispatch_scope([p])),
+            )
+
+
+@pytest.mark.integration
+def test_production_score_command_refuses_fixture_labelled_approvals(pg, tmp_path, monkeypatch):
+    import json
+    from argparse import Namespace
+
+    from reckoner.v1.cli import execute as v1
+    from reckoner.v1.providers import jev
+
+    repo, task, evidence, p, attempts, _ = scored(pg)
+    with repo:
+        manifest = repo._connection.execute(
+            "SELECT document FROM reckoner.v1_runs WHERE tenant_id=%s AND run_id=%s",
+            (task["tenant_id"], task["run_id"]),
+        ).fetchone()["document"]
+    p = identified({**deepcopy(p), "purpose": manifest["purpose"]}, "protocol_id")
+    authorize(pg.owner_dsn, p)  # a fabricated fixture approval document
+
+    def no_client(*args, **kwargs):
+        raise AssertionError("no provider client may be built")
+
+    monkeypatch.setattr(jev, "JevClient", no_client)
+    (tmp_path / "manifest.json").write_text(json.dumps(manifest))
+    (tmp_path / "protocol.json").write_text(json.dumps(p))
+    env = tmp_path / "runner.env"
+    env.write_text(f"RECKONER_RUNNER_DSN={pg.runner_dsn}\nJEV_API_KEY=fabricated-not-a-key\n")
+    with pytest.raises(ValueError, match="fixture"):
+        v1(
+            Namespace(
+                v1_command="score",
+                manifest=tmp_path / "manifest.json",
+                protocol=tmp_path / "protocol.json",
+                env_file=env,
+            )
+        )

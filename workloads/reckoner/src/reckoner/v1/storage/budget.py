@@ -25,6 +25,7 @@ PROVIDER_CAP = Decimal(10)
 HEX = re.compile(r"^[a-f0-9]{64}$")
 MONEY = re.compile(r"^([0-9]+(\.[0-9]+)?|\.[0-9]+)$")
 APPROVAL_SCHEMA = "reckoner-protocol-approval-v1"
+FIXTURE_SCHEMA = "fabricated-test-protocol"
 APPROVAL_FIELDS = {
     "schema_version",
     "approval_id",
@@ -348,13 +349,21 @@ class ProviderBudget:
             raise ValueError("protocol document identity mismatch")
         if approval["protocol_sha256"] != digest:
             raise ValueError("approval does not bind this protocol SHA-256")
-        if protocol_document.get("schema_version") == "reckoner-paid-protocol-v1":
-            # Full binding (approver, purpose, exact cap, case count, attempts).
-            from reckoner.v1.experiment.protocol import bind_approval
+        schema = protocol_document.get("schema_version")
+        if schema == "reckoner-paid-protocol-v1":
+            # The full body is validated, then bound (approver, purpose, exact cap, cases).
+            from reckoner.v1.experiment.protocol import bind_approval, validate_body
 
+            validate_body(protocol_document)
             bind_approval(approval, protocol_document)
-        elif approval["approver"] != protocol_document.get("approver"):
-            raise ValueError("approval is not from the protocol document's approver")
+        elif schema == FIXTURE_SCHEMA:
+            # Explicitly labelled test fixtures only; production dispatch refuses them.
+            if approval["approver"] != protocol_document.get("approver"):
+                raise ValueError("approval is not from the protocol document's approver")
+        else:
+            raise ValueError(
+                "only paid protocols or explicitly fixture-labelled test documents are authorized"
+            )
         if not dispatch:
             raise ValueError("approval must cover at least one dispatch protocol")
         if protocol_document.get("dispatch") != dispatch:
