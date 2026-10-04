@@ -8,6 +8,7 @@ from email.utils import parsedate_to_datetime
 
 import httpx
 
+from reckoner.contracts import canonical_bytes
 from reckoner.resources import PROMPTS
 from reckoner.v1 import projection
 from reckoner.v1.contracts import validate_v1
@@ -158,10 +159,14 @@ class JevClient:
                 timeout=httpx.Timeout(30, connect=5),
                 follow_redirects=False,
             ) as client:
+                # The posted bytes are exactly those request_sha256 (content_id) hashes.
                 response = client.post(
                     "https://api.typesafe.ai/v1/systemone",
-                    json=request,
-                    headers={"Authorization": f"Bearer {self._api_key}"},
+                    content=canonical_bytes(request),
+                    headers={
+                        "Authorization": f"Bearer {self._api_key}",
+                        "Content-Type": "application/json",
+                    },
                 )
         except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
             raise JevError("connect") from exc

@@ -294,3 +294,34 @@ def test_new_notes_need_exact_provenance_while_older_v1_records_stay_readable():
     identified(note, "note_id")
     with pytest.raises(ValueError):
         validate_v1("case-note", note)  # provenance fields come together or not at all
+
+
+@pytest.mark.parametrize("count,truncated", [(32, False), (33, True)])
+def test_exemplar_bound_is_exactly_thirty_two_references(count, truncated):
+    from reckoner.v1 import projection
+
+    (item,) = projection.indicators(evidence_with(indicator("card-burst", count)))
+    assert item["evidence_refs_truncated"] is truncated
+    assert len(item["evidence_refs"]) == min(count, projection.REF_SAMPLE)
+    assert item["evidence_ref_count"] == count
+
+
+def test_jev_wire_bytes_are_the_canonical_bytes_the_request_hash_covers():
+    import hashlib
+
+    import httpx
+    from reckoner.v1.providers.jev import JevClient, build_request
+    from test_v1_jev import response
+
+    request = build_request(TX, evidence_with(indicator("merchant-exposure", 40)))
+    seen = []
+
+    def handle(sent):
+        seen.append(sent)
+        return httpx.Response(200, json=response())
+
+    JevClient("fabricated-only", transport=httpx.MockTransport(handle)).evaluate(request)
+    (sent,) = seen
+    assert hashlib.sha256(sent.content).hexdigest() == content_id(request)
+    assert sent.headers["content-type"] == "application/json"
+    assert json.loads(sent.content) == request
