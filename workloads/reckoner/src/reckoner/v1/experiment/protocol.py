@@ -166,13 +166,8 @@ def _strings(value, *, allow_empty=False):
     )
 
 
-def validate_protocol(protocol: dict, ledger: dict) -> dict:
-    """Validate an immutable protocol against a reconciled provider ledger snapshot.
-
-    Missing/changed prices, a changed case set, model or attempt count, over-limit
-    cost, the wrong ledger, an unresolved prior reservation or a changed protocol hash
-    each raise. Returns a validation receipt; it is not an approval.
-    """
+def validate_body(protocol: dict) -> dict:
+    """Ledger-independent checks of an immutable protocol body and its SHA-256."""
     if not isinstance(protocol, dict) or set(protocol) != FIELDS:
         raise ValueError("an exact paid-run protocol body is required")
     if protocol["protocol_sha256"] != content_id(_body(protocol)):
@@ -287,6 +282,18 @@ def validate_protocol(protocol: dict, ledger: dict) -> dict:
     cap = money(protocol["usd_cap"])
     if total != cap or cap < worst:
         raise ValueError("USD cap does not cover worst case or match dispatch envelopes")
+    return {"provider": provider, "worst": worst, "cap": cap}
+
+
+def validate_protocol(protocol: dict, ledger: dict) -> dict:
+    """Validate an immutable protocol against a reconciled provider ledger snapshot.
+
+    Missing/changed prices, a changed case set, model or attempt count, over-limit
+    cost, the wrong ledger, an unresolved prior reservation or a changed protocol hash
+    each raise. Returns a validation receipt; it is not an approval.
+    """
+    checked = validate_body(protocol)
+    provider, worst, cap = checked["provider"], checked["worst"], checked["cap"]
     if (
         not isinstance(ledger, dict)
         or ledger.get("schema_version") != "reckoner-ledger-snapshot-v1"
@@ -312,7 +319,7 @@ def validate_protocol(protocol: dict, ledger: dict) -> dict:
         "provider": provider,
         "model": protocol["model"],
         "purpose": protocol["purpose"],
-        "case_count": len(cases),
+        "case_count": len(protocol["cases"]),
         "worst_case_usd": _decimal_text(worst),
         "usd_cap": protocol["usd_cap"],
         "remaining_usd": ledger["remaining_usd"],

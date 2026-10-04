@@ -786,7 +786,9 @@ def experiment_scenario(pg, tmp_path, *, purpose="pilot", per_tenant=(2, 1)):
                 ],
             }
             identified(run, "experiment_id")
-            owner.create_run(run, config["config_id"], telemetry_mode="scoring-only")
+            from reckoner.v1.experiment.protocol import PURPOSES
+
+            owner.create_run(run, config["config_id"], telemetry_mode=PURPOSES[purpose][2])
             runs.append(run)
             for row in rows:
                 tx = row["document"]
