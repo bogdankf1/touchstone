@@ -231,7 +231,7 @@ def reconcile_call(connection, call_id: str, usage: dict, *, evidence: dict | No
     Without evidence nothing is settled: a never-answered call stays uncertain and is
     never auto-zeroed. Cost is computed from the call's recorded protocol price.
     """
-    from reckoner.v1.experiment.protocol import PRICES
+    from reckoner.v1 import pricing
     from reckoner.v1.storage.budget import ProviderBudget
 
     if evidence is None:
@@ -279,17 +279,9 @@ def reconcile_call(connection, call_id: str, usage: dict, *, evidence: dict | No
     reported = _persisted_usage(row["body"])
     if reported is not None and reported != usage:
         raise ValueError("entered usage differs from the persisted response usage")
-    input_price, output_price = PRICES[row["provider"]]
-    prices = row["prices"] or {}
-    if (
-        Decimal(prices.get("input_per_million", "-1")) != input_price
-        or Decimal(prices.get("output_per_million", "-1")) != output_price
-    ):
+    if not pricing.matches(row["provider"], row["prices"] or {}):
         raise ValueError("recorded protocol prices are not the pinned prices")
-    cost = (
-        Decimal(usage["input_tokens"]) * input_price
-        + Decimal(usage["output_tokens"]) * output_price
-    ) / Decimal(1000000)
+    cost = pricing.cost(row["provider"], usage)
     document = {
         "call_id": call_id,
         "prior_state": state,

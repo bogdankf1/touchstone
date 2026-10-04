@@ -1974,3 +1974,29 @@ def test_cli_new_steps_accept_only_their_allowlisted_environment(tmp_path, step,
     env.write_text(line + "\n")
     with pytest.raises(ValueError, match="accepts only"):
         cli([step, *extra, "--env-file", str(env)])
+
+
+# --- quality round 1: one pricing source for protocols, reservations, settlement --
+
+
+def test_published_prices_live_in_one_dated_module_used_everywhere():
+    import inspect
+
+    from reckoner.v1 import pricing
+    from reckoner.v1.experiment import ledger, protocol
+    from reckoner.v1.notes import calls
+    from reckoner.v1.storage import attempts
+
+    assert set(pricing.PUBLISHED) == {"typesafe", "anthropic"}
+    for provider, entry in pricing.PUBLISHED.items():
+        assert entry["effective"] and entry["source_url"].startswith("https://")
+        assert pricing.rates(provider) == (entry["input_per_million"], entry["output_per_million"])
+    assert pricing.cost("typesafe", {"input_tokens": 2000, "output_tokens": 7}) == Decimal(
+        "0.000084"
+    )
+    assert pricing.cost("anthropic", {"input_tokens": 20, "output_tokens": 10}) == Decimal(
+        "0.00007"
+    )
+    for module in (attempts, calls, protocol, ledger):
+        source = inspect.getsource(module)
+        assert ".042" not in source and "!= 5" not in source and "PRICES = {" not in source

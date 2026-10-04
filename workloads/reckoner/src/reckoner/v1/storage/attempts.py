@@ -5,13 +5,13 @@ import random
 import time
 import uuid
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
 
 from psycopg.types.json import Jsonb
 
 from reckoner.contracts import content_id
 from reckoner.resources import PROMPTS
 from reckoner.storage.budget import ACCOUNTING_LOCK
+from reckoner.v1 import pricing
 from reckoner.v1.contracts import validate_v1
 from reckoner.v1.providers.jev import JevError, build_request, valid_usage, validate_response
 from reckoner.v1.storage.budget import ProviderBudget, validate_protocol
@@ -74,13 +74,7 @@ def _preflight(repo, task, evidence, protocol):
         or protocol["run_id"] != task["run_id"]
     ):
         raise ValueError("exact request/case is not in protocol")
-    price = scorer["price_table"]
-    if (
-        price["model"] != "jev-1.13.0"
-        or price["currency"] != "USD"
-        or Decimal(price["input_per_million"]) != Decimal(".042")
-        or Decimal(price["output_per_million"]) != 0
-    ):
+    if not pricing.matches("typesafe", scorer["price_table"]):
         raise ValueError("unknown scorer pricing prevents dispatch")
     return config, request, digest
 
@@ -240,7 +234,9 @@ def score_task(repo, client, task: dict, evidence: dict, protocol: dict) -> dict
                 "request_sha256": digest,
                 "request_document": request,
             }
-            maximum = Decimal(protocol["input_token_ceiling"]) * Decimal(".042") / Decimal(1000000)
+            maximum = pricing.cost(
+                "typesafe", {"input_tokens": protocol["input_token_ceiling"], "output_tokens": 0}
+            )
             skip, wait = _claim(repo, ledger, call, maximum, protocol)
             if skip:
                 return {"scorer_status": "unavailable", "degraded_reason": skip}
@@ -261,7 +257,7 @@ def score_task(repo, client, task: dict, evidence: dict, protocol: dict) -> dict
             if category == "connect":
                 usage = {"input_tokens": 0, "output_tokens": 0}
             if usage is not None:
-                cost = Decimal(usage["input_tokens"]) * Decimal(".042") / Decimal(1000000)
+                cost = pricing.cost("typesafe", usage)
             score = _score(call, config, digest, category, parsed, usage, cost)
             retry_delay = (
                 max(

@@ -18,6 +18,7 @@ from pathlib import Path
 
 from reckoner.contracts import content_id
 from reckoner.resources import PROMPTS
+from reckoner.v1 import pricing
 from reckoner.v1.storage.budget import (
     HEX,
     PROVIDERS,
@@ -52,11 +53,6 @@ SELECTION_FIELDS = {
     "population_sha256",
     "population_count",
     "selected_sha256",
-}
-# Pinned published prices (USD per million tokens); unknown/changed prices block.
-PRICES = {
-    "typesafe": (Decimal("0.042"), Decimal(0)),
-    "anthropic": (Decimal(1), Decimal(5)),
 }
 FIELDS = {
     "schema_version",
@@ -145,7 +141,7 @@ def _decimal_text(value: Decimal) -> str:
 
 def attempt_maximum(provider, billing_token_bound, max_output_tokens) -> Decimal:
     """Worst-case USD for one attempt at the pinned published price."""
-    input_price, output_price = PRICES[provider]
+    input_price, output_price = pricing.rates(provider)
     return (
         Decimal(billing_token_bound) * input_price + Decimal(max_output_tokens) * output_price
     ) / Decimal(1000000)
@@ -163,7 +159,7 @@ def _price(provider, model, table):
     if not isinstance(table, dict):
         raise ValueError("missing pinned prices block dispatch")
     body = {k: v for k, v in table.items() if k != "price_table_version"}
-    input_price, output_price = PRICES[provider]
+    input_price, output_price = pricing.rates(provider)
     try:
         known = (
             table.get("schema_version") == "price-table-v1"

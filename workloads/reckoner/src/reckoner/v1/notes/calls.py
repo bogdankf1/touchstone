@@ -2,12 +2,12 @@
 
 import json
 from datetime import UTC, datetime
-from decimal import Decimal
 
 from psycopg.types.json import Jsonb
 
 from reckoner.baseline.pricing import observed_cost
 from reckoner.contracts import content_id
+from reckoner.v1 import pricing
 from reckoner.v1.notes.prompt import MODEL
 from reckoner.v1.storage.budget import ProviderBudget, validate_protocol
 
@@ -116,17 +116,15 @@ class BudgetedCalls:
                 or initial["document"]["protocol_id"] != protocol["protocol_id"]
             ):
                 raise ValueError("repair must use the original bounded protocol allowance")
-        price = model["price_table"]
-        if (
-            price["model"] != MODEL
-            or price["currency"] != "USD"
-            or Decimal(price["input_per_million"]) != 1
-            or Decimal(price["output_per_million"]) != 5
-        ):
+        if not pricing.matches("anthropic", model["price_table"]):
             raise ValueError("unknown pinned generation pricing")
-        return (
-            Decimal(protocol["input_token_ceiling"]) + Decimal(protocol["max_output_tokens"]) * 5
-        ) / Decimal(1000000)
+        return pricing.cost(
+            "anthropic",
+            {
+                "input_tokens": protocol["input_token_ceiling"],
+                "output_tokens": protocol["max_output_tokens"],
+            },
+        )
 
     def execute(self, request, *, stage, protocol):
         maximum = self.preflight(request, stage, protocol)
