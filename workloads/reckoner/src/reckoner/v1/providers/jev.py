@@ -9,6 +9,7 @@ from email.utils import parsedate_to_datetime
 import httpx
 
 from reckoner.resources import PROMPTS
+from reckoner.v1 import projection
 from reckoner.v1.contracts import validate_v1
 
 MODEL = "jev-1.13.0"
@@ -62,10 +63,14 @@ def build_request(transaction: dict, evidence: dict) -> dict:
         },
     )
     summary = {key: validated[key] for key in evidence_keys if key in validated}
+    # Only the request is bounded (count, hash and ordered exemplars); evidence is unchanged.
+    summary["risk_indicators"] = projection.indicators(validated)
+    summary["comparable_cases"] = projection.comparables(validated)
     return {
         "model": MODEL,
         "state": {
             "dataset_simulated": True,
+            "request_projection": projection.VERSION,
             "transaction": {
                 key: transaction[key] for key in transaction_keys if key in transaction
             },

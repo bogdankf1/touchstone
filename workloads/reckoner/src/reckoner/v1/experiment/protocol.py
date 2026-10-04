@@ -18,7 +18,7 @@ from pathlib import Path
 
 from reckoner.contracts import content_id
 from reckoner.resources import PROMPTS
-from reckoner.v1 import pricing
+from reckoner.v1 import pricing, projection
 from reckoner.v1.storage.budget import (
     HEX,
     PROVIDERS,
@@ -304,6 +304,8 @@ def validate_body(protocol: dict) -> dict:
         isinstance(k, str) and isinstance(v, str) and v for k, v in protocol["versions"].items()
     ):
         raise ValueError("versions must be exact strings")
+    if protocol["versions"].get("request_projection") != projection.VERSION:
+        raise ValueError("protocol request projection version differs from this build")
     _price(provider, protocol["model"], protocol["prices"])
     bounds = protocol["bounds"]
     if not isinstance(bounds, dict) or set(bounds) != BOUNDS:
@@ -937,6 +939,7 @@ def draft_scoring_protocol(
         "versions": {
             "code_revision": code_revision,
             "question_version": question,
+            "request_projection": projection.VERSION,
             "request_measurement_id": measurements["measurement_id"],
             **(
                 {"token_overhead_id": token_overhead["overhead_id"]}
@@ -1171,6 +1174,7 @@ def draft_note_protocol(
             "judge_prompt_version": config["judge_model"]["prompt_version"],
             "deepeval": version("deepeval"),
             "ragas": version("ragas"),
+            "request_projection": projection.VERSION,
             "request_measurement_id": measurements["measurement_id"],
         },
         "prices": price_table,
@@ -1218,7 +1222,8 @@ def present_protocol(protocol: dict, ledger: dict) -> str:
         ),
         f"- Bounds: request ceiling {bounds['input_token_ceiling']} tokens, billing bound "
         f"{bounds['billing_token_bound']} input tokens, {bounds['max_output_tokens']} output "
-        f"tokens, {bounds['maximum_attempts']} attempts per case",
+        f"tokens, {bounds['maximum_attempts']} attempts per case; request projection "
+        f"`{protocol['versions']['request_projection']}`",
         f"- Retry assumptions: {bounds['retry_assumption']}",
         "- Per-attempt reservation: per-attempt maximum USD "
         + ", ".join(sorted({d["attempt_maximum_usd"] for d in protocol["dispatch"]}))

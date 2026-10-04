@@ -3,6 +3,7 @@
 import json
 from copy import deepcopy
 
+from reckoner.v1 import projection
 from reckoner.v1.contracts import validate_v1
 
 CONTENT_FIELDS = (
@@ -65,16 +66,12 @@ def note_data(evidence, score):
         "evidence_id": evidence["evidence_id"],
         "coverage": deepcopy(evidence["coverage"]),
         "confidence": confidence(score),
-        "risk_indicators": [
-            {
-                k: deepcopy(i[k])
-                for k in ("rank", "indicator_id", "description", "method", "evidence_refs")
-            }
-            for i in evidence["risk_indicators"]
-        ],
+        "request_projection": projection.VERSION,
+        # Bounded for the provider; validate_note checks claims against the full evidence.
+        "risk_indicators": projection.indicators(evidence),
         "entity_neighbourhood": neighbourhood(evidence),
         "comparable_cases": [
-            comparable(c, evidence["evidence_id"]) for c in evidence["comparable_cases"]
+            comparable(c, evidence["evidence_id"]) for c in projection.comparables(evidence)
         ],
     }
 
@@ -95,13 +92,20 @@ def validate_note(note: dict, evidence: dict, score: dict) -> dict:
     if note["entity_neighbourhood"] != neighbourhood(evidence):
         raise ValueError("unsupported neighbourhood claim")
     allowed = note_data(evidence, score)
+    persisted = {i["indicator_id"]: i for i in evidence["risk_indicators"]}
+    supplied = {i["indicator_id"]: i for i in allowed["risk_indicators"]}
     for item in note["risk_indicators"]:
-        if not any(
-            {k: v for k, v in item.items() if k != "rank"}
-            == {k: v for k, v in source.items() if k != "rank"}
-            for source in allowed["risk_indicators"]
-        ):
+        source = persisted.get(item["indicator_id"])
+        if source is None or any(item[k] != source[k] for k in ("description", "method")):
             raise ValueError("unsupported indicator or method")
+        # References must be the full persisted list or exactly the exemplars supplied
+        # to the provider, and always a subset of the full persisted references.
+        refs = item["evidence_refs"]
+        if not set(refs) <= set(source["evidence_refs"]) or refs not in (
+            source["evidence_refs"],
+            supplied[item["indicator_id"]]["evidence_refs"],
+        ):
+            raise ValueError("unsupported indicator references")
     if len({i["indicator_id"] for i in note["risk_indicators"]}) != len(note["risk_indicators"]):
         raise ValueError("duplicate indicator")
     if any(c not in allowed["comparable_cases"] for c in note["comparable_cases"]):

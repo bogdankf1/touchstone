@@ -542,6 +542,22 @@ def test_pilot_draft_pins_manifest_cases_prices_ledger_and_worst_case(tmp_path):
     assert "approved" not in draft
 
 
+def test_drafts_pin_the_request_projection(tmp_path):
+    from reckoner.v1 import projection
+    from reckoner.v1.experiment.protocol import identify, validate_body
+
+    draft = pilot(tmp_path)
+    assert draft["versions"]["request_projection"] == projection.VERSION
+    body = {k: v for k, v in draft.items() if k != "protocol_sha256"}
+    for value in (None, "bounded-evidence-v0"):
+        changed = deepcopy(body)
+        changed["versions"].pop("request_projection")
+        if value is not None:
+            changed["versions"]["request_projection"] = value
+        with pytest.raises(ValueError, match="projection"):
+            validate_body(identify(changed))
+
+
 def overhead(ratio="0.5", extra=200):
     body = {
         "schema_version": "reckoner-token-overhead-v1",
