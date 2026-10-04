@@ -80,17 +80,22 @@ def note_data(evidence, score):
 
 
 def with_reference_provenance(indicators, evidence: dict):
-    """Model-written indicator claims plus provenance taken from the projection.
+    """Attach projection provenance to indicators that omit it; never rewrite output.
 
-    Count, full-list SHA-256 and truncation always come from the persisted evidence,
-    never from model output. Unknown indicators are left for validation to reject.
+    Model output is kept as written. Keys outside the five claim and three provenance
+    keys make the output invalid. Echoed provenance is left for `validate_note`, which
+    accepts it only when it equals the projection. Unknown indicators are left for
+    validation to reject.
     """
     supplied = {i["indicator_id"]: i for i in projection.indicators(evidence)}
     attached = []
     for item in indicators:
-        claim = {k: item[k] for k in INDICATOR_CLAIMS if k in item}
-        source = supplied.get(claim.get("indicator_id"))
-        attached.append({**claim, **({k: source[k] for k in PROVENANCE} if source else {})})
+        if set(item) - set(INDICATOR_CLAIMS) - set(PROVENANCE):
+            raise ValueError("unsupported indicator field")
+        source = supplied.get(item.get("indicator_id"))
+        if source is not None and not set(PROVENANCE) & set(item):
+            item = {**item, **{k: source[k] for k in PROVENANCE}}
+        attached.append(item)
     return attached
 
 
@@ -118,12 +123,9 @@ def validate_note(note: dict, evidence: dict, score: dict) -> dict:
             raise ValueError("unsupported indicator or method")
         if any(item.get(k) != supplied[item["indicator_id"]][k] for k in PROVENANCE):
             raise ValueError("indicator reference provenance differs from the evidence")
-        # Only references supplied to generation: exactly the projected exemplars, which
-        # are themselves taken from the full persisted references.
+        # A non-empty, order-insensitive subset of the exemplars supplied to generation.
         refs = item["evidence_refs"]
-        if refs != supplied[item["indicator_id"]]["evidence_refs"] or not set(refs) <= set(
-            source["evidence_refs"]
-        ):
+        if not refs or not set(refs) <= set(supplied[item["indicator_id"]]["evidence_refs"]):
             raise ValueError("unsupported indicator references")
     if len({i["indicator_id"] for i in note["risk_indicators"]}) != len(note["risk_indicators"]):
         raise ValueError("duplicate indicator")

@@ -189,6 +189,14 @@ def test_note_request_is_bounded_and_validation_accepts_only_supplied_references
     identified(note, "note_id")
     with pytest.raises(ValueError, match="indicator references"):
         validate_note(note, evidence, score)
+    # Any non-empty subset of the supplied exemplars, in any order, is a supported citation.
+    note["risk_indicators"][0]["evidence_refs"] = list(reversed(sent["evidence_refs"][:3]))
+    identified(note, "note_id")
+    assert validate_note(note, evidence, score) == note
+    note["risk_indicators"][0]["evidence_refs"] = []
+    identified(note, "note_id")
+    with pytest.raises(ValueError):
+        validate_note(note, evidence, score)
 
 
 @pytest.mark.parametrize("change", ["invented", "other-subset", "method"])
@@ -242,19 +250,15 @@ def generated(evidence, score, indicator_fields):
     )
 
 
-def test_generated_note_carries_reference_provenance_from_the_projection_not_the_model():
+def test_generation_attaches_omitted_provenance_and_never_rewrites_model_output():
     from reckoner.v1 import projection
 
     _, evidence, score = note_case(2944)
     (sent,) = projection.indicators(evidence)
-    claimed = {
-        **{k: sent[k] for k in ("rank", "indicator_id", "description", "method", "evidence_refs")},
-        # The model's own provenance values are never trusted.
-        "evidence_ref_count": 1,
-        "evidence_refs_sha256": "0" * 64,
-        "evidence_refs_truncated": False,
-    }
-    result = generated(evidence, score, [claimed])
+    claim = {k: sent[k] for k in ("rank", "indicator_id", "description", "method", "evidence_refs")}
+    exact = {k: sent[k] for k in PROVENANCE}
+    # Omitted provenance is attached deterministically from the projection.
+    result = generated(evidence, score, [claim])
     assert result["status"] == "succeeded"
     (item,) = result["note"]["risk_indicators"]
     assert {k: item[k] for k in PROVENANCE} == {
@@ -262,11 +266,16 @@ def test_generated_note_carries_reference_provenance_from_the_projection_not_the
         "evidence_refs_sha256": content_id(sorted(evidence["risk_indicators"][0]["evidence_refs"])),
         "evidence_refs_truncated": True,
     }
-    assert item["evidence_refs"] == sent["evidence_refs"]
-    # Without any model-supplied provenance the same deterministic values are attached.
-    bare = {k: claimed[k] for k in ("rank", "indicator_id", "description", "method")}
-    again = generated(evidence, score, [{**bare, "evidence_refs": sent["evidence_refs"]}])
-    assert again["note"]["risk_indicators"] == result["note"]["risk_indicators"]
+    # An exact echo is accepted unchanged.
+    echoed = generated(evidence, score, [{**claim, **exact}])
+    assert echoed["status"] == "succeeded"
+    assert echoed["note"]["risk_indicators"] == result["note"]["risk_indicators"]
+    # A wrong echoed count, or any key outside the eight indicator keys, is invalid output;
+    # it is never silently corrected or stripped.
+    wrong = generated(evidence, score, [{**claim, **exact, "evidence_ref_count": 1}])
+    assert wrong["status"] == "invalid" and wrong["note"] is None
+    extra = generated(evidence, score, [{**claim, "severity": "0.9"}])
+    assert extra["status"] == "invalid" and extra["note"] is None
 
 
 def test_new_notes_need_exact_provenance_while_older_v1_records_stay_readable():

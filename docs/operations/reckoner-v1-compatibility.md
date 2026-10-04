@@ -488,12 +488,27 @@ Case-note v1 indicators gain three optional fields: `evidence_ref_count`,
   addition.
 - Older v1 notes without the fields stay schema-valid and readable. The console shows
   their sources as before.
-- Generation attaches the fields from the projection and never takes them from model
-  output.
-- The factual validator requires them on newly generated notes and checks them against
-  the evidence.
-- Note references must be exactly the supplied exemplars. Verdict-change actions may cite
-  only the evidence ID and supplied exemplars.
+- Generation never rewrites model output. If an indicator omits the fields, generation
+  attaches them from the projection. If the model echoes them, they must equal the
+  projection exactly.
+- Any indicator key outside the five claim keys (`rank`, `indicator_id`, `description`,
+  `method`, `evidence_refs`) and the three provenance keys makes the output invalid.
+- The factual validator requires the fields on newly generated notes.
+- An indicator's `evidence_refs` must be a non-empty subset, in any order, of the
+  exemplars supplied to generation. The persisted note keeps the full count, hash and
+  truncation flag, so the display never presents a subset as the whole list.
+- Verdict-change actions may cite only the evidence ID and supplied exemplars.
+
+The Jev client posts the canonical JSON bytes that `request_sha256` hashes
+(`reckoner.contracts.canonical_bytes`, `Content-Type: application/json`).
+
+Projection-version checks by step:
+- Drafting, validating, reserving and dispatching require the protocol's
+  `request_projection` to equal this build's projection. `ProviderBudget.reserve` also
+  refuses to dispatch under a recorded paid protocol pinned to another projection.
+- Close, verify, resume and calibration export of an already recorded protocol check its
+  content hash, approval binding and structure only. A projection change therefore never
+  strands a recorded protocol.
 
 Migration `019_v1_note_reference_provenance.sql` returns the fields through the public
 note projection. The reviewer console shows, for example, "32 of 2,944 sources shown
