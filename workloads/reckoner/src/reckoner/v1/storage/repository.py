@@ -9,8 +9,18 @@ from reckoner.v1.contracts import validate_v1
 
 
 class V1Repository:
-    def __init__(self, dsn: str, *, scorer_client=None, note_client=None, note_protocol=None):
+    def __init__(
+        self,
+        dsn: str,
+        *,
+        scorer_client=None,
+        note_client=None,
+        note_protocol=None,
+        fixture_dispatch=False,
+    ):
         self.scorer_client = scorer_client
+        # Tests only: admit dispatch under fabricated fixture-labelled approvals.
+        self.fixture_dispatch = fixture_dispatch is True
         self.note_client = note_client
         self.note_protocol = note_protocol
         self._connection = psycopg.connect(dsn, autocommit=True, row_factory=dict_row)

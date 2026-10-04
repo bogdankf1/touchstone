@@ -166,7 +166,7 @@ def _claim(repo, ledger, call, maximum, protocol):
         wait = max(0, (state["next_dispatch_at"] - now).total_seconds())
         if wait > 60:
             return "provider retry deferred", 0
-        ledger.reserve(call, maximum, protocol)
+        ledger.reserve(call, maximum, protocol, fixture=repo.fixture_dispatch)
         # active_call is the single persisted half-open probe and concurrency lease.
         next_time = max(now, state["next_dispatch_at"]) + timedelta(
             seconds=max(0.025, protocol["input_token_ceiling"] / 100000)

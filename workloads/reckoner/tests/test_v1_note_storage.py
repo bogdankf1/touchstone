@@ -80,7 +80,7 @@ def paid_body(content="{}"):
 def prepared_call(pg):
     config, manifest, legacy = setup_run(pg)
     ledger_fixture(pg, legacy)
-    repo = V1Repository(pg.runner_dsn)
+    repo = V1Repository(pg.runner_dsn, fixture_dispatch=True)
     task = repo.task("tenant-a", manifest["run_id"], "task-a")
     request = {
         "model": config["note_model"]["model"],
@@ -224,7 +224,7 @@ def test_crash_after_response_reuses_settlement_before_note_result_write(pg, mon
         monkeypatch.setattr(calls, "_finish", crashed)
         with pytest.raises(RuntimeError):
             calls.execute(request, stage="note-generation", protocol=p)
-    with V1Repository(pg.runner_dsn) as restarted:
+    with V1Repository(pg.runner_dsn, fixture_dispatch=True) as restarted:
         result = api.BudgetedCalls(restarted, transport, task, config, kind="note").execute(
             request, stage="note-generation", protocol=p
         )
@@ -266,7 +266,7 @@ def test_each_ragas_stage_is_reserved_and_saved_individually(pg):
         owner.register_config(config)
         owner.create_run(manifest, config["config_id"])
     ledger_fixture(pg, legacy)
-    with V1Repository(pg.runner_dsn) as repo:
+    with V1Repository(pg.runner_dsn, fixture_dispatch=True) as repo:
         task = repo.task("tenant-a", "judge-run", "task-a")
         responses = [
             paid_body('{"statements":["Neighbourhood unavailable."]}'),
@@ -481,7 +481,7 @@ def test_valid_schema_repair_has_two_separate_settlements_in_one_envelope(pg):
         owner.register_config(config)
         owner.create_run(manifest, config["config_id"])
     ledger_fixture(pg, legacy)
-    with V1Repository(pg.runner_dsn) as repo:
+    with V1Repository(pg.runner_dsn, fixture_dispatch=True) as repo:
         task = repo.task("tenant-a", "repair-run", "task-a")
         request = {
             "model": config["note_model"]["model"],

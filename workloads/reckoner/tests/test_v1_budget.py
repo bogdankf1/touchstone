@@ -86,9 +86,9 @@ def test_last_cent_concurrency_and_protocol_allocations_are_counted_once(pg):
     }
     first = protocol(task, cap="0.02")
     authorize(pg.owner_dsn, first)
-    with V1Repository(pg.runner_dsn) as repo:
+    with V1Repository(pg.runner_dsn, fixture_dispatch=True) as repo:
         ledger = budget.ProviderBudget(repo._connection)
-        ledger.reserve(call(task, first), Decimal("0.01"), first)
+        ledger.reserve(call(task, first), Decimal("0.01"), first, fixture=True)
         # The recorded envelope is counted once; attempts are allocated inside it.
         assert ledger.remaining("typesafe") == Decimal("9.98")
     outcomes, errors = [], []
@@ -96,11 +96,11 @@ def test_last_cent_concurrency_and_protocol_allocations_are_counted_once(pg):
 
     def reserve(number):
         try:
-            with V1Repository(pg.runner_dsn) as repo:
+            with V1Repository(pg.runner_dsn, fixture_dispatch=True) as repo:
                 barrier.wait()
                 try:
                     budget.ProviderBudget(repo._connection).reserve(
-                        call(task, first, f"call-{number}"), Decimal(".01"), first
+                        call(task, first, f"call-{number}"), Decimal(".01"), first, fixture=True
                     )
                 except budget.BudgetExceeded:
                     outcomes.append("blocked")
@@ -124,10 +124,10 @@ def test_uncertain_settlement_and_idempotency_overage_and_close(pg):
     task = {"tenant_id": "tenant-a", "run_id": manifest["run_id"], **manifest["tasks"][0]}
     p = protocol(task, cap="1")
     authorize(pg.owner_dsn, p)
-    with V1Repository(pg.runner_dsn) as repo:
+    with V1Repository(pg.runner_dsn, fixture_dispatch=True) as repo:
         ledger = budget.ProviderBudget(repo._connection)
-        reservation = ledger.reserve(call(task, p), Decimal(".01"), p)
-        assert ledger.reserve(call(task, p), Decimal(".01"), p) == reservation
+        reservation = ledger.reserve(call(task, p), Decimal(".01"), p, fixture=True)
+        assert ledger.reserve(call(task, p), Decimal(".01"), p, fixture=True) == reservation
         ledger.settle("call-a", None, None)
         ledger.settle("call-a", None, None)
         ledger.close(p["protocol_id"])
@@ -141,7 +141,7 @@ def test_uncertain_settlement_and_idempotency_overage_and_close(pg):
         with pytest.raises(ValueError, match="conflict"):
             ledger.settle("call-a", {"input_tokens": 1, "output_tokens": 0}, Decimal(".01"))
         with pytest.raises(budget.BudgetExceeded, match="overage"):
-            ledger.reserve(call(task, p, "next"), Decimal(".001"), p)
+            ledger.reserve(call(task, p, "next"), Decimal(".001"), p, fixture=True)
 
 
 def test_anthropic_requires_verified_legacy_provenance_and_counts_it_once(pg):
@@ -176,9 +176,9 @@ def test_anthropic_requires_verified_legacy_provenance_and_counts_it_once(pg):
         )
         budget.ProviderBudget(owner).verify_legacy()
     authorize(pg.owner_dsn, p)
-    with V1Repository(pg.runner_dsn) as repo:
+    with V1Repository(pg.runner_dsn, fixture_dispatch=True) as repo:
         ledger = budget.ProviderBudget(repo._connection)
-        ledger.reserve(call(task, p), Decimal(".1"), p)
+        ledger.reserve(call(task, p), Decimal(".1"), p, fixture=True)
         assert ledger.remaining("anthropic") == Decimal("8.506849")
         assert ledger.remaining("typesafe") == Decimal("10")
 
@@ -206,7 +206,7 @@ def scoring(pg, attempts=3, authorized=True, input_ceiling=None, official_prices
     with V1Repository(pg.owner_dsn) as owner:
         owner.register_config(config)
         owner.create_run(manifest, config["config_id"])
-    repo = V1Repository(pg.runner_dsn)
+    repo = V1Repository(pg.runner_dsn, fixture_dispatch=True)
     task = repo.task("tenant-a", manifest["run_id"], "task-a")
     evidence = evidence_fixture(transaction_id=task["transaction_id"])
     evidence["query_time"] = task["transaction"]["occurred_at"]
@@ -234,7 +234,7 @@ def test_score_cost_response_persisted_restart_does_not_send_again(pg):
         assert score["cost"]["amount"] == "0.000084"
         assert attempts.score_task(repo, client, task, evidence, p) == score
     assert len(count) == 1
-    with V1Repository(pg.runner_dsn) as restarted:
+    with V1Repository(pg.runner_dsn, fixture_dispatch=True) as restarted:
         assert attempts.score_task(restarted, client, task, evidence, p) == score
     assert len(count) == 1
 
@@ -335,7 +335,9 @@ def test_crash_after_reservation_before_response_is_uncertain_without_http(pg):
     config, request, digest = attempts._preflight(repo, task, evidence, p)
     reservation = {**call(task, p, "lost-response"), "request_document": request}
     with repo:
-        budget.ProviderBudget(repo._connection).reserve(reservation, Decimal(".000084"), p)
+        budget.ProviderBudget(repo._connection).reserve(
+            reservation, Decimal(".000084"), p, fixture=True
+        )
         result = attempts.score_task(
             repo,
             jev.JevClient(
@@ -510,7 +512,7 @@ def test_expired_circuit_allows_one_probe_and_rate_deadline_is_persisted(pg):
 
         def claim_probe(number):
             try:
-                with V1Repository(pg.runner_dsn) as worker:
+                with V1Repository(pg.runner_dsn, fixture_dispatch=True) as worker:
                     barrier.wait()
                     outcomes.append(
                         attempts._claim(

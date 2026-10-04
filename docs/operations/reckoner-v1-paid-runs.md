@@ -26,7 +26,10 @@ never read.
    and reserves every envelope's full maximum.
 6. `reckoner v1 protocol execute --protocol-sha256 S --output NEW_DIR` (runner and that
    protocol's provider key only): runs sequentially under stop-on-limit and retains raw
-   outputs.
+   outputs. Every reservation (scorer, workflow, notes and judges) requires an envelope
+   recorded under an approval of a `reckoner-paid-protocol-v1` document; a fabricated
+   fixture-labelled approval admits a dispatch only in test code that passes an explicit
+   fixture flag.
 7. `reckoner v1 protocol close --protocol-sha256 S` (runner): releases unused envelope
    capacity, for example after the evaluator has run the judge stages.
 8. `reckoner v1 protocol verify --protocol-sha256 S --report R` (runner): reads the
@@ -42,7 +45,10 @@ maximum stays reserved; it is never auto-zeroed and never re-sent.
 1. `reckoner v1 protocol execute --protocol-sha256 S --output NEW_DIR` (resume). The
    scorer finds the reservation without a response, records it **uncertain**, and clears
    the provider's active-dispatch marker. It does not send the request again. Cases that
-   were never dispatched are dispatched once.
+   were never dispatched are dispatched once only while their envelope is still open (a
+   crash, a killed process or an execution error leaves it open). If the envelope was
+   closed or stopped (a budget stop, or `close`), the resume dispatches nothing new:
+   never-dispatched cases stay `not-dispatched` and need a new approved protocol.
 2. `reckoner v1 protocol close --protocol-sha256 S`, if the resume did not already close
    the envelopes.
 3. Obtain the provider's own record of that request: a usage record, invoice line or

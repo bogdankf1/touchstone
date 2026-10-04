@@ -180,7 +180,7 @@ class BudgetedCalls:
             }
             call["call_id"] = content_id([*identity.values(), stage])
             with connection.transaction():
-                self.budget.reserve(call, maximum, protocol)
+                self.budget.reserve(call, maximum, protocol, fixture=self.repo.fixture_dispatch)
                 connection.execute(
                     "INSERT INTO reckoner.v1_generation_stages "
                     "(tenant_id,run_id,task_id,stage,call_id,document) VALUES "

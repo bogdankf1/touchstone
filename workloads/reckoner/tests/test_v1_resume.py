@@ -61,7 +61,7 @@ def test_saved_response_and_settlement_survive_actual_checkpoint_failure(pg):
         changed_config["threshold_config_id"] = changed_threshold["config_id"]
         identified(changed_config, "config_id")
         owner.register_config(changed_config)
-    with V1Repository(pg.runner_dsn, scorer_client=client) as restarted:
+    with V1Repository(pg.runner_dsn, scorer_client=client, fixture_dispatch=True) as restarted:
         with checkpoints.PostgresCheckpointer(pg.runner_dsn, task["tenant_id"]) as saver:
             graph = api.build_graph(saver)
             before = graph.get_state(checkpoints.task_config(task))
@@ -94,7 +94,7 @@ def test_ambiguous_reserved_call_stays_uncertain_without_http(pg):
 
     with repo:
         ProviderBudget(repo._connection).reserve(
-            call(task, settings["protocol"]), Decimal(".000084"), settings["protocol"]
+            call(task, settings["protocol"]), Decimal(".000084"), settings["protocol"], fixture=True
         )
         decision, state = execute(repo, task, settings)
         assert decision["outcome"] == "escalate"
@@ -144,7 +144,7 @@ def test_same_task_concurrency_waits_for_first_owner_and_returns_same_decision(p
     repo.__exit__(None, None, None)
 
     def worker(second=False):
-        with V1Repository(pg.runner_dsn, scorer_client=client) as connection:
+        with V1Repository(pg.runner_dsn, scorer_client=client, fixture_dispatch=True) as connection:
             with checkpoints.PostgresCheckpointer(pg.runner_dsn, task["tenant_id"]) as saver:
                 if second:
                     second_started.set()

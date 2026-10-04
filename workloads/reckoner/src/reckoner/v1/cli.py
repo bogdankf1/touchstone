@@ -165,18 +165,8 @@ def _score(args):
         ).fetchone()
         if stored is None or stored["document"] != manifest:
             raise ValueError("manifest does not match immutable stored run")
-        recorded = repo._connection.execute(
-            "SELECT x.document->>'schema_version' AS schema "
-            "FROM reckoner.v1_protocol_authorizations a "
-            "JOIN reckoner.v1_experiment_protocols x USING (protocol_sha256) "
-            "WHERE a.protocol_id=%s",
-            (protocol["protocol_id"],),
-        ).fetchone()
-        if recorded is None:
-            raise ValueError("protocol is not reserved under a recorded approval")
-        if recorded["schema"] != "reckoner-paid-protocol-v1":
-            raise ValueError("fixture-labelled approvals cannot authorize a provider dispatch")
         ledger = ProviderBudget(repo._connection)
+        ledger.require_dispatchable(protocol["protocol_id"])  # before any client is built
         with repo._connection.transaction():
             from reckoner.storage.budget import ACCOUNTING_LOCK
 

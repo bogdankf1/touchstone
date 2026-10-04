@@ -143,7 +143,9 @@ def test_structurally_valid_but_unrecorded_protocol_cannot_dispatch(pg):
         with pytest.raises(BudgetExceeded, match="recorded approval"):
             attempts.score_task(repo, no_http(), task, evidence, p)
         with pytest.raises(BudgetExceeded, match="recorded approval"):
-            ProviderBudget(repo._connection).reserve(call(task, p), Decimal(".000084"), p)
+            ProviderBudget(repo._connection).reserve(
+                call(task, p), Decimal(".000084"), p, fixture=True
+            )
         assert count(repo, "v1_provider_calls") == 0
         assert count(repo, "v1_protocols") == 0
 
@@ -270,7 +272,7 @@ def test_unresolved_prior_reservation_blocks_a_new_approved_protocol(pg):
     second = identified({**deepcopy(p), "usd_cap": "0.02"}, "protocol_id")
     with repo:
         ledger = ProviderBudget(repo._connection)
-        ledger.reserve(call(task, p, "in-flight"), Decimal(".000084"), p)
+        ledger.reserve(call(task, p, "in-flight"), Decimal(".000084"), p, fixture=True)
         with pytest.raises(BudgetExceeded, match="unresolved"):
             authorize(pg.owner_dsn, second)
         ledger.settle("in-flight", None, None)
@@ -305,7 +307,7 @@ def test_concurrent_approvals_cannot_both_take_the_last_provider_cent(pg):
     authorize(pg.owner_dsn, first)
     with repo:
         ledger = ProviderBudget(repo._connection)
-        ledger.reserve(call(task, first, "spent"), Decimal("9.99"), first)
+        ledger.reserve(call(task, first, "spent"), Decimal("9.99"), first, fixture=True)
         owner_settle(
             pg.owner_dsn, "spent", {"input_tokens": 1, "output_tokens": 0}, Decimal("9.99")
         )
@@ -2057,7 +2059,7 @@ def test_database_refuses_runner_or_evidence_free_reconciliation(pg):
     usage = {"input_tokens": 10, "output_tokens": 0}
     with repo:
         ledger = ProviderBudget(repo._connection)
-        ledger.reserve(call(task, p, "unanswered"), Decimal(".000084"), p)
+        ledger.reserve(call(task, p, "unanswered"), Decimal(".000084"), p, fixture=True)
         # A call with no persisted response cannot be settled by the runner.
         with pytest.raises(psycopg.errors.InsufficientPrivilege):
             ledger.settle("unanswered", usage, Decimal("0.00000042"))
@@ -2127,7 +2129,7 @@ def test_settlement_guard_resists_pg_roles_shadowing_and_binds_evidence_amounts(
     with repo:
         ledger = ProviderBudget(repo._connection)
         for name in ("shadowed", "mismatched"):
-            ledger.reserve(call(task, p, name), Decimal(".000084"), p)
+            ledger.reserve(call(task, p, name), Decimal(".000084"), p, fixture=True)
             ledger.settle(name, None, None)
         # A runner-created temporary pg_roles claiming superuser must not be consulted.
         repo._connection.execute("CREATE TEMP TABLE pg_roles (rolname name, rolsuper boolean)")
@@ -2209,6 +2211,42 @@ def test_production_score_command_refuses_fixture_labelled_approvals(pg, tmp_pat
                 env_file=env,
             )
         )
+
+
+@pytest.mark.integration
+def test_reserve_refuses_fixture_labelled_approvals_unless_explicitly_flagged(pg):
+    repo, task, evidence, p, attempts, _ = scored(pg)
+    authorize(pg.owner_dsn, p)  # a fabricated fixture-labelled approval document
+    with V1Repo(pg.runner_dsn) as production:
+        assert production.fixture_dispatch is False
+        ledger = ProviderBudget(production._connection)
+        with pytest.raises(ValueError, match="fixture-labelled"):
+            ledger.reserve(call(task, p, "unflagged"), Decimal(".000084"), p)
+        # The scorer used by `v1 score`, the workflow score node and execute_protocol.
+        with pytest.raises(ValueError, match="fixture-labelled"):
+            attempts.score_task(production, no_http(), task, evidence, p)
+        assert count(production, "v1_provider_calls") == 0
+        ledger.reserve(call(task, p, "flagged"), Decimal(".000084"), p, fixture=True)
+        assert count(production, "v1_provider_calls") == 1
+    repo._connection.close()
+
+
+@pytest.mark.integration
+def test_note_and_judge_calls_refuse_fixture_labelled_approvals(pg):
+    from test_v1_note_storage import Transport, modules, prepared_call
+
+    api, _ = modules()
+    repo, task, config, request, p = prepared_call(pg)  # fixture-labelled approval
+    repo._connection.close()
+    transport = Transport([])
+    with V1Repo(pg.runner_dsn) as production:
+        # Judge stages reserve through the same BudgetedCalls.execute path.
+        with pytest.raises(ValueError, match="fixture-labelled"):
+            api.BudgetedCalls(production, transport, task, config, kind="note").execute(
+                request, stage="note-generation", protocol=p
+            )
+        assert transport.calls == []
+        assert count(production, "v1_provider_calls") == 0
 
 
 def test_drafts_pin_published_non_available_cases_as_the_expected_coverage_gaps(tmp_path):

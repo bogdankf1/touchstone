@@ -25,6 +25,7 @@ PROVIDER_CAP = Decimal(10)
 HEX = re.compile(r"^[a-f0-9]{64}$")
 MONEY = re.compile(r"^([0-9]+(\.[0-9]+)?|\.[0-9]+)$")
 APPROVAL_SCHEMA = "reckoner-protocol-approval-v1"
+PAID_SCHEMA = "reckoner-paid-protocol-v1"
 FIXTURE_SCHEMA = "fabricated-test-protocol"
 APPROVAL_FIELDS = {
     "schema_version",
@@ -350,7 +351,7 @@ class ProviderBudget:
         if approval["protocol_sha256"] != digest:
             raise ValueError("approval does not bind this protocol SHA-256")
         schema = protocol_document.get("schema_version")
-        if schema == "reckoner-paid-protocol-v1":
+        if schema == PAID_SCHEMA:
             # The full body is validated, then bound (approver, purpose, exact cap, cases).
             from reckoner.v1.experiment.protocol import bind_approval, validate_body
 
@@ -444,7 +445,35 @@ class ProviderBudget:
                 )
         return digest
 
-    def reserve(self, call: dict, maximum: Decimal, protocol: dict) -> dict:
+    @staticmethod
+    def _recorded_envelope(cursor, protocol_id, *, fixture=False):
+        """The envelope recorded under an approval; fixture documents only when flagged.
+
+        Production dispatch requires an approval bound to a `reckoner-paid-protocol-v1`
+        document. A `fabricated-test-protocol` approval admits a dispatch only when the
+        caller explicitly passes `fixture=True` (test transports only).
+        """
+        current = cursor.execute(
+            "SELECT p.document, x.document->>'schema_version' AS schema "
+            "FROM reckoner.v1_protocols p "
+            "JOIN reckoner.v1_protocol_authorizations a USING (tenant_id,protocol_id) "
+            "JOIN reckoner.v1_experiment_protocols x USING (protocol_sha256) "
+            "WHERE p.protocol_id=%s",
+            (protocol_id,),
+        ).fetchone()
+        if not current:
+            raise BudgetExceeded("protocol is not reserved under a recorded approval")
+        if current["schema"] != PAID_SCHEMA and not (
+            fixture is True and current["schema"] == FIXTURE_SCHEMA
+        ):
+            raise ValueError("fixture-labelled approvals cannot authorize a provider dispatch")
+        return current["document"]
+
+    def require_dispatchable(self, protocol_id: str) -> dict:
+        """Production pre-check (no fixture flag) before any provider client is built."""
+        return self._recorded_envelope(self._cursor(), protocol_id)
+
+    def reserve(self, call: dict, maximum: Decimal, protocol: dict, *, fixture=False) -> dict:
         validate_protocol(protocol)
         BudgetLedger._validate_maximum(maximum)
         if "attempt_maximum_usd" in protocol and maximum != money(protocol["attempt_maximum_usd"]):
@@ -517,15 +546,8 @@ class ProviderBudget:
                 ).fetchone()
             ):
                 raise ValueError("derived request parent is not a settled persisted response")
-            current = cursor.execute(
-                "SELECT p.document FROM reckoner.v1_protocols p "
-                "JOIN reckoner.v1_protocol_authorizations a USING (tenant_id,protocol_id) "
-                "WHERE p.protocol_id=%s",
-                (protocol["protocol_id"],),
-            ).fetchone()
-            if not current:
-                raise BudgetExceeded("protocol is not reserved under a recorded approval")
-            if current["document"] != protocol:
+            current = self._recorded_envelope(cursor, protocol["protocol_id"], fixture=fixture)
+            if current != protocol:
                 raise ValueError("conflicting protocol")
             if cursor.execute(
                 "SELECT 1 FROM reckoner.v1_protocol_closures WHERE protocol_id=%s",
