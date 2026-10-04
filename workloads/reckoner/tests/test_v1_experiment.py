@@ -654,3 +654,241 @@ def test_selected_artifact_registration_requires_a_selected_report(tmp_path):
     (tmp_path / "selected-artifact.json").write_text("null")
     with pytest.raises(ValueError, match="raw scores retained"):
         register_selected(object(), report_dir=tmp_path, tenants=["tenant-a"], context={})
+
+
+# --- Anthropic legacy ledger restore: dump -> disposable staging -> copy + verify -
+
+
+def staging_database(pg, label="staging"):
+    """A new disposable database on the test server; never a preserved store."""
+    import os
+    import uuid
+
+    from psycopg import sql
+    from psycopg.conninfo import conninfo_to_dict, make_conninfo
+
+    admin = conninfo_to_dict(os.environ["RECKONER_TEST_OWNER_DSN"])
+    name = f"reckoner_ledger_{label}_{uuid.uuid4().hex[:10]}"
+    maintenance = make_conninfo(**{**admin, "dbname": admin.get("dbname", "postgres")})
+    with psycopg.connect(maintenance, autocommit=True) as connection:
+        connection.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(name)))
+    dsn = make_conninfo(**{**admin, "dbname": name})
+    return name, dsn, maintenance
+
+
+def drop_database(maintenance, name):
+    from psycopg import sql
+
+    with psycopg.connect(maintenance, autocommit=True) as connection:
+        connection.execute(
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname=%s "
+            "AND pid<>pg_backend_pid()",
+            (name,),
+        )
+        connection.execute(sql.SQL("DROP DATABASE IF EXISTS {}").format(sql.Identifier(name)))
+
+
+def seed_fabricated_ledger(dsn, bundle, *, total="0.493151", entries=1040, status="settled"):
+    """Explicitly fabricated Phase-1-shaped ledger rows; never the preserved ledger."""
+    import json
+
+    from conftest import CONFIG_DIR
+    from reckoner.baseline.config import load_config
+    from reckoner.storage.migrate import migrate
+    from reckoner.storage.postgres import PostgresRepository
+
+    migrate(dsn)
+    config = load_config(CONFIG_DIR / "baseline-v1.json", CONFIG_DIR / "anthropic-prices-v1.json")
+    with PostgresRepository(dsn) as repo:
+        repo.import_bundle(bundle)
+        for name in ("thresholds-tenant-a-v1.json", "thresholds-tenant-b-v1.json"):
+            repo.register_threshold_config(json.loads((CONFIG_DIR / name).read_text()))
+        repo.create_run(
+            "fabricated-phase1-ledger",
+            "pilot",
+            config,
+            json.loads((bundle / "bundle.json").read_text())["bundle_id"],
+            price=json.loads((CONFIG_DIR / "anthropic-prices-v1.json").read_text()),
+        )
+    each = Decimal("0.000474")
+    last = Decimal(total) - each * (entries - 1)
+    with psycopg.connect(dsn, autocommit=True) as connection:
+        task = connection.execute(
+            "SELECT tenant_id, run_id, task_id FROM reckoner.tasks "
+            "WHERE run_id='fabricated-phase1-ledger' ORDER BY task_id LIMIT 1"
+        ).fetchone()
+        for n in range(entries):
+            cost = last if n == entries - 1 else each
+            call = f"fabricated-ledger-{n:04d}"
+            connection.execute(
+                "INSERT INTO reckoner.attempts (tenant_id,run_id,task_id,call_id,status,"
+                "maximum_cost,actual_cost) VALUES (%s,%s,%s,%s,'responded',%s,%s)",
+                (*task, call, Decimal("0.001"), cost),
+            )
+            connection.execute(
+                "INSERT INTO reckoner.budget_entries (tenant_id,run_id,task_id,call_id,purpose,"
+                "maximum_cost,actual_cost,usage,status,settled_at) VALUES "
+                "(%s,%s,%s,%s,'pilot',%s,%s,%s,%s,now())",
+                (
+                    *task,
+                    call,
+                    Decimal("0.001"),
+                    cost if status == "settled" or n else None,
+                    psycopg.types.json.Jsonb({"input_tokens": 1, "output_tokens": 0}),
+                    status if n == 0 else "settled",
+                ),
+            )
+
+
+@pytest.fixture
+def staging(pg):
+    name, dsn, maintenance = staging_database(pg)
+    try:
+        yield name, dsn
+    finally:
+        drop_database(maintenance, name)
+
+
+def target_with_overlapping_transactions(pg):
+    from reckoner.storage.postgres import PostgresRepository
+
+    with PostgresRepository(pg.owner_dsn) as repo:
+        repo.import_bundle(pg.bundle)
+
+
+@pytest.mark.integration
+def test_ledger_copy_restores_exact_chain_and_verifies_provenance(pg, staging):
+    from reckoner.v1.experiment.ledger import copy_legacy_ledger
+    from reckoner.v1.storage.budget import ProviderBudget
+
+    name, dsn = staging
+    seed_fabricated_ledger(dsn, pg.bundle)
+    target_with_overlapping_transactions(pg)
+    receipt = copy_legacy_ledger(
+        staging_dsn=dsn, target_owner_dsn=pg.owner_dsn, dump_sha256="d" * 64
+    )
+    assert receipt["call_count"] == 1040 and receipt["settled_cost"] == "0.493151"
+    assert receipt["copied"]["budget_entries"] == 1040 and receipt["dump_sha256"] == "d" * 64
+    with psycopg.connect(pg.owner_dsn, autocommit=True) as owner:
+        snapshot = ProviderBudget(owner).snapshot("anthropic")
+        assert snapshot["legacy_verified"] is True
+        assert snapshot["legacy_ledger_sha256"] == receipt["ledger_sha256"]
+        assert Decimal(snapshot["remaining_usd"]) == Decimal("9.506849")
+        sources = owner.execute(
+            "SELECT document->>'dump_sha256' FROM reckoner.v1_legacy_provenance "
+            "WHERE document ? 'dump_sha256'"
+        ).fetchall()
+    assert {s[0] for s in sources} == {"d" * 64}
+    again = copy_legacy_ledger(staging_dsn=dsn, target_owner_dsn=pg.owner_dsn, dump_sha256="d" * 64)
+    assert again["ledger_sha256"] == receipt["ledger_sha256"]
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("defect", ["total", "uncertain", "conflict", "count"])
+def test_ledger_copy_refuses_wrong_totals_and_conflicts_atomically(pg, staging, defect):
+    from reckoner.v1.experiment.ledger import copy_legacy_ledger
+
+    name, dsn = staging
+    seed_fabricated_ledger(
+        dsn,
+        pg.bundle,
+        total="0.493152" if defect == "total" else "0.493151",
+        status="uncertain" if defect == "uncertain" else "settled",
+        entries=1039 if defect == "count" else 1040,
+    )
+    target_with_overlapping_transactions(pg)
+    if defect == "conflict":
+        with psycopg.connect(dsn) as source:
+            referenced = source.execute(
+                "SELECT transaction_id FROM reckoner.tasks WHERE run_id='fabricated-phase1-ledger' "
+                "ORDER BY task_id LIMIT 1"
+            ).fetchone()[0]
+        with psycopg.connect(pg.owner_dsn, autocommit=True) as owner:
+            owner.execute(
+                'UPDATE reckoner.transactions SET document=document || \'{"memo":"x"}\'::jsonb '
+                "WHERE transaction_id=%s",
+                (referenced,),
+            )
+    with pytest.raises(ValueError):
+        copy_legacy_ledger(staging_dsn=dsn, target_owner_dsn=pg.owner_dsn, dump_sha256="d" * 64)
+    with psycopg.connect(pg.owner_dsn, autocommit=True) as owner:
+        assert owner.execute("SELECT count(*) FROM reckoner.budget_entries").fetchone()[0] == 0
+        assert owner.execute("SELECT count(*) FROM reckoner.runs").fetchone()[0] == 0
+        assert (
+            owner.execute("SELECT count(*) FROM reckoner.v1_legacy_provenance").fetchone()[0] == 0
+        )
+
+
+def test_restore_guards_refuse_preserved_names_and_changed_dumps(tmp_path):
+    from reckoner.v1.experiment.ledger import check_databases, restore_dump
+
+    for staging, target in (
+        ("reckoner_measured", "reckoner_v1"),
+        ("reckoner_ledger_staging_x", "reckoner_measured"),
+        ("reckoner_v1", "reckoner_v1"),
+        ("reckoner_ledger_staging_x", "reckoner_ledger_staging_x"),
+    ):
+        with pytest.raises(ValueError):
+            check_databases(staging, target)
+    check_databases("reckoner_ledger_staging_x", "reckoner_v1")
+    dump = tmp_path / "fabricated.dump"
+    dump.write_bytes(b"fabricated dump bytes")
+    with pytest.raises(ValueError, match="SHA-256"):
+        restore_dump(
+            dump,
+            expected_sha256="0" * 64,
+            staging_dsn="dbname=reckoner_ledger_staging_x",
+            command=["false"],
+        )
+
+
+@pytest.mark.integration
+def test_custom_dump_restores_into_disposable_staging_then_copies(pg, staging, tmp_path):
+    import hashlib
+    import os
+    import subprocess
+
+    from psycopg.conninfo import conninfo_to_dict
+    from reckoner.v1.experiment.ledger import copy_legacy_ledger, restore_dump
+
+    container = os.environ.get("RECKONER_TEST_PG_CONTAINER")
+    if not container:
+        pytest.skip("needs RECKONER_TEST_PG_CONTAINER for container pg_dump/pg_restore")
+    source_name, source_dsn = staging
+    seed_fabricated_ledger(source_dsn, pg.bundle)
+    dump = tmp_path / "fabricated-ledger.dump"
+    with dump.open("wb") as handle:
+        subprocess.run(
+            ["docker", "exec", container, "pg_dump", "-U", "postgres", "-Fc", "-d", source_name],
+            stdout=handle,
+            check=True,
+        )
+    digest = hashlib.sha256(dump.read_bytes()).hexdigest()
+    name, dsn, maintenance = staging_database(pg, label="staging")
+    try:
+        receipt = restore_dump(
+            dump,
+            expected_sha256=digest,
+            staging_dsn=dsn,
+            command=[
+                "docker",
+                "exec",
+                "-i",
+                container,
+                "pg_restore",
+                "-U",
+                "postgres",
+                "--no-owner",
+                "--no-privileges",
+                "-d",
+                conninfo_to_dict(dsn)["dbname"],
+            ],
+        )
+        assert receipt["dump_sha256"] == digest
+        target_with_overlapping_transactions(pg)
+        copied = copy_legacy_ledger(
+            staging_dsn=dsn, target_owner_dsn=pg.owner_dsn, dump_sha256=digest
+        )
+        assert copied["call_count"] == 1040 and copied["dump_sha256"] == digest
+    finally:
+        drop_database(maintenance, name)
