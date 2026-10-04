@@ -29,6 +29,7 @@ class BudgetedCalls:
             raise ValueError("unknown generation purpose")
         self.repo, self.client, self.task, self.config, self.kind = repo, client, task, config, kind
         self.budget = budget or ProviderBudget(repo._connection)
+        self.lineage = {}
         if self.budget._connection is not repo._connection:
             raise ValueError("reservation implementation must share the task connection")
 
@@ -79,11 +80,27 @@ class BudgetedCalls:
             > protocol["input_token_ceiling"]
         ):
             raise ValueError("request exceeds conservative input-token ceiling")
-        approved = {k: self.task[k] for k in ("task_id", "transaction_id")} | {
-            "request_sha256": content_id(request)
-        }
-        if approved not in protocol["tasks"]:
-            raise ApprovalRequired(request, stage)
+        derivation = protocol.get("derivation")
+        if derivation is None:
+            approved = {k: self.task[k] for k in ("task_id", "transaction_id")} | {
+                "request_sha256": content_id(request)
+            }
+            if approved not in protocol["tasks"]:
+                raise ApprovalRequired(request, stage)
+            self.lineage[stage] = None
+        else:
+            # derived-request-v1: only the exact reconstruction from the persisted parent.
+            if self.kind != "judge" or stage != derivation["stage"]:
+                raise ValueError("stage is outside the derived-request policy")
+            case = {k: self.task[k] for k in ("task_id", "transaction_id")}
+            if case | {"request_sha256": None} not in protocol["tasks"]:
+                raise ValueError("case is outside the derived-request policy")
+            from reckoner.v1.evaluation.derived import expected_request
+
+            expected, parent = expected_request(self.repo, self.task, self.config, derivation)
+            if content_id(expected) != content_id(request):
+                raise ValueError("derived request differs from its exact reconstruction")
+            self.lineage[stage] = parent
         if self.config["limits"]["timeout_seconds"] != 30:
             raise ValueError("generation timeout must be pinned to 30 seconds")
         if stage == "note-repair":
@@ -157,6 +174,7 @@ class BudgetedCalls:
                 "request_sha256": content_id(request),
                 "request_document": request,
                 "protocol_id": protocol["protocol_id"],
+                "derived_from": self.lineage.get(stage),
                 "started_at": datetime.now(UTC).isoformat(),
             }
             call["call_id"] = content_id([*identity.values(), stage])

@@ -908,3 +908,223 @@ def test_reservation_rejects_unbound_approvals_and_changed_declarations(pg, tmp_
     with psycopg.connect(pg.owner_dsn, autocommit=True) as owner:
         assert owner.execute("SELECT count(*) FROM reckoner.v1_protocols").fetchone()[0] == 0
     reserve(pg, draft, fixture_approval(draft))
+
+
+# --- derived-request-v1: bounded judge chains without per-stage owner prompts -----
+
+
+def noted_case(pg):
+    """A persisted escalation with a successful fabricated-transport note."""
+    import json
+
+    from reckoner.storage.postgres import PostgresRepository
+    from reckoner.v1.notes import build_note_context, build_note_request
+    from test_v1_budget import protocol as dispatch_protocol
+    from test_v1_graph_workflow import execute as run_workflow
+    from test_v1_graph_workflow import prepared
+    from test_v1_note_storage import Transport, ledger_fixture, paid_body
+
+    repo, task, evidence, settings, _ = prepared(pg, input_ceiling=16000)
+    with PostgresRepository(pg.runner_dsn) as old:
+        legacy = next(
+            t for t in old.pending_tasks("baseline-preserved") if t["tenant_id"] == "tenant-a"
+        )
+    ledger_fixture(pg, legacy)
+    repo.__enter__()
+    decision, _ = run_workflow(repo, task, settings)
+    assert decision["outcome"] == "escalate"
+    config = repo.workflow_document(
+        "v1_configs", {"tenant_id": task["tenant_id"], "config_id": task["config_id"]}
+    )
+    score = repo._connection.execute(
+        "SELECT score FROM reckoner.v1_provider_responses WHERE call_id=%s",
+        (decision["call_id"],),
+    ).fetchone()["score"]
+    context = build_note_context(decision, evidence, score, config)
+    fields = {
+        k: context[k]
+        for k in ("confidence", "risk_indicators", "entity_neighbourhood", "comparable_cases")
+    }
+    fields.update(verdict_recommendation="approve", what_would_change_verdict=[])
+    request = build_note_request(decision, evidence, score, config)
+    note_protocol = dispatch_protocol(task, content_id(request), provider="anthropic", attempts=1)
+    note_protocol["purpose"] = "online-note"
+    identified(note_protocol, "protocol_id")
+    authorize(pg.owner_dsn, note_protocol)
+    repo.note_protocol = note_protocol
+    repo.note_client = Transport([paid_body(json.dumps(fields))])
+    run_workflow(repo, task, settings)
+    ProviderBudget(repo._connection).close(note_protocol["protocol_id"])
+    return repo, task, config, context
+
+
+def judge_stage(task, builder, *, cap=".1", ceiling=16000, attempts=1, **changes):
+    from reckoner.v1.evaluation.derived import derivation
+    from test_v1_budget import protocol as dispatch_protocol
+
+    stage = dispatch_protocol(task, provider="anthropic", attempts=attempts, cap=cap)
+    stage["purpose"] = "judge"
+    stage["input_token_ceiling"] = ceiling
+    stage["tasks"] = [
+        {
+            "task_id": task["task_id"],
+            "transaction_id": task["transaction_id"],
+            "request_sha256": None,
+        }
+    ]
+    stage["derivation"] = {**derivation(builder), **changes}
+    return identified(stage, "protocol_id")
+
+
+JUDGE_RESPONSES = [
+    '{"verdict":"approve"}',
+    '{"statements":["The simulated neighbourhood summary is supplied."]}',
+    '{"statements":[{"statement":"The simulated neighbourhood summary is supplied.",'
+    '"reason":"Present in context.","verdict":1}]}',
+]
+
+
+def judges_for(repo, task, config, envelope, transport):
+    from reckoner.v1.evaluation.judges import NoteVerdict, RagasFaithfulness
+    from reckoner.v1.notes.calls import BudgetedCalls
+
+    calls = BudgetedCalls(repo, transport, task, config, kind="judge")
+    return NoteVerdict(calls, config, envelope), RagasFaithfulness(calls, config, envelope)
+
+
+def persisted_note(repo, task):
+    decision = repo.workflow_document(
+        "v1_decisions", {k: task[k] for k in ("tenant_id", "run_id", "task_id")}
+    )
+    return repo.workflow_document(
+        "v1_note_results", {"tenant_id": task["tenant_id"], "case_id": decision["decision_id"]}
+    )["note"]
+
+
+def test_derived_policy_shape_is_strict_and_anthropic_only():
+    from reckoner.v1.evaluation.derived import derivation
+
+    stage = judge_stage(TASK, "ragas-nli-v1")
+    validate_protocol(stage)
+    for change in (
+        {"derivation": {**stage["derivation"], "policy_version": "derived-request-v0"}},
+        {"derivation": {**stage["derivation"], "extra": "wildcard"}},
+        {"maximum_attempts": 2},
+        {"provider": "typesafe", "model": "jev-1.13.0"},
+        {"tasks": [{**stage["tasks"][0], "request_sha256": "a" * 64}]},
+    ):
+        with pytest.raises(ValueError):
+            validate_protocol(identified({**deepcopy(stage), **change}, "protocol_id"))
+    assert derivation("ragas-nli-v1")["parent_stage"] == "judge-statements"
+    with pytest.raises(KeyError):
+        derivation("arbitrary-prompt-v1")
+
+
+@pytest.mark.integration
+def test_one_approval_covers_the_whole_bounded_judge_chain(pg):
+    from test_v1_note_storage import Transport, paid_body
+
+    repo, task, config, context = noted_case(pg)
+    stages = {
+        "judge-verdict": judge_stage(task, "judge-verdict-v1"),
+        "judge-statements": judge_stage(task, "ragas-statements-v1"),
+        "judge-faithfulness": judge_stage(task, "ragas-nli-v1"),
+    }
+    authorize(pg.owner_dsn, *stages.values())
+    transport = Transport([paid_body(text) for text in JUDGE_RESPONSES])
+    verdict, faithfulness = judges_for(repo, task, config, {"stages": stages}, transport)
+    note = persisted_note(repo, task)
+    with repo:
+        assert verdict.evaluate(note) == "approve"
+        assert faithfulness.evaluate(note, context=context) == 1
+        assert len(transport.calls) == 3
+        calls = repo._connection.execute(
+            "SELECT document FROM reckoner.v1_provider_calls WHERE purpose='judge' "
+            "ORDER BY dispatched_at"
+        ).fetchall()
+        lineage = [c["document"]["derived_from"] for c in calls]
+        assert [p["stage"] for p in lineage] == ["note", "note", "judge-statements"]
+        assert lineage[2]["call_id"] == calls[1]["document"]["call_id"]
+        # Replay reuses persisted judge responses without new requests.
+        assert faithfulness.evaluate(note, context=context) == 1
+        assert len(transport.calls) == 3
+
+
+def chain_failure(pg, mutate):
+    from test_v1_note_storage import Transport, paid_body
+
+    repo, task, config, context = noted_case(pg)
+    stages = {
+        "judge-statements": judge_stage(task, "ragas-statements-v1"),
+        "judge-faithfulness": judge_stage(task, "ragas-nli-v1"),
+    }
+    stages, context, note = mutate(repo, task, stages, context, persisted_note(repo, task))
+    authorize(pg.owner_dsn, *[s for s in stages.values() if "not-recorded" not in s["purpose"]])
+    transport = Transport([paid_body(text) for text in JUDGE_RESPONSES[1:]])
+    _, faithfulness = judges_for(repo, task, config, {"stages": stages}, transport)
+    with repo:
+        with pytest.raises((ValueError, BudgetExceeded)):
+            faithfulness.evaluate(note, context=context)
+        sent = len(transport.calls)
+        assert sent <= 1
+    return sent
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    "name",
+    [
+        "changed-template",
+        "changed-library",
+        "changed-parent",
+        "changed-case",
+        "changed-note",
+        "extra-stage",
+        "unbounded-request",
+        "escaped-budget",
+    ],
+)
+def test_derived_chain_rejects_changes_before_dispatch(pg, name):
+    def mutate(repo, task, stages, context, note):
+        if name == "changed-template":
+            stages["judge-faithfulness"] = judge_stage(
+                task, "ragas-nli-v1", template_sha256="f" * 64
+            )
+        elif name == "changed-library":
+            stages["judge-statements"] = judge_stage(
+                task, "ragas-statements-v1", library_version="0.0.1"
+            )
+        elif name == "changed-parent":
+            context = {**context, "routing": {**context["routing"], "raw_probability": "0.9"}}
+        elif name == "changed-case":
+            other = {**task, "task_id": "other", "transaction_id": "other"}
+            stages["judge-statements"] = judge_stage(other, "ragas-statements-v1")
+            stages["judge-statements"]["run_id"] = task["run_id"]
+            identified(stages["judge-statements"], "protocol_id")
+        elif name == "changed-note":
+            note = {**note, "verdict_recommendation": "decline"}
+        elif name == "extra-stage":
+            stages["judge-statements"] = judge_stage(task, "judge-verdict-v1")
+        elif name == "unbounded-request":
+            stages["judge-statements"] = judge_stage(task, "ragas-statements-v1", ceiling=200)
+        elif name == "escaped-budget":
+            stages["judge-statements"] = judge_stage(task, "ragas-statements-v1", cap="0.0000001")
+        return stages, context, note
+
+    sent = chain_failure(pg, mutate)
+    # Only parent-dependent failures may follow one legitimate statements call.
+    assert sent == (1 if name in {"changed-template", "changed-parent"} else 0)
+
+
+@pytest.mark.integration
+def test_unrecorded_derived_stage_cannot_dispatch(pg):
+    from test_v1_note_storage import Transport, paid_body
+
+    repo, task, config, context = noted_case(pg)
+    stages = {"judge-verdict": judge_stage(task, "judge-verdict-v1")}
+    transport = Transport([paid_body(JUDGE_RESPONSES[0])])
+    verdict, _ = judges_for(repo, task, config, {"stages": stages}, transport)
+    with repo:
+        with pytest.raises(BudgetExceeded, match="recorded approval"):
+            verdict.evaluate(persisted_note(repo, task))
+        assert transport.calls == []

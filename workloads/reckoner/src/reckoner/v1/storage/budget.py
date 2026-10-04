@@ -427,13 +427,18 @@ class ProviderBudget:
         ):
             if call.get(key) != protocol[key]:
                 raise ValueError("call does not match protocol")
+        derived = protocol.get("derivation") is not None
         case = {
             "task_id": call["task_id"],
             "transaction_id": call["transaction_id"],
-            "request_sha256": call["request_sha256"],
+            "request_sha256": None if derived else call["request_sha256"],
         }
         if case not in protocol["tasks"]:
             raise ValueError("request is outside approved protocol")
+        if derived and not (
+            isinstance(call.get("derived_from"), dict) and call["derived_from"].get("call_id")
+        ):
+            raise ValueError("a derived request must record its persisted parent")
         reservation = {**call, "protocol_id": protocol["protocol_id"], "maximum": str(maximum)}
         with self._connection.transaction():
             cursor = self._cursor()
@@ -468,6 +473,17 @@ class ProviderBudget:
                 )
             if overage:
                 raise BudgetExceeded("provider overage requires reconciliation")
+            if (
+                derived
+                and not cursor.execute(
+                    "SELECT 1 FROM reckoner.v1_provider_calls c JOIN reckoner.v1_settlements s "
+                    "ON s.call_id=c.call_id AND s.status='settled' JOIN "
+                    "reckoner.v1_provider_responses r ON r.call_id=c.call_id "
+                    "WHERE c.call_id=%s AND c.tenant_id=%s AND c.task_id=%s",
+                    (call["derived_from"]["call_id"], call["tenant_id"], call["task_id"]),
+                ).fetchone()
+            ):
+                raise ValueError("derived request parent is not a settled persisted response")
             current = cursor.execute(
                 "SELECT p.document FROM reckoner.v1_protocols p "
                 "JOIN reckoner.v1_protocol_authorizations a USING (tenant_id,protocol_id) "

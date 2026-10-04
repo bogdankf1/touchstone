@@ -179,10 +179,12 @@ def test_anthropic_requires_verified_legacy_provenance_and_counts_it_once(pg):
         assert ledger.remaining("typesafe") == Decimal("10")
 
 
-def scoring(pg, attempts=3, authorized=True):
+def scoring(pg, attempts=3, authorized=True, input_ceiling=None):
     _, attempts_module, jev = modules()
     config, manifest, _ = setup_run(pg)
     config["limits"]["maximum_attempts"] = attempts
+    if input_ceiling is not None:
+        config["limits"]["input_token_ceiling"] = input_ceiling
     identified(config, "config_id")
     manifest["config_id"] = config["config_id"]
     manifest["run_id"] = "score-run"

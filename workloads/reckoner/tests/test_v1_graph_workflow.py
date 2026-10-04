@@ -25,8 +25,8 @@ def workflow():
         pytest.fail("durable LangGraph workflow is not implemented")
 
 
-def prepared(pg, probability="0.2", status=200):
-    repo, task, evidence, protocol, _, jev = scoring(pg, attempts=1)
+def prepared(pg, probability="0.2", status=200, input_ceiling=None):
+    repo, task, evidence, protocol, _, jev = scoring(pg, attempts=1, input_ceiling=input_ceiling)
     requests = []
 
     def handle(request):
