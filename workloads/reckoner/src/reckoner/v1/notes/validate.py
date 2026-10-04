@@ -98,12 +98,11 @@ def validate_note(note: dict, evidence: dict, score: dict) -> dict:
         source = persisted.get(item["indicator_id"])
         if source is None or any(item[k] != source[k] for k in ("description", "method")):
             raise ValueError("unsupported indicator or method")
-        # References must be the full persisted list or exactly the exemplars supplied
-        # to the provider, and always a subset of the full persisted references.
+        # Only references supplied to generation: exactly the projected exemplars, which
+        # are themselves taken from the full persisted references.
         refs = item["evidence_refs"]
-        if not set(refs) <= set(source["evidence_refs"]) or refs not in (
-            source["evidence_refs"],
-            supplied[item["indicator_id"]]["evidence_refs"],
+        if refs != supplied[item["indicator_id"]]["evidence_refs"] or not set(refs) <= set(
+            source["evidence_refs"]
         ):
             raise ValueError("unsupported indicator references")
     if len({i["indicator_id"] for i in note["risk_indicators"]}) != len(note["risk_indicators"]):
@@ -114,8 +113,9 @@ def validate_note(note: dict, evidence: dict, score: dict) -> dict:
         note["comparable_cases"]
     ):
         raise ValueError("duplicate comparable")
+    # Actions cite only references supplied to generation (evidence ID and exemplars).
     refs = {evidence["evidence_id"]} | {
-        r for i in evidence["risk_indicators"] for r in i["evidence_refs"]
+        r for i in allowed["risk_indicators"] for r in i["evidence_refs"]
     }
     for action in note["what_would_change_verdict"]:
         if not set(action["evidence_refs"]) <= refs:

@@ -154,7 +154,7 @@ def note_case(count):
     return note, evidence, score
 
 
-def test_note_request_is_bounded_and_validation_checks_the_full_persisted_evidence():
+def test_note_request_is_bounded_and_validation_accepts_only_supplied_references():
     from reckoner.v1 import projection
     from reckoner.v1.notes import build_note_request, validate_note
 
@@ -170,12 +170,25 @@ def test_note_request_is_bounded_and_validation_checks_the_full_persisted_eviden
     full = evidence["risk_indicators"][0]
     copied = {k: sent[k] for k in ("rank", "indicator_id", "description", "method")}
     note["risk_indicators"] = [{**copied, "evidence_refs": sent["evidence_refs"]}]
-    # An action may cite a reference outside the exemplars: it is checked against the
-    # full persisted list, not the bounded request.
-    note["what_would_change_verdict"][0]["evidence_refs"] = [max(full["evidence_refs"])]
-    assert max(full["evidence_refs"]) not in sent["evidence_refs"]
+    # Actions may cite only references supplied to generation: an exemplar or the
+    # evidence ID. A real persisted reference outside the exemplars was never shown.
+    note["what_would_change_verdict"][0]["evidence_refs"] = [
+        sent["evidence_refs"][0],
+        evidence["evidence_id"],
+    ]
     identified(note, "note_id")
     assert validate_note(note, evidence, score) == note
+    unseen = max(full["evidence_refs"])
+    assert unseen not in sent["evidence_refs"]
+    note["what_would_change_verdict"][0]["evidence_refs"] = [unseen]
+    identified(note, "note_id")
+    with pytest.raises(ValueError, match="unsupported evidence reference"):
+        validate_note(note, evidence, score)
+    note["what_would_change_verdict"][0]["evidence_refs"] = [evidence["evidence_id"]]
+    note["risk_indicators"][0]["evidence_refs"] = full["evidence_refs"]  # never supplied
+    identified(note, "note_id")
+    with pytest.raises(ValueError, match="indicator references"):
+        validate_note(note, evidence, score)
 
 
 @pytest.mark.parametrize("change", ["invented", "other-subset", "method"])
