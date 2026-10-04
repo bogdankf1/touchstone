@@ -2022,3 +2022,16 @@ def test_envelopes_pin_the_approved_per_attempt_maximum(tmp_path):
         validate_body(identify(missing))
     text = present_protocol(draft, ledger_snapshot())
     assert "per-attempt maximum USD 0.002688" in text and "request ceiling" in text
+
+
+def test_protocols_pin_a_coverage_gap_threshold(tmp_path):
+    from reckoner.v1.experiment.protocol import identify, validate_body
+
+    draft = pilot(tmp_path)
+    assert draft["coverage_gap_threshold"] == 0 and note_draft()["coverage_gap_threshold"] == 0
+    for value in (None, -1, 0.5, "0", True):
+        with pytest.raises(ValueError, match="coverage"):
+            validate_body(identify({**draft, "coverage_gap_threshold": value}))
+    for name in ("worst_case_usd", "usd_cap"):
+        with pytest.raises(ValueError):
+            validate_body(identify({**draft, name: float(draft[name])}))

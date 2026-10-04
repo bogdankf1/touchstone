@@ -66,14 +66,21 @@ def verify_experiment(protocol: dict, run: dict, report: dict) -> dict:
         block("over-budget-stop", run.get("stop_reason") or "dispatch stopped at a limit")
     if run.get("execution_kind") != "measured" and report.get("measured"):
         block("fixture-claimed-as-measured", "fixture transports are not measured evidence")
-    status = "complete" if not blockers else "incomplete"
+    gaps = sorted(list(k) for k, t in tasks.items() if t.get("coverage_gap"))
+    if sorted(report.get("coverage_gaps") or []) != gaps:
+        block("coverage-gap-undisclosed", f"{len(gaps)} cases decided without evidence")
+    if blockers:
+        status = "incomplete"
+    else:
+        status = "complete-with-gaps" if gaps else "complete"
     passed = (
-        status == "complete"
+        not blockers
+        and len(gaps) <= protocol.get("coverage_gap_threshold", 0)
         and report.get("passed") is True
         and run.get("execution_kind") == "measured"
     )
     false_claims = []
-    if report.get("status") == "complete" and status != "complete":
+    if report.get("status") in {"complete", "complete-with-gaps"} and status != report["status"]:
         false_claims.append("status")
     if report.get("passed") is True and not passed:
         false_claims.append("passed")
@@ -82,7 +89,7 @@ def verify_experiment(protocol: dict, run: dict, report: dict) -> dict:
         "protocol_sha256": protocol["protocol_sha256"],
         "status": status,
         "passed": passed,
-        "coverage_gaps": [list(k) for k, t in tasks.items() if t.get("coverage_gap")],
+        "coverage_gaps": gaps,
         "blockers": blockers,
         "false_claims": false_claims,
         "attempts": len(calls),

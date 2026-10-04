@@ -1403,3 +1403,56 @@ def test_uncertain_call_keeps_the_approved_per_attempt_maximum_after_close(
     assert maximum == Decimal("0.002688")
     settled = Decimal("0.000084") * (len(protocol["cases"]) - 1)
     assert Decimal(snapshot["liability_usd"]) == settled + Decimal("0.002688")
+
+
+def gapped_facts():
+    run = facts(execution_kind="measured")
+    run["tasks"][1].update(status="decided", coverage_gap="evidence_unavailable", calls=[])
+    return run
+
+
+def test_coverage_gaps_must_be_disclosed_and_block_a_pass_above_the_pinned_threshold():
+    protocol = protocol_fixture()
+    gap = [["tenant-a", "run-a", "task-1"]]
+    hidden = verify(protocol, gapped_facts(), claimed(attempts=1))
+    assert "coverage-gap-undisclosed" in {b["code"] for b in hidden["blockers"]}
+    assert hidden["passed"] is False and {"status", "passed"} <= set(hidden["false_claims"])
+    disclosed = verify(protocol, gapped_facts(), claimed(attempts=1, coverage_gaps=gap))
+    assert disclosed["status"] == "complete-with-gaps" and disclosed["blockers"] == []
+    assert disclosed["passed"] is False  # default pinned threshold is zero gaps
+    assert "status" in disclosed["false_claims"]  # it claimed "complete"
+    honest = verify(
+        protocol,
+        gapped_facts(),
+        claimed(attempts=1, coverage_gaps=gap, status="complete-with-gaps", passed=None),
+    )
+    assert honest["false_claims"] == [] and honest["passed"] is False
+    tolerant = verify(
+        {**protocol, "coverage_gap_threshold": 1},
+        gapped_facts(),
+        claimed(attempts=1, coverage_gaps=gap, status="complete-with-gaps"),
+    )
+    assert tolerant["passed"] is True
+
+
+@pytest.mark.integration
+def test_a_run_with_every_case_lacking_evidence_never_passes_silently(pg, tmp_path, monkeypatch):
+    from reckoner.v1.experiment.verify import collect_run_facts, verify_experiment
+    from reckoner.v1.storage.repository import V1Repository
+    from test_v1_protocol import experiment_scenario, fixture_approval, reserve
+
+    no_sleep(monkeypatch)
+    draft, _, _ = experiment_scenario(
+        pg, tmp_path, purpose="final", per_tenant=(3, 0), unavailable={0, 1, 2}
+    )
+    assert draft["coverage_gap_threshold"] == 0
+    reserve(pg, draft, fixture_approval(draft))
+    recorder = Recorder(lambda n, payload: pytest.fail("no case had evidence to score"))
+    execute(pg, draft, recorder, tmp_path, data_kind="fabricated")
+    with V1Repository(pg.runner_dsn) as repo:
+        run = collect_run_facts(repo, draft)
+    claim = {"status": "complete", "passed": True, "attempts": 0}
+    report = verify_experiment(draft, run, claim)
+    assert len(report["coverage_gaps"]) == 3
+    assert "coverage-gap-undisclosed" in {b["code"] for b in report["blockers"]}
+    assert report["passed"] is False and set(report["false_claims"]) == {"status", "passed"}

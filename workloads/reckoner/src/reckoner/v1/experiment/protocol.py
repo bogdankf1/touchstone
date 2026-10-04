@@ -76,6 +76,7 @@ FIELDS = {
     "usd_cap",
     "dispatch",
     "selection",
+    "coverage_gap_threshold",
     "protocol_sha256",
 }
 BOUNDS = {
@@ -403,7 +404,10 @@ def validate_body(protocol: dict) -> dict:
         total += money(item["usd_cap"])
     if covered != case_keys:
         raise ValueError("frozen case set differs from dispatch requests")
-    if Decimal(str(protocol["worst_case_usd"])) != worst:
+    gaps = protocol["coverage_gap_threshold"]
+    if type(gaps) is not int or gaps < 0:
+        raise ValueError("a nonnegative integer coverage gap threshold must be pinned")
+    if money(protocol["worst_case_usd"]) != worst:
         raise ValueError("declared worst-case cost does not match bounds and prices")
     cap = money(protocol["usd_cap"])
     if total != cap or cap < worst:
@@ -925,6 +929,8 @@ def draft_scoring_protocol(
         "usd_cap": _decimal_text(worst),
         "dispatch": dispatch,
         "selection": {"method": "whole-runs"},
+        # Cases decided without evidence are coverage gaps; none may pass by default.
+        "coverage_gap_threshold": 0,
     }
     draft = identify(body)
     validate_body(draft)
@@ -1151,6 +1157,7 @@ def draft_note_protocol(
         "usd_cap": _decimal_text(worst),
         "dispatch": dispatch,
         "selection": selection,
+        "coverage_gap_threshold": 0,
     }
     draft = identify(body)
     validate_body(draft)
