@@ -251,6 +251,41 @@ v1e() { e run --rm --no-deps -T -e RECKONER_SOURCE_DIR=/inputs/source \
   -e RECKONER_BASELINE_BUNDLE=/inputs/baseline owner reckoner v1 evidence "$@" --env-file -; }
 ```
 
+Long passes run in the background through a bounded retry of the same idempotent command.
+Every run resumes from persisted facts, so a retry after a host sleep, a killed child or a
+dropped connection continues where the last one stopped. Attempts and exit codes are logged:
+
+```bash
+v1e_retry() {   # usage: v1e_retry <max attempts> <evidence arguments...>
+  local limit=$1 attempt=1 code; shift
+  until v1e "$@"; do
+    code=$?
+    echo "$(date -u +%FT%TZ) evidence attempt $attempt exit $code" >&2
+    if [ "$attempt" -ge "$limit" ]; then return "$code"; fi
+    attempt=$((attempt + 1)); sleep 60
+  done
+  echo "$(date -u +%FT%TZ) evidence attempt $attempt exit 0" >&2
+}
+v1e_retry 5 run --declaration $P --pass relational --through 2017-12-24 $G \
+  2>> artifacts/phase3/evidence-v1/<prep12>/run.log &
+```
+
+Progress is a timestamped, flushed stderr line: `start relational <day> (<n> cases)`, one line
+per imported source day (including the initial 97-day window), one per assembled case
+(printed by the assembly child) and a summary per day. A run that stops logging for much
+longer than a day's measured time (about one minute in Stage 0) is stalled. A dead assembly
+child (for example an out-of-memory kill) fails the run at once with `assembly child process
+died`; nothing for that day is persisted. Runner statements time out after ten minutes
+(`statement_timeout`) and graph transactions after `RECKONER_V1_NEO4J_TX_TIMEOUT` (default
+30m), far above the measured worst cases, so a hung connection fails instead of blocking.
+
+Two disk floors are checked in band before every commit, each 15 GiB by default and only ever
+raised from the CLI: host free space through the `/evidence` bind (`--free-path`, APFS) and
+the job container's own filesystem (`--vm-free-path /`), which is the Docker Desktop VM disk
+holding the store volumes. Measured 2026-10-04: the VM disk is a sparse 494 GB `Docker.raw`
+(474 GB ext4, 379 GB free inside the VM) with 67.6 GB allocated on a host with 33.5 GB free,
+so the host floor binds first; the VM floor guards a VM disk that fills before the host.
+
 `compose.reckoner-v1.evidence.yaml` adds four read-only binds to the `owner` job and sets its
 memory per pass. Compose interpolates every loaded file, so those variables are required only
 when it is loaded. Pass R runs without Neo4j: Postgres 2 GiB plus a 3 GiB job. Pass G runs

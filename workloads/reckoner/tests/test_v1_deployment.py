@@ -1309,7 +1309,7 @@ def test_evidence_inputs_are_required_read_only_binds_only_when_the_override_is_
     if not EVIDENCE_COMPOSE.exists():
         pytest.fail("evidence preparation Compose override is not implemented")
     override = yaml.safe_load(EVIDENCE_COMPOSE.read_text())
-    assert set(override) == {"services"} and set(override["services"]) == {"owner"}
+    assert set(override) == {"services"} and set(override["services"]) == {"owner", "neo4j"}
     mounts = override["services"]["owner"]["volumes"]
     assert len(mounts) == len(EVIDENCE_INPUTS)
     assert set(override["services"]["owner"]) == {"volumes", "mem_limit"}
@@ -1343,3 +1343,17 @@ def test_ci_runs_the_rolling_evidence_graph_suite_on_an_empty_store():
     assert any("down --volumes" in run for run in runs[:index])
     assert "up -d --wait" in runs[index - 1]
     assert "test_v1_evidence_rolling_graph.py" not in " ".join(runs[:index])
+
+
+def test_evidence_graph_transactions_are_bounded_by_a_generous_server_timeout():
+    override = yaml.safe_load(EVIDENCE_COMPOSE.read_text())
+    environment = override["services"]["neo4j"]["environment"]
+    assert environment["NEO4J_db_transaction_timeout"] == "${RECKONER_V1_NEO4J_TX_TIMEOUT:-30m}"
+
+
+def test_runbook_documents_a_bounded_retry_of_the_idempotent_run():
+    text = (ROOT / "docs/operations/reckoner-v1-runbook.md").read_text()
+    block = text[text.index("v1e_retry()") :]
+    block = block[: block.index("}") + 1]
+    for needed in ("attempt", "exit", "-ge", "return"):
+        assert needed in block, needed

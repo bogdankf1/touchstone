@@ -16,3 +16,8 @@ services:
       - ${RECKONER_V1_SOURCE_DIR:?set the immutable simulated source archive directory}:/inputs/source:ro
       - ${RECKONER_V1_BASELINE_DIR:?set the Phase 1 baseline bundle directory}:/inputs/baseline:ro
       - ${RECKONER_V1_SCALER_DIR:?set the frozen development scaler directory}:/inputs/scaler:ro
+  neo4j:
+    environment:
+      # A hung graph transaction fails instead of blocking a run. Measured worst cases: one
+      # day's import about 10 s, the seed about 10 s, a projection with metrics about 20 s.
+      NEO4J_db_transaction_timeout: ${RECKONER_V1_NEO4J_TX_TIMEOUT:-30m}
