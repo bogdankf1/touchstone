@@ -77,6 +77,7 @@ FIELDS = {
     "dispatch",
     "selection",
     "coverage_gap_threshold",
+    "expected_coverage_gaps",
     "protocol_sha256",
 }
 BOUNDS = {
@@ -407,6 +408,21 @@ def validate_body(protocol: dict) -> dict:
     gaps = protocol["coverage_gap_threshold"]
     if type(gaps) is not int or gaps < 0:
         raise ValueError("a nonnegative integer coverage gap threshold must be pinned")
+    expected = protocol["expected_coverage_gaps"]
+    case_ids = {(c["tenant_id"], c["run_id"], c["task_id"]) for c in cases}
+    if (
+        not isinstance(expected, list)
+        or any(
+            not isinstance(k, list) or len(k) != 3 or not all(isinstance(v, str) for v in k)
+            for k in expected
+        )
+        or expected != [list(k) for k in sorted({tuple(k) for k in expected})]
+        or not {tuple(k) for k in expected} <= case_ids
+        or len(expected) != gaps
+    ):
+        raise ValueError(
+            "expected coverage gaps must be the sorted pinned subset its threshold counts"
+        )
     if money(protocol["worst_case_usd"]) != worst:
         raise ValueError("declared worst-case cost does not match bounds and prices")
     cap = money(protocol["usd_cap"])
@@ -818,7 +834,7 @@ def draft_scoring_protocol(
             (run["tenant_id"], run["run_id"], t["task_id"], t["transaction_id"])
             for t in run["tasks"]
         }
-    cases, groups = [], {}
+    cases, groups, expected_gaps = [], {}, []
     for case in measurements["cases"]:
         key = (case["tenant_id"], case["run_id"], case["task_id"], case["transaction_id"])
         if key not in declared:
@@ -841,6 +857,9 @@ def draft_scoring_protocol(
                 "evidence_mode": found[0]["mode"],
             }
         )
+        if found[1]["coverage_status"] != "available":
+            # Published evidence already lacks coverage: shown to the owner up front.
+            expected_gaps.append([case["tenant_id"], case["run_id"], case["task_id"]])
         groups.setdefault((case["tenant_id"], case["run_id"]), []).append(case)
     if {(c["tenant_id"], c["run_id"], c["task_id"], c["transaction_id"]) for c in cases} != (
         declared
@@ -932,8 +951,9 @@ def draft_scoring_protocol(
         "usd_cap": _decimal_text(worst),
         "dispatch": dispatch,
         "selection": {"method": "whole-runs"},
-        # Cases decided without evidence are coverage gaps; none may pass by default.
-        "coverage_gap_threshold": 0,
+        # Cases whose published evidence is not available are pinned coverage gaps.
+        "coverage_gap_threshold": len(expected_gaps),
+        "expected_coverage_gaps": sorted(expected_gaps),
     }
     draft = identify(body)
     validate_body(draft)
@@ -1161,6 +1181,7 @@ def draft_note_protocol(
         "dispatch": dispatch,
         "selection": selection,
         "coverage_gap_threshold": 0,
+        "expected_coverage_gaps": [],
     }
     draft = identify(body)
     validate_body(draft)
@@ -1210,6 +1231,13 @@ def present_protocol(protocol: dict, ledger: dict) -> str:
         f"{ledger['provider_cap_usd']}; unresolved: {len(ledger['unresolved'])}",
         f"- Nonrefundable uncertainty: {protocol['uncertainty_handling']}",
         "- Expected outputs: " + "; ".join(protocol["expected_outputs"]),
+        f"- Expected coverage gaps: {protocol['coverage_gap_threshold']} cases whose published "
+        "evidence is not available (decided without a score, never a correctness pass)"
+        + (
+            ": " + ", ".join("/".join(k) for k in protocol["expected_coverage_gaps"])
+            if protocol["expected_coverage_gaps"]
+            else ""
+        ),
         f"- Approver: {protocol['approver']}",
         "",
         "To approve, the owner states consent to exactly this scope; the controller then "

@@ -2209,3 +2209,45 @@ def test_production_score_command_refuses_fixture_labelled_approvals(pg, tmp_pat
                 env_file=env,
             )
         )
+
+
+def test_drafts_pin_published_non_available_cases_as_the_expected_coverage_gaps(tmp_path):
+    from reckoner.v1.experiment.protocol import (
+        draft_scoring_protocol,
+        identify,
+        load_evidence_manifest,
+        present_protocol,
+        validate_body,
+    )
+
+    inputs = draft_inputs(tmp_path)
+    manifest = deepcopy(inputs["manifests"][0]["manifest"])
+    manifest["cases"][0]["coverage_status"] = "partial"
+    manifest["cases"][0]["missing"] = ["query card absent from GDS projection"]
+    manifest["cases"][5]["coverage_status"] = "unavailable"
+    body = {k: v for k, v in manifest.items() if k != "manifest_id"}
+    manifest = {**body, "manifest_id": content_id(body)}
+    loaded = load_evidence_manifest(write_manifest(tmp_path, manifest, "gapped.json"))
+    draft = draft_scoring_protocol(**{**inputs, "manifests": [loaded]})
+    expected = sorted(
+        [c["tenant_id"], c["run_id"], c["task_id"]]
+        for c in draft["cases"]
+        if c["evidence_id"]
+        in {manifest["cases"][0]["evidence_id"], manifest["cases"][5]["evidence_id"]}
+    )
+    assert draft["expected_coverage_gaps"] == expected
+    assert draft["coverage_gap_threshold"] == 2
+    text = present_protocol(draft, ledger_snapshot())
+    assert "Expected coverage gaps: 2" in text and expected[0][2] in text
+    for change in (
+        {"coverage_gap_threshold": 1},
+        {"expected_coverage_gaps": expected[:1]},
+        {"expected_coverage_gaps": [*expected, ["tenant-x", "run-x", "task-x"]]},
+        {"expected_coverage_gaps": list(reversed(expected))},
+    ):
+        with pytest.raises(ValueError, match="coverage"):
+            validate_body(identify({**draft, **change}))
+    assert (
+        note_draft()["expected_coverage_gaps"] == []
+        and pilot(tmp_path)["expected_coverage_gaps"] == []
+    )

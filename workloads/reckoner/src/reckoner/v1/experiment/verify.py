@@ -69,6 +69,10 @@ def verify_experiment(protocol: dict, run: dict, report: dict) -> dict:
     gaps = sorted(list(k) for k, t in tasks.items() if t.get("coverage_gap"))
     if sorted(report.get("coverage_gaps") or []) != gaps:
         block("coverage-gap-undisclosed", f"{len(gaps)} cases decided without evidence")
+    pinned = {tuple(k) for k in protocol.get("expected_coverage_gaps", [])}
+    outside = [g for g in gaps if tuple(g) not in pinned]
+    if outside:
+        block("coverage-gap-unexpected", f"{len(outside)} gaps were not pinned at approval")
     if blockers:
         status = "incomplete"
     else:
@@ -76,6 +80,7 @@ def verify_experiment(protocol: dict, run: dict, report: dict) -> dict:
     passed = (
         not blockers
         and len(gaps) <= protocol.get("coverage_gap_threshold", 0)
+        and {tuple(g) for g in gaps} <= pinned
         and report.get("passed") is True
         and run.get("execution_kind") == "measured"
     )

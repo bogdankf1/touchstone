@@ -1454,27 +1454,37 @@ def gapped_facts():
 
 
 def test_coverage_gaps_must_be_disclosed_and_block_a_pass_above_the_pinned_threshold():
-    protocol = protocol_fixture()
     gap = [["tenant-a", "run-a", "task-1"]]
-    hidden = verify(protocol, gapped_facts(), claimed(attempts=1))
+    unpinned = protocol_fixture()  # zero expected gaps were shown at approval
+    pinned = {**unpinned, "coverage_gap_threshold": 1, "expected_coverage_gaps": gap}
+    hidden = verify(pinned, gapped_facts(), claimed(attempts=1))
     assert "coverage-gap-undisclosed" in {b["code"] for b in hidden["blockers"]}
     assert hidden["passed"] is False and {"status", "passed"} <= set(hidden["false_claims"])
-    disclosed = verify(protocol, gapped_facts(), claimed(attempts=1, coverage_gaps=gap))
+    disclosed = verify(pinned, gapped_facts(), claimed(attempts=1, coverage_gaps=gap))
     assert disclosed["status"] == "complete-with-gaps" and disclosed["blockers"] == []
-    assert disclosed["passed"] is False  # default pinned threshold is zero gaps
     assert "status" in disclosed["false_claims"]  # it claimed "complete"
     honest = verify(
-        protocol,
+        pinned,
         gapped_facts(),
         claimed(attempts=1, coverage_gaps=gap, status="complete-with-gaps", passed=None),
     )
     assert honest["false_claims"] == [] and honest["passed"] is False
     tolerant = verify(
-        {**protocol, "coverage_gap_threshold": 1},
-        gapped_facts(),
-        claimed(attempts=1, coverage_gaps=gap, status="complete-with-gaps"),
+        pinned, gapped_facts(), claimed(attempts=1, coverage_gaps=gap, status="complete-with-gaps")
     )
-    assert tolerant["passed"] is True
+    assert tolerant["passed"] is True and tolerant["status"] == "complete-with-gaps"
+    # A gap the owner was not shown at approval time blocks a pass.
+    for protocol in (
+        unpinned,
+        {**pinned, "expected_coverage_gaps": [["tenant-a", "run-a", "task-0"]]},
+    ):
+        unexpected = verify(
+            protocol,
+            gapped_facts(),
+            claimed(attempts=1, coverage_gaps=gap, status="complete-with-gaps"),
+        )
+        assert "coverage-gap-unexpected" in {b["code"] for b in unexpected["blockers"]}
+        assert unexpected["passed"] is False
 
 
 @pytest.mark.integration
@@ -1487,7 +1497,12 @@ def test_a_run_with_every_case_lacking_evidence_never_passes_silently(pg, tmp_pa
     draft, _, _ = experiment_scenario(
         pg, tmp_path, purpose="final", per_tenant=(3, 0), unavailable={0, 1, 2}
     )
-    assert draft["coverage_gap_threshold"] == 0
+    # The published evidence already showed all three as unavailable, so the owner sees
+    # exactly these cases (and their count) in the protocol before approving it.
+    assert draft["coverage_gap_threshold"] == 3
+    assert draft["expected_coverage_gaps"] == [
+        ["tenant-a", "final-tenant-a", f"task-{n}"] for n in range(3)
+    ]
     reserve(pg, draft, fixture_approval(draft))
     recorder = Recorder(lambda n, payload: pytest.fail("no case had evidence to score"))
     execute(pg, draft, recorder, tmp_path, data_kind="fabricated")
