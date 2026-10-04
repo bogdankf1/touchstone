@@ -2101,3 +2101,16 @@ def test_authorize_itself_binds_approver_purpose_and_exact_cap(pg, tmp_path):
     with psycopg.connect(pg.owner_dsn, autocommit=True) as owner:
         with pytest.raises(ValueError, match="approver"):
             ProviderBudget(owner).authorize(document, [p], approval=wrong)
+
+
+# --- final follow-up -------------------------------------------------------------
+
+
+def test_provider_models_come_from_the_single_pricing_source():
+    import inspect
+
+    from reckoner.v1 import pricing
+    from reckoner.v1.storage import budget
+
+    assert budget.PROVIDERS == {p: e["model"] for p, e in pricing.PUBLISHED.items()}
+    assert '"jev-1.13.0"' not in inspect.getsource(budget)

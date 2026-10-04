@@ -16,9 +16,11 @@ from psycopg.types.json import Jsonb
 
 from reckoner.contracts import content_id
 from reckoner.storage.budget import ACCOUNTING_LOCK, BudgetExceeded, BudgetLedger
+from reckoner.v1 import pricing
 from reckoner.v1.providers.jev import valid_usage
 
-PROVIDERS = {"typesafe": "jev-1.13.0", "anthropic": "anthropic/claude-haiku-4-5-20251001"}
+# Pinned provider models come from the single dated pricing source.
+PROVIDERS = {provider: entry["model"] for provider, entry in pricing.PUBLISHED.items()}
 PROVIDER_CAP = Decimal(10)
 HEX = re.compile(r"^[a-f0-9]{64}$")
 MONEY = re.compile(r"^([0-9]+(\.[0-9]+)?|\.[0-9]+)$")
