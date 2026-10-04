@@ -291,3 +291,32 @@ def reauthorize(owner_dsn, previous, *protocols):
             previous if isinstance(previous, str) else previous["protocol_id"]
         )
     return authorize(owner_dsn, *protocols)
+
+
+def owner_settle(owner_dsn, call_id, usage, cost):
+    """Fabricated owner reconciliation with a fabricated evidence row (tests only)."""
+    import psycopg
+    from psycopg.types.json import Jsonb
+    from reckoner.v1.storage.budget import ProviderBudget
+
+    with psycopg.connect(owner_dsn, autocommit=True) as connection:
+        with connection.transaction():
+            tenant = connection.execute(
+                "SELECT tenant_id FROM reckoner.v1_provider_calls WHERE call_id=%s", (call_id,)
+            ).fetchone()[0]
+            connection.execute(
+                "INSERT INTO reckoner.v1_settlement_evidence (tenant_id, call_id, document) "
+                "VALUES (%s,%s,%s)",
+                (
+                    tenant,
+                    call_id,
+                    Jsonb(
+                        {
+                            "call_id": call_id,
+                            "source_kind": "fabricated-test-fixture",
+                            "document_sha256": "e" * 64,
+                        }
+                    ),
+                ),
+            )
+            ProviderBudget(connection).settle(call_id, usage, cost)

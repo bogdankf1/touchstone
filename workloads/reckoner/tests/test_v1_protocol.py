@@ -23,6 +23,7 @@ from v1_fixtures import (
     dispatch_scope,
     fixture_protocol_document,
     identified,
+    owner_settle,
 )
 
 TASK = {"tenant_id": "tenant-a", "run_id": "run-a", "task_id": "task-a", "transaction_id": "t-a"}
@@ -276,7 +277,12 @@ def test_unresolved_prior_reservation_blocks_a_new_approved_protocol(pg):
         ledger.close(p["protocol_id"])
         with pytest.raises(BudgetExceeded, match="unresolved"):
             authorize(pg.owner_dsn, second)
-        ledger.settle("in-flight", {"input_tokens": 10, "output_tokens": 0}, Decimal("0.00000042"))
+        owner_settle(
+            pg.owner_dsn,
+            "in-flight",
+            {"input_tokens": 10, "output_tokens": 0},
+            Decimal("0.00000042"),
+        )
         authorize(pg.owner_dsn, second)
 
 
@@ -300,7 +306,9 @@ def test_concurrent_approvals_cannot_both_take_the_last_provider_cent(pg):
     with repo:
         ledger = ProviderBudget(repo._connection)
         ledger.reserve(call(task, first, "spent"), Decimal("9.99"), first)
-        ledger.settle("spent", {"input_tokens": 1, "output_tokens": 0}, Decimal("9.99"))
+        owner_settle(
+            pg.owner_dsn, "spent", {"input_tokens": 1, "output_tokens": 0}, Decimal("9.99")
+        )
         ledger.close(first["protocol_id"])
         assert ledger.remaining("typesafe") == Decimal("0.01")
     outcomes, errors = [], []
@@ -2035,3 +2043,36 @@ def test_protocols_pin_a_coverage_gap_threshold(tmp_path):
     for name in ("worst_case_usd", "usd_cap"):
         with pytest.raises(ValueError):
             validate_body(identify({**draft, name: float(draft[name])}))
+
+
+# --- quality round 1: evidence-bound reconciliation enforced in the database ----
+
+
+@pytest.mark.integration
+def test_database_refuses_runner_or_evidence_free_reconciliation(pg):
+    from v1_fixtures import owner_settle
+
+    repo, task, evidence, p, attempts, _ = scored(pg)
+    authorize(pg.owner_dsn, p)
+    usage = {"input_tokens": 10, "output_tokens": 0}
+    with repo:
+        ledger = ProviderBudget(repo._connection)
+        ledger.reserve(call(task, p, "unanswered"), Decimal(".000084"), p)
+        # A call with no persisted response cannot be settled by the runner.
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            ledger.settle("unanswered", usage, Decimal("0.00000042"))
+        ledger.settle("unanswered", None, None)  # recording uncertainty stays allowed
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            ledger.settle("unanswered", usage, Decimal("0.00000042"))
+    with psycopg.connect(pg.owner_dsn, autocommit=True) as owner:
+        with pytest.raises(psycopg.errors.CheckViolation, match="evidence"):
+            ProviderBudget(owner).settle("unanswered", usage, Decimal("0.00000042"))
+    owner_settle(pg.owner_dsn, "unanswered", usage, Decimal("0.00000042"))
+    with psycopg.connect(pg.owner_dsn, autocommit=True) as owner:
+        assert (
+            owner.execute(
+                "SELECT count(*) FROM reckoner.v1_settlements WHERE call_id='unanswered' "
+                "AND status='settled'"
+            ).fetchone()[0]
+            == 1
+        )

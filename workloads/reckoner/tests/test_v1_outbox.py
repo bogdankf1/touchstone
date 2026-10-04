@@ -515,8 +515,14 @@ def test_scoring_settlement_and_attempt_outcomes_survive_collection(
                     task_id=task["task_id"],
                     scope="offline",
                 )
-            ledger.settle(
-                score["call_id"], {"input_tokens": 2000, "output_tokens": 0}, Decimal(".000084")
+            from v1_fixtures import owner_settle
+
+            # Reconciling an uncertain call is an owner action with recorded evidence.
+            owner_settle(
+                pg.owner_dsn,
+                score["call_id"],
+                {"input_tokens": 2000, "output_tokens": 0},
+                Decimal(".000084"),
             )
         api.collect_scoring_run(repo, task["tenant_id"], task["run_id"])
         for scope in ("online", "offline"):

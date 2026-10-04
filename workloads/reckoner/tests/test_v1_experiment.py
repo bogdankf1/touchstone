@@ -1298,10 +1298,32 @@ def test_never_answered_call_stays_uncertain_without_evidence_and_is_never_auto_
             reservation, Decimal(dispatch["attempt_maximum_usd"]), dispatch
         )
     zero = {"input_tokens": 0, "output_tokens": 0}
+    zero_evidence = evidence_file(
+        tmp_path, "never-answered", zero, kind="provider-request-log", name="z.json"
+    )
     with psycopg.connect(pg.owner_dsn, autocommit=True) as owner:
         with pytest.raises(ValueError, match="evidence"):
             reconcile_call(owner, "never-answered", zero, evidence=None)
         assert ProviderBudget(owner).snapshot("typesafe")["unresolved"]
+    # Not yet recorded as uncertain, then still in an open envelope, then in flight.
+    with pytest.raises(ValueError, match="recorded as uncertain"):
+        settle_cli(pg, tmp_path, "never-answered", zero, zero_evidence)
+    with V1Repository(pg.runner_dsn) as repo:
+        ProviderBudget(repo._connection).settle("never-answered", None, None)
+    with pytest.raises(ValueError, match="close"):
+        settle_cli(pg, tmp_path, "never-answered", zero, zero_evidence)
+    with psycopg.connect(pg.owner_dsn, autocommit=True) as owner:
+        for item in protocol["dispatch"]:
+            ProviderBudget(owner).close(item["protocol_id"])
+        owner.execute(
+            "INSERT INTO reckoner.v1_provider_state (provider, active_call) "
+            "VALUES ('typesafe','never-answered') ON CONFLICT (provider) "
+            "DO UPDATE SET active_call='never-answered'"
+        )
+    with pytest.raises(ValueError, match="in flight"):
+        settle_cli(pg, tmp_path, "never-answered", zero, zero_evidence)
+    with psycopg.connect(pg.owner_dsn, autocommit=True) as owner:
+        owner.execute("UPDATE reckoner.v1_provider_state SET active_call=NULL")
     with pytest.raises(ValueError):
         settle_cli(pg, tmp_path, "never-answered", zero,
                    evidence_file(tmp_path, "never-answered", {"input_tokens": 10,
@@ -1456,3 +1478,44 @@ def test_a_run_with_every_case_lacking_evidence_never_passes_silently(pg, tmp_pa
     assert len(report["coverage_gaps"]) == 3
     assert "coverage-gap-undisclosed" in {b["code"] for b in report["blockers"]}
     assert report["passed"] is False and set(report["false_claims"]) == {"status", "passed"}
+
+
+@pytest.mark.integration
+def test_settle_reference_must_match_a_persisted_provider_request_id(pg, tmp_path):
+    from decimal import Decimal
+
+    from psycopg.types.json import Jsonb
+    from reckoner.v1.storage.budget import ProviderBudget
+    from reckoner.v1.storage.repository import V1Repository
+    from test_v1_budget import call
+
+    protocol = reserved(pg, tmp_path)
+    dispatch = protocol["dispatch"][0]
+    task = {"tenant_id": dispatch["tenant_id"], "run_id": dispatch["run_id"],
+            **{k: dispatch["tasks"][0][k] for k in ("task_id", "transaction_id")}}  # fmt: skip
+    reservation = {**call(task, dispatch, "with-request-id"), "request_document": {}}
+    reservation["request_sha256"] = dispatch["tasks"][0]["request_sha256"]
+    with V1Repository(pg.runner_dsn) as repo:
+        ledger = ProviderBudget(repo._connection)
+        ledger.reserve(reservation, Decimal(dispatch["attempt_maximum_usd"]), dispatch)
+        ledger.settle("with-request-id", None, None)
+    with psycopg.connect(pg.owner_dsn, autocommit=True) as owner:
+        # Fabricated persisted response that names its provider request identity.
+        owner.execute(
+            "INSERT INTO reckoner.v1_provider_responses (tenant_id,call_id,category,body,score) "
+            "VALUES (%s,'with-request-id','uncertain',%s,%s)",
+            (task["tenant_id"], Jsonb({"provider_request_id": "fabricated-request-7"}),
+             Jsonb({"tenant_id": task["tenant_id"], "call_id": "with-request-id"})),
+        )  # fmt: skip
+        for item in protocol["dispatch"]:
+            ProviderBudget(owner).close(item["protocol_id"])
+    usage = {"input_tokens": 100, "output_tokens": 0}
+    wrong = evidence_file(tmp_path, "with-request-id", usage, name="wrong.json")
+    with pytest.raises(ValueError, match="provider request"):
+        settle_cli(pg, tmp_path, "with-request-id", usage, wrong)
+    right = tmp_path / "right.json"
+    import json
+
+    record = json.loads(wrong.read_text()) | {"reference": "fabricated-request-7"}
+    right.write_text(json.dumps(record))
+    assert settle_cli(pg, tmp_path, "with-request-id", usage, right)["status"] == "settled"

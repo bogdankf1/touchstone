@@ -260,7 +260,11 @@ def reconcile_call(connection, call_id: str, usage: dict, *, evidence: dict | No
     row = cursor.execute(
         "SELECT c.provider, c.tenant_id, x.document->'prices' AS prices, r.call_id AS answered, "
         "r.body, EXISTS (SELECT 1 FROM reckoner.v1_settlements s WHERE s.call_id=c.call_id "
-        "AND s.status='settled') AS settled FROM reckoner.v1_provider_calls c "
+        "AND s.status='settled') AS settled, EXISTS (SELECT 1 FROM reckoner.v1_settlements u "
+        "WHERE u.call_id=c.call_id AND u.status='uncertain') AS uncertain, EXISTS (SELECT 1 "
+        "FROM reckoner.v1_protocol_closures z WHERE z.protocol_id=c.protocol_id) AS closed, "
+        "EXISTS (SELECT 1 FROM reckoner.v1_provider_state p WHERE p.provider=c.provider "
+        "AND p.active_call=c.call_id) AS in_flight FROM reckoner.v1_provider_calls c "
         "JOIN reckoner.v1_protocol_authorizations a USING (protocol_id) "
         "JOIN reckoner.v1_experiment_protocols x USING (protocol_sha256) "
         "LEFT JOIN reckoner.v1_provider_responses r ON r.call_id=c.call_id WHERE c.call_id=%s",
@@ -270,6 +274,17 @@ def reconcile_call(connection, call_id: str, usage: dict, *, evidence: dict | No
         raise ValueError("unknown call under a recorded protocol")
     if row["settled"]:
         raise ValueError("call is already settled; settlements are immutable")
+    if not row["uncertain"]:
+        raise ValueError("only calls recorded as uncertain can be reconciled")
+    if row["in_flight"]:
+        raise ValueError("call is still in flight as the provider's active dispatch")
+    if not row["closed"]:
+        raise ValueError("close the call's protocol envelope before reconciling it")
+    persisted_request = (
+        (row["body"] or {}).get("provider_request_id") if isinstance(row["body"], dict) else None
+    )
+    if persisted_request is not None and persisted_request != record["reference"]:
+        raise ValueError("evidence reference differs from the persisted provider request id")
     if row["answered"] is None:
         state = "never-answered"  # reserved, no response persisted
     elif row["body"] is None:

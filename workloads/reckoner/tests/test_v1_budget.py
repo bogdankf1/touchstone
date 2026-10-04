@@ -132,7 +132,11 @@ def test_uncertain_settlement_and_idempotency_overage_and_close(pg):
         ledger.settle("call-a", None, None)
         ledger.close(p["protocol_id"])
         assert ledger.remaining("typesafe") == Decimal("9.99")
-        ledger.settle("call-a", {"input_tokens": 1, "output_tokens": 0}, Decimal(".011"))
+        from v1_fixtures import owner_settle
+
+        owner_settle(
+            pg.owner_dsn, "call-a", {"input_tokens": 1, "output_tokens": 0}, Decimal(".011")
+        )
         assert ledger.remaining("typesafe") == Decimal("9.989")
         with pytest.raises(ValueError, match="conflict"):
             ledger.settle("call-a", {"input_tokens": 1, "output_tokens": 0}, Decimal(".01"))
