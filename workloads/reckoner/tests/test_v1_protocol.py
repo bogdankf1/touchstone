@@ -1206,3 +1206,238 @@ def test_cli_execute_requires_runner_dsn_before_any_connection(tmp_path):
     with pytest.raises(ValueError, match="RECKONER_RUNNER_DSN"):
         cli(["execute", "--protocol-sha256", "a" * 64, "--output", str(tmp_path / "o"),
              "--env-file", str(env)])  # fmt: skip
+
+
+# --- Anthropic note/judge protocols drafted from persisted escalations -----------
+
+
+def anthropic_price():
+    import json
+
+    from reckoner.resources import CONFIG
+
+    return json.loads((CONFIG / "anthropic-prices-v1.json").read_text())
+
+
+def note_config():
+    from v1_fixtures import config_fixture
+
+    config = config_fixture()
+    for key in ("note_model", "judge_model"):
+        config[key]["price_table"] = anthropic_price()
+    config["limits"].update(input_token_ceiling=16000, maximum_attempts=2)
+    return identified(config, "config_id")
+
+
+def note_measurements(n=3):
+    from reckoner.v1.experiment.protocol import request_measurements
+
+    return request_measurements(
+        [
+            (
+                {"tenant_id": "tenant-a", "run_id": "final-a", "task_id": f"task-{i}",
+                 "transaction_id": f"tx-{i}"},
+                {"evidence_id": f"e-{i}", "evidence_mode": "relational"},
+                {"fabricated_note_request": i, "pad": "x" * 3000},
+            )
+            for i in range(n)
+        ]
+    )  # fmt: skip
+
+
+def note_runs(config, n=3, purpose="final"):
+    run = {
+        "schema_version": "reckoner-experiment-v1",
+        "tenant_id": "tenant-a",
+        "run_id": "final-a",
+        "purpose": purpose,
+        "config_id": config["config_id"],
+        "dataset_simulated": True,
+        "dataset_version": "a" * 64,
+        "cohort_version": "a" * 64,
+        "code_revision": "fabricated-revision",
+        "created_at": "2026-10-04T00:00:00Z",
+        "tasks": [{"task_id": f"task-{i}", "transaction_id": f"tx-{i}"} for i in range(n)],
+    }
+    return [identified(run, "experiment_id")]
+
+
+def anthropic_ledger(verified=True):
+    return {**ledger_snapshot(provider="anthropic"), "legacy_verified": verified}
+
+
+def note_draft(purpose="note-judge-pilot", **overrides):
+    from reckoner.v1.experiment.protocol import draft_note_protocol
+
+    config = note_config()
+    inputs = {
+        "purpose": purpose,
+        "approver": FIXTURE,
+        "runs": note_runs(config),
+        "measurements": note_measurements(),
+        "config": config,
+        "price_table": anthropic_price(),
+        "ledger": anthropic_ledger(),
+        "code_revision": "fabricated-revision",
+    }
+    inputs.update(overrides)
+    return draft_note_protocol(**inputs)
+
+
+def test_note_judge_draft_bounds_notes_exactly_and_judges_by_derived_policy():
+    from reckoner.v1.evaluation.derived import BUILDERS
+    from reckoner.v1.experiment.protocol import validate_protocol
+
+    draft = note_draft()
+    receipt = validate_protocol(draft, anthropic_ledger())
+    assert receipt["case_count"] == 3 and receipt["provider"] == "anthropic"
+    notes = [d for d in draft["dispatch"] if d["purpose"] == "online-note"]
+    judges = [d for d in draft["dispatch"] if d["purpose"] == "judge"]
+    assert len(notes) == 1 and notes[0]["maximum_attempts"] == 2
+    assert all(t["request_sha256"] for t in notes[0]["tasks"])
+    assert sorted(d["derivation"]["builder"] for d in judges) == sorted(BUILDERS)
+    assert all(t["request_sha256"] is None for d in judges for t in d["tasks"])
+    # notes: 3 cases x 2 attempts; judges: 3 stages x 3 cases x 1 attempt, each at
+    # (32,000 billed input x USD 1 + 1,000 output x USD 5) / 1M per attempt.
+    assert Decimal(draft["usd_cap"]) == Decimal(15) * Decimal("0.037")
+    assert draft["evidence"] == [] and draft["telemetry_mode"] == "workflow"
+
+
+@pytest.mark.parametrize(
+    "purpose,purposes", [("final-notes", {"online-note"}), ("final-judges", {"judge"})]
+)
+def test_final_note_and_judge_drafts_cover_only_their_stage(purpose, purposes):
+    draft = note_draft(purpose=purpose)
+    assert {d["purpose"] for d in draft["dispatch"]} == purposes
+
+
+@pytest.mark.parametrize(
+    "missing", ["approver", "runs", "measurements", "config", "price_table", "ledger"]
+)
+def test_note_draft_refuses_missing_inputs(missing):
+    from reckoner.v1.experiment.protocol import MissingInputs
+
+    with pytest.raises(MissingInputs):
+        note_draft(**{missing: None})
+
+
+def test_note_draft_refuses_unverified_ledger_oversized_requests_and_changed_prices():
+    from reckoner.v1.experiment.protocol import validate_protocol
+
+    draft = note_draft()
+    with pytest.raises(ValueError, match="Anthropic ledger"):
+        validate_protocol(draft, anthropic_ledger(verified=False))
+    config = note_config()
+    config["limits"]["input_token_ceiling"] = 1000
+    identified(config, "config_id")
+    with pytest.raises(ValueError, match="ceiling"):
+        note_draft(config=config, runs=note_runs(config))
+    price = anthropic_price()
+    price["output_per_million"] = "4.00"
+    identified(price, "price_table_version")
+    with pytest.raises(ValueError, match="pricing"):
+        note_draft(price_table=price)
+
+
+@pytest.mark.integration
+def test_note_judge_pilot_runs_end_to_end_under_one_fixture_approval(pg, tmp_path):
+    """Draft -> fabricated approval -> notes -> derived judges, one recorded protocol."""
+    import json
+
+    from reckoner.storage.postgres import PostgresRepository
+    from reckoner.v1.evaluation.judges import NoteVerdict, RagasFaithfulness
+    from reckoner.v1.evaluation.notes import evaluate_note_fixtures
+    from reckoner.v1.experiment.execute import execute_protocol
+    from reckoner.v1.experiment.protocol import draft_note_protocol, measure_note_requests
+    from reckoner.v1.notes import build_note_context
+    from reckoner.v1.notes.calls import BudgetedCalls
+    from test_v1_graph_workflow import execute as run_workflow
+    from test_v1_graph_workflow import prepared
+    from test_v1_note_storage import Transport, ledger_fixture, paid_body
+
+    repo, task, evidence, settings, _ = prepared(pg, input_ceiling=16000, official_prices=True)
+    with PostgresRepository(pg.runner_dsn) as old:
+        legacy = next(
+            t for t in old.pending_tasks("baseline-preserved") if t["tenant_id"] == "tenant-a"
+        )
+    ledger_fixture(pg, legacy)
+    with repo:
+        decision, _ = run_workflow(repo, task, settings)  # escalation, note pending
+        assert decision["outcome"] == "escalate"
+        key = (task["tenant_id"], task["run_id"], task["task_id"])
+        measurements = measure_note_requests(repo, [key])
+        run = repo._connection.execute(
+            "SELECT document FROM reckoner.v1_runs WHERE tenant_id=%s AND run_id=%s",
+            key[:2],
+        ).fetchone()["document"]
+        config = repo.workflow_document(
+            "v1_configs", {"tenant_id": task["tenant_id"], "config_id": task["config_id"]}
+        )
+        score = repo._connection.execute(
+            "SELECT score FROM reckoner.v1_provider_responses WHERE call_id=%s",
+            (decision["call_id"],),
+        ).fetchone()["score"]
+    with psycopg.connect(pg.owner_dsn, autocommit=True) as owner:
+        ledger = ProviderBudget(owner).snapshot("anthropic")
+    assert ledger["legacy_verified"] is True
+    draft = draft_note_protocol(
+        purpose="note-judge-pilot",
+        approver=FIXTURE,
+        runs=[run],
+        measurements=measurements,
+        config=config,
+        price_table=anthropic_price(),
+        ledger=ledger,
+        code_revision="fabricated-revision",
+    )
+    reserve(pg, draft, fixture_approval(draft))
+    context = build_note_context(decision, evidence, score, config)
+    fields = {
+        k: context[k]
+        for k in ("confidence", "risk_indicators", "entity_neighbourhood", "comparable_cases")
+    }
+    fields.update(verdict_recommendation="approve", what_would_change_verdict=[])
+    notes = Transport([paid_body(json.dumps(fields))])
+    result = execute_protocol(
+        draft["protocol_sha256"],
+        provider_clients={"anthropic": notes},
+        dsn=pg.runner_dsn,
+        execution_kind="fixture",
+        output_dir=tmp_path / "notes",
+    )
+    assert {c["status"] for c in result["cases"]} == {"succeeded", "evaluator-owned"}
+    assert result["closed"] is False  # judge stages remain open for the evaluator
+    stages = {d["derivation"]["stage"]: d for d in draft["dispatch"] if d["purpose"] == "judge"}
+    judges = Transport([paid_body(text) for text in JUDGE_RESPONSES])
+    with V1Repo(pg.runner_dsn) as runner:
+        budget = ProviderBudget(runner._connection)
+        calls = BudgetedCalls(runner, judges, task, config, kind="judge", budget=budget)
+        envelope = {"stages": stages}
+        note = persisted_note(runner, task)
+        report = evaluate_note_fixtures(
+            [
+                {
+                    "tenant_id": task["tenant_id"],
+                    "case_id": decision["decision_id"],
+                    "note": note,
+                    "evidence": evidence,
+                    "score": score,
+                    "oracle_verdict": "approve",
+                }
+            ],
+            {
+                "verdict": NoteVerdict(calls, config, envelope),
+                "faithfulness": RagasFaithfulness(calls, config, envelope),
+            },
+            1,
+            protocol=envelope,
+            budget=budget,
+        )
+    assert report["status"] == "passed", report["cases"]
+    assert len(judges.calls) == 3 and len(notes.calls) == 1
+    assert report["quality_acceptance"] == "pending separately approved measured evaluation"
+    from reckoner.v1.experiment.execute import close_protocol
+
+    assert close_protocol(draft["protocol_sha256"], dsn=pg.runner_dsn)["closed"] == 4
+    with psycopg.connect(pg.owner_dsn, autocommit=True) as owner:
+        assert ProviderBudget(owner).snapshot("anthropic")["unresolved"] == []

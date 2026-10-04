@@ -16,6 +16,7 @@ ENVIRONMENTS = {
     "reserve": {"RECKONER_OWNER_DSN"},
     "execute": {"RECKONER_RUNNER_DSN", "JEV_API_KEY", "ANTHROPIC_API_KEY"},
     "verify": {"RECKONER_RUNNER_DSN"},
+    "close": {"RECKONER_RUNNER_DSN"},
     "ledger-restore": {"RECKONER_OWNER_DSN", "RECKONER_LEDGER_STAGING_DSN"},
 }
 
@@ -52,6 +53,8 @@ def register(subcommands):
     execute.add_argument("--output", type=Path, required=True)
     execute.add_argument("--data-kind", choices=("simulated-cctd", "fabricated"))
     execute.add_argument("--calibration", type=Path)
+    close = steps.add_parser("close")
+    close.add_argument("--protocol-sha256", required=True)
     verify = steps.add_parser("verify")
     verify.add_argument("--protocol", type=Path, required=True)
     verify.add_argument("--report", type=Path, required=True)
@@ -60,7 +63,7 @@ def register(subcommands):
     restore.add_argument("--dump", type=Path, required=True)
     restore.add_argument("--expected-sha256", required=True)
     restore.add_argument("--staging-container", required=True)
-    for parser in (ledger, measure, reserve, execute, verify, restore):
+    for parser in (ledger, measure, reserve, execute, close, verify, restore):
         parser.add_argument("--env-file", required=True)
 
 
@@ -189,6 +192,11 @@ def run(args):
             data_kind=args.data_kind,
             calibration=_json(args.calibration),
         )
+    if step == "close":
+        from reckoner.v1.experiment.execute import close_protocol
+
+        (runner,) = _need(values, "RECKONER_RUNNER_DSN")
+        return close_protocol(args.protocol_sha256, dsn=runner)
     if step == "verify":
         from reckoner.v1.experiment.verify import collect_run_facts, verify_experiment
 

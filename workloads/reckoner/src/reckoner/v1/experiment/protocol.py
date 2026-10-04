@@ -443,6 +443,11 @@ def request_measurements(entries) -> dict:
                 "task_id": task["task_id"],
                 "transaction_id": task["transaction_id"],
                 "evidence_id": evidence["evidence_id"],
+                **(
+                    {"evidence_mode": evidence["evidence_mode"]}
+                    if "evidence_mode" in evidence
+                    else {}
+                ),
                 "request_sha256": content_id(request),
                 "utf8_bytes": size,
             }
@@ -681,6 +686,209 @@ def draft_scoring_protocol(
                 if token_overhead is not None
                 else {}
             ),
+        },
+        "prices": price_table,
+        "ledger": {"provider": provider, "ledger_id": ledger["ledger_id"]},
+        "bounds": bounds,
+        "worst_case_usd": _decimal_text(worst),
+        "usd_cap": _decimal_text(worst),
+        "dispatch": dispatch,
+    }
+    return identify(body)
+
+
+def measure_note_requests(repo, keys) -> dict:
+    """Exact note requests rebuilt from persisted escalations (tenant, run, task keys)."""
+    from reckoner.v1.notes.prompt import build_note_request
+
+    entries = []
+    for tenant_id, run_id, task_id in keys:
+        identity = {"tenant_id": tenant_id, "run_id": run_id, "task_id": task_id}
+        task = repo.task(tenant_id, run_id, task_id)
+        decision = repo.workflow_document("v1_decisions", identity)
+        if decision is None or decision["outcome"] != "escalate":
+            raise ValueError("note protocols cover persisted escalations only")
+        config = repo.workflow_document(
+            "v1_configs", {"tenant_id": tenant_id, "config_id": task["config_id"]}
+        )
+        evidence = repo.workflow_document(
+            "v1_evidence", {"tenant_id": tenant_id, "evidence_id": decision["evidence_id"]}
+        )
+        score = {}
+        if decision["call_id"] is not None:
+            score = repo._connection.execute(
+                "SELECT score FROM reckoner.v1_provider_responses WHERE tenant_id=%s "
+                "AND call_id=%s",
+                (tenant_id, decision["call_id"]),
+            ).fetchone()["score"]
+        policy = repo.workflow_document(
+            "v1_workflow_runs", {"tenant_id": tenant_id, "run_id": run_id}
+        )
+        entries.append(
+            (
+                task,
+                {"evidence_id": decision["evidence_id"], "evidence_mode": policy["evidence_mode"]},
+                build_note_request(decision, evidence, score, config),
+            )
+        )
+    return request_measurements(entries)
+
+
+def draft_note_protocol(
+    *,
+    purpose: str,
+    approver: str | None,
+    runs: list[dict] | None,
+    measurements: dict | None,
+    config: dict | None,
+    price_table: dict | None,
+    ledger: dict | None,
+    code_revision: str | None,
+) -> dict:
+    """Draft (never execute) an Anthropic note and/or judge protocol from measurements.
+
+    Note generation lists each exact request hash (one generation plus at most one
+    repair of the same request). Judge stages use derived-request-v1: fixed builders
+    whose exact requests are reconstructed from persisted parents before dispatch.
+    """
+    from importlib.metadata import version
+
+    from reckoner.v1.evaluation.derived import BUILDERS, derivation
+
+    if purpose not in PURPOSES or PURPOSES[purpose][0] != "anthropic":
+        raise ValueError("not a note/judge protocol purpose")
+    required = {
+        "approver": approver,
+        "declared_runs": runs,
+        "request_measurements": measurements,
+        "frozen_config": config,
+        "price_snapshot": price_table,
+        "ledger_snapshot": ledger,
+        "code_revision": code_revision,
+    }
+    missing = {name for name, value in required.items() if not value}
+    if missing:
+        raise MissingInputs(missing)
+    provider, stages, telemetry = PURPOSES[purpose]
+    model = PROVIDERS[provider]
+    _price(provider, model, price_table)
+    if ledger.get("provider") != provider:
+        raise ValueError("ledger snapshot is for another provider")
+    if any(config[key]["price_table"] != price_table for key in ("note_model", "judge_model")):
+        raise ValueError("frozen configuration uses different pinned pricing")
+    measurements = _verified_measurements(measurements)
+    limits = config["limits"]
+    ceiling, output = limits["input_token_ceiling"], limits["max_output_tokens"]
+    if measurements["distribution"]["max"] > ceiling:
+        raise ValueError("a measured note request exceeds the frozen input ceiling")
+    note_attempts = min(2, limits["maximum_attempts"])
+    notes, judges = "online-note" in stages, "judge" in stages
+    bounds = {
+        "input_token_ceiling": ceiling,
+        "billing_token_bound": 2 * ceiling,
+        "max_output_tokens": output,
+        "maximum_attempts": note_attempts if notes else 1,
+        "retry_assumption": (
+            "No provider retries. Notes: one generation plus at most one schema repair of "
+            "the same exact request. Judges: one attempt per stage."
+        ),
+    }
+    declared, run_pins = set(), []
+    for run in runs:
+        if run["config_id"] != config["config_id"]:
+            raise ValueError("declared run uses another frozen configuration")
+        run_pins.append(
+            {
+                "tenant_id": run["tenant_id"],
+                "run_id": run["run_id"],
+                "experiment_id": run["experiment_id"],
+                "config_id": run["config_id"],
+                "purpose": run["purpose"],
+                "telemetry_mode": telemetry,
+            }
+        )
+        declared |= {
+            (run["tenant_id"], run["run_id"], t["task_id"], t["transaction_id"])
+            for t in run["tasks"]
+        }
+    groups, cases = {}, []
+    for case in measurements["cases"]:
+        key = (case["tenant_id"], case["run_id"], case["task_id"], case["transaction_id"])
+        if key not in declared or "evidence_mode" not in case:
+            raise ValueError("measured note request is not a declared escalated run task")
+        cases.append(
+            {k: case[k] for k in ("tenant_id", "run_id", "task_id", "transaction_id")}
+            | {"evidence_id": case["evidence_id"], "evidence_mode": case["evidence_mode"]}
+        )
+        groups.setdefault((case["tenant_id"], case["run_id"]), []).append(case)
+    dispatch, worst = [], Decimal(0)
+
+    def envelope(tenant, run_id, members, stage_purpose, attempts, policy=None):
+        item = {
+            "tenant_id": tenant,
+            "run_id": run_id,
+            "provider": provider,
+            "purpose": stage_purpose,
+            "model": model,
+            "input_token_ceiling": ceiling,
+            "max_output_tokens": output,
+            "maximum_attempts": attempts,
+            "tasks": [
+                {
+                    "task_id": m["task_id"],
+                    "transaction_id": m["transaction_id"],
+                    "request_sha256": None if policy else m["request_sha256"],
+                }
+                for m in sorted(members, key=lambda m: m["task_id"])
+            ],
+        }
+        if policy:
+            item["derivation"] = policy
+        cost = dispatch_worst_case(provider, item, bounds)
+        item["usd_cap"] = _decimal_text(cost)
+        item["protocol_id"] = content_id(item)
+        return item, cost
+
+    for (tenant, run_id), members in sorted(groups.items()):
+        planned = [("online-note", note_attempts, None)] if notes else []
+        if judges:
+            planned += [("judge", 1, derivation(builder)) for builder in sorted(BUILDERS)]
+        for stage_purpose, attempts, policy in planned:
+            item, cost = envelope(tenant, run_id, members, stage_purpose, attempts, policy)
+            dispatch.append(item)
+            worst += cost
+    body = {
+        "schema_version": SCHEMA,
+        "dataset_simulated": True,
+        "purpose": purpose,
+        "provider": provider,
+        "model": model,
+        "telemetry_mode": telemetry,
+        "approver": approver,
+        "statement_of_purpose": (
+            f"Anthropic {purpose} for {len(cases)} persisted simulated escalations: "
+            + ", ".join(
+                (["structured note generation"] if notes else [])
+                + (["note-only verdict and Ragas faithfulness judging"] if judges else [])
+            )
+            + "."
+        ),
+        "expected_outputs": [
+            "persisted note/judge responses, usage and settled or uncertain cost per call",
+            "per-case schema, verdict-agreement and faithfulness results with lineage",
+            "a verification report; missing or failed cases block a passing gate",
+        ],
+        "uncertainty_handling": UNCERTAINTY,
+        "evidence": [],
+        "runs": sorted(run_pins, key=lambda r: (r["tenant_id"], r["run_id"])),
+        "cases": sorted(cases, key=lambda c: (c["tenant_id"], c["run_id"], c["task_id"])),
+        "versions": {
+            "code_revision": code_revision,
+            "note_prompt_version": config["note_model"]["prompt_version"],
+            "judge_prompt_version": config["judge_model"]["prompt_version"],
+            "deepeval": version("deepeval"),
+            "ragas": version("ragas"),
+            "request_measurement_id": measurements["measurement_id"],
         },
         "prices": price_table,
         "ledger": {"provider": provider, "ledger_id": ledger["ledger_id"]},

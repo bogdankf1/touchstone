@@ -179,12 +179,22 @@ def test_anthropic_requires_verified_legacy_provenance_and_counts_it_once(pg):
         assert ledger.remaining("typesafe") == Decimal("10")
 
 
-def scoring(pg, attempts=3, authorized=True, input_ceiling=None):
+def scoring(pg, attempts=3, authorized=True, input_ceiling=None, official_prices=False):
     _, attempts_module, jev = modules()
     config, manifest, _ = setup_run(pg)
     config["limits"]["maximum_attempts"] = attempts
     if input_ceiling is not None:
         config["limits"]["input_token_ceiling"] = input_ceiling
+    if official_prices:
+        import json
+
+        from reckoner.resources import CONFIG
+
+        config["scorer"]["price_table"] = json.loads((CONFIG / "jev-prices-v1.json").read_text())
+        for key in ("note_model", "judge_model"):
+            config[key]["price_table"] = json.loads(
+                (CONFIG / "anthropic-prices-v1.json").read_text()
+            )
     identified(config, "config_id")
     manifest["config_id"] = config["config_id"]
     manifest["run_id"] = "score-run"

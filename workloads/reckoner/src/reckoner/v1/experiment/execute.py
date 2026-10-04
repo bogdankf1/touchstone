@@ -231,6 +231,16 @@ def _telemetry(repo, protocol, closed):
     return {"collected": True, "enqueued": enqueued, "pending": pending}
 
 
+def close_protocol(protocol_id: str, *, dsn: str) -> dict:
+    """Release every envelope's unused capacity; uncertain calls keep their maximum."""
+    with V1Repository(dsn) as repo:
+        protocol = load_recorded(repo, protocol_id)
+        ledger = ProviderBudget(repo._connection)
+        for dispatch in protocol["dispatch"]:
+            ledger.close(dispatch["protocol_id"])
+        return {"protocol_sha256": protocol_id, "closed": len(protocol["dispatch"])}
+
+
 def execute_protocol(
     protocol_id: str,
     *,
@@ -273,8 +283,10 @@ def execute_protocol(
         closed = stop is not None or not resumable
         ledger = ProviderBudget(repo._connection)
         if closed:
+            # Judge envelopes stay open for the evaluator; close them with close_protocol.
             for dispatch in protocol["dispatch"]:
-                ledger.close(dispatch["protocol_id"])
+                if dispatch["purpose"] != "judge":
+                    ledger.close(dispatch["protocol_id"])
         telemetry = _telemetry(repo, protocol, closed)
         retained = retain_outputs(repo, protocol, directory)
         totals = repo._connection.execute(
@@ -298,7 +310,7 @@ def execute_protocol(
             "execution_kind": execution_kind,
             "status": "stopped" if stop else ("complete" if complete else "incomplete"),
             "stop_reason": stop,
-            "closed": closed,
+            "closed": closed and all(d["purpose"] != "judge" for d in protocol["dispatch"]),
             "cases": [
                 {
                     **dict(zip(("tenant_id", "run_id", "task_id"), r["key"], strict=True)),
