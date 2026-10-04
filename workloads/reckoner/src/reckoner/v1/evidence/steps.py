@@ -9,7 +9,6 @@ No provider is called and no provider key is ever read.
 import argparse
 import json
 import os
-import sys
 from pathlib import Path
 from time import perf_counter
 
@@ -74,13 +73,7 @@ def output_directory(root, declaration) -> Path:
 
 
 def _write_json_once(path: Path, value) -> None:
-    payload = canonical_json(value)
-    if path.exists():
-        if path.read_bytes() != payload:
-            raise ValueError(f"refusing to overwrite {path.name}")
-        return
-    with path.open("xb") as handle:
-        handle.write(payload)
+    prep.write_once(path, canonical_json(value))
 
 
 def _append(path: Path, record: dict) -> None:
@@ -97,7 +90,9 @@ def _jsonl(path: Path) -> list[dict]:
 
 
 def _log(message: str) -> None:
-    print(message, file=sys.stderr, flush=True)
+    from reckoner.v1.evidence.rolling import progress
+
+    progress(message)
 
 
 def _populations(values) -> dict:
@@ -253,6 +248,8 @@ def _guard(args, output):
         free_path=args.free_path or output,
         free_floor_bytes=args.free_floor_bytes,
         max_store_bytes=args.max_store_bytes,
+        vm_free_path=getattr(args, "vm_free_path", None),
+        vm_free_floor_bytes=getattr(args, "vm_free_floor_bytes", 0),
     )
 
 
@@ -287,8 +284,10 @@ def _run_relational(context: Context, guard) -> dict:
         entries = {entry["day"]: entry for entry in schedule}
         ws_owner = ensure_working_set(owner, declaration["preparation_id"])
         ws_runner = with_database(runner, working_set_name(declaration["preparation_id"]))
-        with SourceHistory(context.bundle, Path(source)) as history:
-            days = SourceDays(history, context.bundle)
+        with (
+            SourceHistory(context.bundle, Path(source)) as history,
+            SourceDays(history, context.bundle) as days,
+        ):
             store = RollingStore(
                 ws_owner,
                 ws_runner,
@@ -315,20 +314,20 @@ def _run_relational(context: Context, guard) -> dict:
             for day in plan["pending"]:
                 cases = [c for c in entries[day]["cases"] if "relational" in c["modes"]]
                 transactions = [c["transaction"] for c in cases]
+                _log(f"start relational {day} ({len(cases)} cases)")
                 timings, began = {}, perf_counter()
                 store.verify_queries(transactions)
                 timings["verify_seconds"] = perf_counter() - began
                 started = perf_counter()
-                imported = store.advance_to(day)
+                imported = store.advance_to(day, progress=_log)
                 timings["advance_seconds"] = perf_counter() - started
                 started = perf_counter()
                 evicted = store.evict_before(prep.window(day)[0])
                 timings["evict_seconds"] = perf_counter() - started
                 started = perf_counter()
-                previous = store.import_previous_cards(transactions)
-                timings["previous_card_seconds"] = perf_counter() - started
-                started = perf_counter()
+                # Includes previous-card rows outside the window, imported by evidence().
                 documents = store.evidence(transactions, context.config)
+                previous = store.previous
                 timings["assembly_seconds"] = perf_counter() - started
                 summary = prep.check_documents(
                     day, [(c, "relational", d) for c, d in zip(cases, documents, strict=True)]
@@ -365,7 +364,6 @@ def _run_relational(context: Context, guard) -> dict:
                     f"relational {day}: {len(cases)} cases, {receipt['imported_rows']} rows in, "
                     f"{receipt['evicted_rows']} out, {receipt['seconds']:.1f}s"
                 )
-            days.close()
     return {
         "preparation_id": declaration["preparation_id"],
         "through": through,
@@ -504,12 +502,15 @@ def _run_graph(context: Context, guard) -> dict:
             _append(
                 receipts_path, prep.reconstruct_receipt(entries[day], known, mode="gds-augmented")
             )
-        with SourceHistory(context.bundle, Path(source)) as history:
-            days = SourceDays(history, context.bundle)
+        with (
+            SourceHistory(context.bundle, Path(source)) as history,
+            SourceDays(history, context.bundle) as days,
+        ):
             for day in plan["pending"]:
                 cases = [c for c in entries[day]["cases"] if "gds-augmented" in c["modes"]]
+                _log(f"start graph {day} ({len(cases)} cases)")
                 began = perf_counter()
-                imported = graph.advance_to(day, days)
+                imported = graph.advance_to(day, days, progress=_log)
                 evicted = graph.evict_before(prep.window(day)[0])
                 started = perf_counter()
                 receipt = graph.projection_for(day, referenced=_referenced(runner))
@@ -553,7 +554,6 @@ def _run_graph(context: Context, guard) -> dict:
                 }
                 _append(receipts_path, record)
                 _log(f"graph {day}: {len(cases)} cases, {record['seconds']:.1f}s")
-            days.close()
     stage = _stage(context, runner, "gds-augmented", through)
     return {
         "preparation_id": declaration["preparation_id"],
@@ -584,10 +584,11 @@ def _graph_check(context: Context, guard) -> dict:
         )
         started = perf_counter()
         seeded = graph.seed(context.manifest)
-        with SourceHistory(context.bundle, Path(source)) as history:
-            days = SourceDays(history, context.bundle)
-            imported = graph.advance_to(day, days)
-            days.close()
+        with (
+            SourceHistory(context.bundle, Path(source)) as history,
+            SourceDays(history, context.bundle) as days,
+        ):
+            imported = graph.advance_to(day, days, progress=_log)
         import_seconds = perf_counter() - started
         receipt = graph.projection_for(day, referenced=lambda _: False)
         summary = graph.edge_summary(cutoff)
@@ -677,6 +678,14 @@ def _drop(context: Context) -> dict:
 
 
 def run(args):
+    try:
+        return _dispatch(args)
+    except BaseException as error:
+        _log(f"evidence {args.evidence_step} failed: {type(error).__name__}: {error}")
+        raise
+
+
+def _dispatch(args):
     if args.evidence_step == "declare":
         return _declare(args)
     context = Context(args)
@@ -707,6 +716,10 @@ def register(subcommands):
 
     def guarded(parser):
         parser.add_argument("--free-floor-bytes", type=floor, default=FREE_FLOOR)
+        # The job container's own filesystem is the Docker Desktop VM disk that holds the
+        # store volumes; it gets its own floor (measured: 474 GB sparse ext4, host-backed).
+        parser.add_argument("--vm-free-path", type=Path, default=Path("/"))
+        parser.add_argument("--vm-free-floor-bytes", type=floor, default=FREE_FLOOR)
         parser.add_argument("--max-store-bytes", type=int)
         parser.add_argument("--free-path", type=Path)
 

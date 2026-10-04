@@ -9,6 +9,7 @@ bundle, entity manifest and resolution policy, independent of populations or sta
 import csv
 import json
 import os
+import re
 from collections import Counter, defaultdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -18,6 +19,7 @@ from reckoner.data.artifacts import canonical_json, verify_bundle
 from reckoner.v1.data.history import POLICY, instant
 
 WORKING_SET_DAYS = 97
+UNIFORM_INSTANT = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ")
 MODES = ("relational", "gds-augmented")
 TENANTS = ("tenant-a", "tenant-b")
 # Ruling R2: relational for every population; GDS-augmented for 2018 validation and the
@@ -38,6 +40,9 @@ class PreparationFault(ValueError):
     def __init__(self, day: str, failures: list[dict]):
         self.day, self.failures = day, failures
         super().__init__(f"preparation fault on {day}: {json.dumps(failures, sort_keys=True)}")
+
+    def __reduce__(self):  # raised inside assembly children and re-raised in the parent
+        return (PreparationFault, (self.day, self.failures))
 
 
 def utc_day(value: str) -> str:
@@ -230,7 +235,12 @@ def _first_observations(connection, column: str) -> dict:
         f"SELECT {column}, min(occurred_at || '|' || printf('%012d', source_record)) "  # noqa: S608
         f"FROM history GROUP BY {column}"
     )
-    return {key: (value[:-13], int(value[-12:])) for key, value in rows}
+    observations = {key: (value[:-13], int(value[-12:])) for key, value in rows}
+    odd = [when for when, _ in observations.values() if not UNIFORM_INSTANT.fullmatch(when)]
+    if odd:
+        # The minimum is taken over text, which equals instant order only for this form.
+        raise ValueError(f"non-uniform source timestamp format: {odd[:3]}")
+    return observations
 
 
 def entity_manifest(bundle: Path, source: Path) -> dict:
@@ -495,7 +505,8 @@ def _entry(document: dict) -> dict:
     }
 
 
-def _write_once(path: Path, payload: bytes) -> None:
+def write_once(path: Path, payload: bytes) -> None:
+    """Create `path` with `payload`; an identical file is a no-op, a different one refused."""
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         with path.open("xb") as handle:
@@ -586,7 +597,7 @@ def publish(
     for manifest in manifests:
         payload = canonical_json(manifest)
         path = Path(output_dir) / "manifests" / f"{manifest['population']}-{mode}.json"
-        _write_once(path, payload)
+        write_once(path, payload)
         written.append(
             {
                 "population": manifest["population"],

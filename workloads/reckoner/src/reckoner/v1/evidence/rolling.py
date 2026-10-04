@@ -11,6 +11,7 @@ is one transaction, so coverage never claims rows that are absent.
 import json
 import shutil
 import sqlite3
+import sys
 from datetime import timedelta
 from pathlib import Path
 from time import perf_counter
@@ -27,11 +28,20 @@ from reckoner.v1.contracts import validate_v1
 from reckoner.v1.data.history import POLICY, historical_resolution, instant
 from reckoner.v1.evidence.assemble import query_transaction
 from reckoner.v1.evidence.postgres import PostgresEvidence
-from reckoner.v1.evidence.preparation import TENANTS, day_start, iso, window
+from reckoner.v1.evidence.preparation import (
+    TENANTS,
+    UNIFORM_INSTANT,
+    day_start,
+    iso,
+    window,
+)
 
 WS_PREFIX = "reckoner_ws_"
 WS_COMMENT = "reckoner-evidence-working-set:"
 RUNTIME_ROLE = "reckoner_runner"
+# A hung statement fails instead of blocking a run. Measured worst case is about 9 s for a
+# whole case (several statements); ten minutes per statement is far above it.
+STATEMENT_TIMEOUT_MS = 600_000
 DAY = timedelta(days=1)
 
 
@@ -46,9 +56,20 @@ def with_database(dsn: str, database: str) -> str:
 
 
 def runtime_dsn(dsn: str) -> str:
+    """Runner role plus a generous statement timeout, through libpq options."""
     from reckoner.v1.benchmark.steps import runtime_conninfo
 
-    return runtime_conninfo(dsn, RUNTIME_ROLE)
+    values = conninfo_to_dict(runtime_conninfo(dsn, RUNTIME_ROLE))
+    values["options"] = f"{values['options']} -c statement_timeout={STATEMENT_TIMEOUT_MS}"
+    return make_conninfo(**values)
+
+
+def progress(message: str) -> None:
+    """Timestamped, flushed progress line on stderr (also from assembly children)."""
+    from datetime import UTC, datetime
+
+    stamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    print(f"{stamp} {message}", file=sys.stderr, flush=True)
 
 
 def _comment(connection, name):
@@ -66,6 +87,9 @@ def ensure_working_set(owner_dsn: str, preparation_id: str) -> str:
         found = _comment(connection, name)
         if found is None:
             connection.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(name)))
+        if found is None or found[0] is None:
+            # A crash between CREATE DATABASE and COMMENT leaves this exact name uncommented;
+            # only this preparation's derived name is ever adopted.
             connection.execute(
                 sql.SQL("COMMENT ON DATABASE {} IS {}").format(
                     sql.Identifier(name), sql.Literal(WS_COMMENT + preparation_id)
@@ -99,31 +123,62 @@ def drop_working_set(owner_dsn: str, preparation_id: str, name: str | None = Non
     return {"dropped": name, "comment": WS_COMMENT + preparation_id}
 
 
+class ChildDied(RuntimeError):
+    """The assembly child exited without a result (for example an out-of-memory kill)."""
+
+
 def isolated(function, *args):
     """Run one call in a freshly spawned process and return its result.
 
     Assembly reads full neighbour and resolution documents, a transient of several hundred
     megabytes per day, and a long-lived process retains about 2.5 MB of native memory per
     assembled case. A child that exits returns all of it, so a multi-day pass stays flat.
+    A child that dies (a cgroup OOM kill is SIGKILL) fails the call at once; a worker pool
+    would silently replace it and wait forever.
     """
     import multiprocessing
+    from concurrent.futures import ProcessPoolExecutor
+    from concurrent.futures.process import BrokenProcessPool
 
-    with multiprocessing.get_context("spawn").Pool(1) as pool:
-        return pool.apply(function, args)
+    context = multiprocessing.get_context("spawn")
+    with ProcessPoolExecutor(max_workers=1, mp_context=context) as pool:
+        try:
+            return pool.submit(function, *args).result()
+        except BrokenProcessPool as error:
+            raise ChildDied(
+                "assembly child process died before returning (for example an out-of-memory "
+                "kill); nothing for this day was persisted"
+            ) from error
 
 
 def relational_documents(runner_dsn: str, transactions, config) -> list[dict]:
     relational = PostgresEvidence(runner_dsn)
-    return [relational.for_task({"transaction": tx}, config) for tx in transactions]
+    documents = []
+    for number, tx in enumerate(transactions, start=1):
+        documents.append(relational.for_task({"transaction": tx}, config))
+        progress(f"assembled relational case {number}/{len(transactions)}")
+    return documents
 
 
 class StoreGuard:
     """In-band check run before every commit: free disk floor and cluster byte budget."""
 
-    def __init__(self, *, free_path, free_floor_bytes=FREE_FLOOR, max_store_bytes=None):
+    def __init__(
+        self,
+        *,
+        free_path,
+        free_floor_bytes=FREE_FLOOR,
+        max_store_bytes=None,
+        vm_free_path=None,
+        vm_free_floor_bytes=FREE_FLOOR,
+    ):
+        """`free_path` is a host bind (APFS); `vm_free_path` is the job container's own
+        filesystem, on the Docker Desktop VM disk where the store volumes live."""
         self.free_path = Path(free_path)
         self.free_floor_bytes = free_floor_bytes
         self.max_store_bytes = max_store_bytes
+        self.vm_free_path = Path(vm_free_path) if vm_free_path else None
+        self.vm_free_floor_bytes = vm_free_floor_bytes
 
     def __call__(self, connection=None) -> dict:
         record = {
@@ -140,6 +195,13 @@ class StoreGuard:
             )
             if self.max_store_bytes is not None and databases + wal > self.max_store_bytes:
                 raise ResourceGuardError(f"store byte budget exceeded: {json.dumps(record)}")
+        if self.vm_free_path is not None:
+            record.update(
+                vm_free_bytes=shutil.disk_usage(self.vm_free_path).free,
+                vm_free_floor_bytes=self.vm_free_floor_bytes,
+            )
+            if record["vm_free_bytes"] < self.vm_free_floor_bytes:
+                raise ResourceGuardError(f"VM free disk below floor: {json.dumps(record)}")
         if record["free_bytes"] < self.free_floor_bytes:
             raise ResourceGuardError(f"free disk below floor: {json.dumps(record)}")
         return record
@@ -157,6 +219,12 @@ class SourceDays:
     def close(self):
         self.labels.close()
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.close()
+
     def resolution(self, tx: dict) -> dict:
         row = self.labels.execute(
             "SELECT label FROM resolutions WHERE source_record=?",
@@ -167,13 +235,24 @@ class SourceDays:
         return historical_resolution(tx, row[0], POLICY)
 
     def records(self, start, end) -> list[tuple[dict, dict]]:
-        ordinals = self.history.connection.execute(
-            "SELECT source_record FROM history WHERE occurred_at>=? AND occurred_at<? "
-            "ORDER BY occurred_at, source_record",
+        # Day ranges compare text, which equals instant order only for one uniform form.
+        rows = self.history.connection.execute(
+            "SELECT source_record, occurred_at FROM history WHERE occurred_at>=? "
+            "AND occurred_at<? ORDER BY occurred_at, source_record",
             (iso(start), iso(end)),
         ).fetchall()
+        odd = [stamp for _, stamp in rows if not UNIFORM_INSTANT.fullmatch(stamp)]
+        if (
+            odd
+            or self.history.connection.execute(
+                "SELECT 1 FROM history WHERE occurred_at>=? AND occurred_at<? "
+                "AND length(occurred_at) <> 20 LIMIT 1",
+                (iso(start - DAY), iso(end + DAY)),
+            ).fetchone()
+        ):
+            raise ValueError(f"non-uniform source timestamp format near {iso(start)}: {odd[:3]}")
         pairs = []
-        for (ordinal,) in ordinals:
+        for ordinal, _ in rows:
             tx = self.history.transaction(ordinal)
             pairs.append((tx, self.resolution(tx)))
         return pairs
@@ -401,7 +480,9 @@ class RollingStore:
             stats = self._write(connection, pairs)
             for tenant in self.tenants:
                 moved = connection.execute(
-                    "INSERT INTO reckoner.v1_evidence_coverage AS c VALUES (%s,%s,%s,true,%s) "
+                    "INSERT INTO reckoner.v1_evidence_coverage AS c (tenant_id, history_from, "
+                    "history_until, previous_card_complete, source_snapshot_id) "
+                    "VALUES (%s,%s,%s,true,%s) "
                     "ON CONFLICT (tenant_id) DO UPDATE SET history_until=EXCLUDED.history_until "
                     "WHERE c.history_until=%s AND c.source_snapshot_id=EXCLUDED.source_snapshot_id "
                     "AND c.previous_card_complete RETURNING tenant_id",
@@ -412,7 +493,7 @@ class RollingStore:
             guard = self.guard(connection)
         return {"day": iso(start), "read_seconds": read, **stats, "guard": guard}
 
-    def advance_to(self, day: str) -> list[dict]:
+    def advance_to(self, day: str, progress=None) -> list[dict]:
         target = day_start(day) + DAY
         coverage = self.coverage()
         if coverage:
@@ -425,6 +506,8 @@ class RollingStore:
         imported = []
         while cursor < target:
             imported.append(self.import_day(cursor))
+            if progress:
+                progress(f"imported source day {iso(cursor)[:10]}: {imported[-1]['rows']} rows")
             cursor += DAY
         return imported
 
@@ -511,8 +594,10 @@ class RollingStore:
                 )
 
     def evidence(self, transactions, config) -> list[dict]:
-        # A query evicted with its day must still assemble, as explicitly unavailable.
+        # A query evicted with its day must still assemble, as explicitly unavailable, and a
+        # previous-card row outside the window is imported first (not left to the caller).
         import_queries(self.owner_dsn, transactions)
+        self.previous = self.import_previous_cards(transactions)
         return isolated(relational_documents, self.runner_dsn, transactions, config)
 
 
@@ -520,7 +605,8 @@ class RollingStore:
 
 
 def import_queries(owner_dsn: str, transactions) -> int:
-    """Owner import of query documents into the operational database, conflict-checked."""
+    """Owner import of canonical query documents into the database `owner_dsn` names
+    (operational or working set), refusing any conflicting stored document."""
     with psycopg.connect(owner_dsn) as connection:
         inserted = 0
         for tx in transactions:
@@ -548,17 +634,21 @@ def persist_documents(runner_dsn: str, documents) -> list[str]:
 
 SUMMARY_SQL = """
 SELECT jsonb_build_object(
-  'tenant_id', tenant_id, 'transaction_id', transaction_id, 'evidence_id', evidence_id,
-  'coverage', document->'coverage', 'source_snapshot_ids', document->'source_snapshot_ids',
-  'graph_projection', CASE WHEN document->'graph_projection' IS NULL THEN NULL ELSE
+  'tenant_id', e.tenant_id, 'transaction_id', e.transaction_id, 'evidence_id', e.evidence_id,
+  'coverage', d.coverage, 'source_snapshot_ids', d.source_snapshot_ids,
+  'graph_projection', CASE WHEN d.graph_projection IS NULL THEN NULL ELSE
     jsonb_build_object(
-      'cutoff', document->'graph_projection'->'cutoff',
-      'projection_id', document->'graph_projection'->'projection_id',
-      'page_rank_converged', document->'graph_projection'->'page_rank_converged',
-      'snapshot_age_seconds', document->'graph_projection'->'snapshot_age_seconds') END,
-  'bytes', pg_column_size(document))
-FROM reckoner.v1_evidence WHERE document->'source_snapshot_ids'->>'postgres' = %s
-ORDER BY tenant_id, transaction_id, evidence_id
+      'cutoff', d.graph_projection->'cutoff',
+      'projection_id', d.graph_projection->'projection_id',
+      'page_rank_converged', d.graph_projection->'page_rank_converged',
+      'snapshot_age_seconds', d.graph_projection->'snapshot_age_seconds') END,
+  'bytes', pg_column_size(e.document))
+FROM reckoner.v1_evidence e
+-- One decompression per document: the needed top-level fields are extracted once.
+CROSS JOIN LATERAL jsonb_to_record(e.document)
+  AS d(coverage jsonb, source_snapshot_ids jsonb, graph_projection jsonb)
+WHERE d.source_snapshot_ids->>'postgres' = %s
+ORDER BY e.tenant_id, e.transaction_id, e.evidence_id
 """
 
 

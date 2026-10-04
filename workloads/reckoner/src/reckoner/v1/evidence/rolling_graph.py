@@ -289,7 +289,7 @@ class RollingGraph:
             "guard": guard,
         }
 
-    def advance_to(self, day: str, source) -> list[dict]:
+    def advance_to(self, day: str, source, progress=None) -> list[dict]:
         target = day_start(day) + DAY
         coverage = self.coverage()
         if coverage:
@@ -305,6 +305,8 @@ class RollingGraph:
             pairs = source.records(cursor, cursor + DAY)
             read = perf_counter() - started
             imported.append({**self.import_day(cursor, pairs), "read_seconds": read})
+            if progress:
+                progress(f"imported graph source day {iso(cursor)[:10]}: {len(pairs)} rows")
             cursor += DAY
         return imported
 
@@ -477,6 +479,12 @@ def gds_documents(neo4j, runner_dsn, manifests, transactions, config) -> list[di
 
     uri, user, password = neo4j
     driver = GraphDatabase.driver(uri, auth=(user, password), warn_notification_severity="OFF")
+    from reckoner.v1.evidence.rolling import progress
+
     with driver:
         base, graph = PersistedRelational(runner_dsn, manifests), Neo4jEvidence(driver)
-        return [assemble_evidence({"transaction": tx}, config, base, graph) for tx in transactions]
+        documents = []
+        for number, tx in enumerate(transactions, start=1):
+            documents.append(assemble_evidence({"transaction": tx}, config, base, graph))
+            progress(f"assembled gds-augmented case {number}/{len(transactions)}")
+        return documents

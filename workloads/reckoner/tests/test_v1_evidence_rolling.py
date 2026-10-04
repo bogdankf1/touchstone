@@ -276,13 +276,13 @@ def test_previous_card_row_outside_the_window_is_imported_before_assembly(stores
     query = card_one_query(store)
     store.advance_to("2017-07-20")
     store.evict_before(window("2017-07-20")[0])
-    missing = store.evidence([query], config())[0]
-    assert missing["features"]["seconds_since_previous"] is None
-    imported = store.import_previous_cards([query])
-    assert imported["rows"] == 1
+    # The store itself imports the out-of-window previous-card row before assembly.
     document = store.evidence([query], config())[0]
+    assert store.previous["rows"] == 1
     assert document["features"]["seconds_since_previous"] == str(float(169 * 86400))
     assert document["coverage"]["status"] == "available"
+    again = store.evidence([query], config())[0]
+    assert again == document
 
 
 def test_in_band_budget_or_free_floor_breach_stops_before_commit(stores, tmp_path):
@@ -302,9 +302,15 @@ def test_in_band_budget_or_free_floor_breach_stops_before_commit(stores, tmp_pat
 
 
 def test_runner_identity_has_no_oracle_usage(stores):
-    identity = stores().runtime_identity()
+    from reckoner.v1.evidence.rolling import STATEMENT_TIMEOUT_MS
+
+    store = stores()
+    identity = store.runtime_identity()
     assert identity["current_user"] == "reckoner_runner"
     assert identity["oracle_usage"] is False
+    with psycopg.connect(store.runner_dsn) as connection:
+        timeout = connection.execute("SHOW statement_timeout").fetchone()[0]
+    assert timeout == f"{STATEMENT_TIMEOUT_MS // 60000}min"
 
 
 def test_drop_working_set_refuses_a_database_without_this_preparations_comment(pg):
@@ -321,8 +327,13 @@ def test_drop_working_set_refuses_a_database_without_this_preparations_comment(p
         try:
             with pytest.raises(ValueError, match="refusing"):
                 drop_working_set(pg.owner_dsn, preparation)
-            with pytest.raises(ValueError, match="refusing"):
-                ensure_working_set(pg.owner_dsn, preparation)
+            # A crash between CREATE DATABASE and COMMENT: this exact name is adopted.
+            ensure_working_set(pg.owner_dsn, preparation)
+            comment = connection.execute(
+                "SELECT shobj_description(oid, 'pg_database') FROM pg_database WHERE datname=%s",
+                (name,),
+            ).fetchone()[0]
+            assert comment == "reckoner-evidence-working-set:" + preparation
             connection.execute(
                 sql.SQL("COMMENT ON DATABASE {} IS 'reckoner-evidence-working-set:other'").format(
                     sql.Identifier(name)
@@ -464,7 +475,7 @@ def _drop_database(pg, name):
 
 
 def test_crash_before_persist_resumes_to_identical_evidence_without_duplicates(
-    inputs, pg, tmp_path, monkeypatch
+    inputs, pg, tmp_path, monkeypatch, capfd
 ):
     from reckoner.v1.evidence import rolling
     from reckoner.v1.evidence.rolling import drop_working_set
@@ -503,6 +514,14 @@ def test_crash_before_persist_resumes_to_identical_evidence_without_duplicates(
                 run_step(drop)  # never terminates a concurrent run's working set
         assert _evidence(pg.owner_dsn)
         assert result["complete_days"] == 2 and result["reconstructed_receipts"] == 2
+        log = capfd.readouterr().err
+        for line in (
+            "start relational 2017-01-",
+            "imported source day 2016-09-26",
+            "assembled relational case 1/",
+            "evidence run failed: RuntimeError",
+        ):
+            assert line in log, line
         resumed = _evidence(pg.owner_dsn)
         keys = [(t, x) for t, x, _ in resumed]
         assert len(keys) == len(set(keys))

@@ -6,6 +6,7 @@ All data is a small fabricated simulated source prepared by the real `prepare_v1
 import csv
 import json
 from datetime import date, timedelta
+from pathlib import Path
 
 import pytest
 from reckoner.contracts import content_id
@@ -945,3 +946,125 @@ def test_cli_free_floor_can_only_be_raised(value, accepted):
         with pytest.raises(SystemExit):
             _parser().parse_args(arguments)
     assert _parser().parse_args(arguments[:-2]).free_floor_bytes == 15 * 1024**3
+
+
+def test_isolated_raises_promptly_when_the_child_is_killed():
+    """A cgroup OOM kill of the assembly child must fail the run, never hang it."""
+    import signal
+    import time
+
+    from reckoner.v1.evidence.rolling import isolated
+
+    started = time.monotonic()
+    with pytest.raises(RuntimeError, match="assembly child process died"):
+        isolated(signal.raise_signal, signal.SIGKILL)
+    assert time.monotonic() - started < 60
+
+
+def test_preparation_fault_survives_pickling_across_processes():
+    import pickle
+
+    from reckoner.v1.evidence.preparation import PreparationFault
+
+    fault = PreparationFault("2018-03-15", [{"transaction_id": "q", "reasons": ["x"]}])
+    copy = pickle.loads(pickle.dumps(fault))
+    assert (copy.day, copy.failures, str(copy)) == (fault.day, fault.failures, str(fault))
+
+
+def test_store_guard_also_checks_the_container_vm_filesystem(tmp_path):
+    from reckoner.v1.benchmark.resources import ResourceGuardError
+    from reckoner.v1.evidence.rolling import StoreGuard
+
+    record = StoreGuard(
+        free_path=tmp_path, free_floor_bytes=0, vm_free_path=tmp_path, vm_free_floor_bytes=0
+    )()
+    assert record["vm_free_bytes"] > 0 and record["vm_free_floor_bytes"] == 0
+    with pytest.raises(ResourceGuardError, match="VM"):
+        StoreGuard(
+            free_path=tmp_path,
+            free_floor_bytes=0,
+            vm_free_path=tmp_path,
+            vm_free_floor_bytes=10**18,
+        )()
+
+
+def test_cli_vm_free_floor_defaults_to_the_hard_floor_and_can_only_be_raised():
+    from reckoner.cli import _parser
+
+    base = [
+        "v1",
+        "evidence",
+        "run",
+        "--declaration",
+        "d",
+        "--pass",
+        "relational",
+        "--through",
+        "2017-01-31",
+        "--env-file",
+        "-",
+    ]
+    args = _parser().parse_args(base)
+    assert (args.vm_free_path, args.vm_free_floor_bytes) == (Path("/"), 15 * 1024**3)
+    with pytest.raises(SystemExit):
+        _parser().parse_args([*base, "--vm-free-floor-bytes", "1"])
+
+
+def test_assembly_connections_carry_a_generous_statement_timeout():
+    from psycopg.conninfo import conninfo_to_dict
+    from reckoner.v1.evidence.rolling import STATEMENT_TIMEOUT_MS, runtime_dsn
+
+    options = conninfo_to_dict(runtime_dsn("postgresql://u:p@h/db"))["options"]
+    assert "-c role=reckoner_runner" in options
+    assert f"-c statement_timeout={STATEMENT_TIMEOUT_MS}" in options
+    assert STATEMENT_TIMEOUT_MS >= 600_000  # far above the measured worst case (≈9 s/case)
+
+
+def _history_db(path, stamps):
+    import sqlite3
+
+    with sqlite3.connect(path) as db:
+        db.execute(
+            "CREATE TABLE history(source_record INTEGER PRIMARY KEY, occurred_at TEXT, "
+            "card_key INTEGER, account_key INTEGER, merchant_key INTEGER)"
+        )
+        db.executemany("INSERT INTO history VALUES (?,?,1,1,1)", enumerate(stamps, start=1))
+    return sqlite3.connect(path)
+
+
+def test_day_ranges_refuse_timestamps_that_do_not_compare_as_instants(tmp_path):
+    """Day selection compares text; only the uniform `YYYY-MM-DDTHH:MM:SSZ` form is safe."""
+    import sqlite3
+    from datetime import UTC, datetime
+
+    from reckoner.v1.evidence.preparation import _first_observations
+    from reckoner.v1.evidence.rolling import SourceDays
+
+    with sqlite3.connect(tmp_path / "resolutions.sqlite") as db:
+        db.execute("CREATE TABLE resolutions(source_record INTEGER PRIMARY KEY, label TEXT)")
+
+    class History:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def transaction(self, ordinal):
+            raise AssertionError("rows must be refused before they are read")
+
+    start = datetime(2017, 1, 1, tzinfo=UTC)
+    bad = _history_db(tmp_path / "bad.sqlite", ["2017-01-01T10:00:00.5Z"])
+    with pytest.raises(ValueError, match="timestamp"):
+        SourceDays(History(bad), tmp_path).records(start, start + timedelta(days=1))
+    with pytest.raises(ValueError, match="timestamp"):
+        _first_observations(bad, "card_key")
+    good = _history_db(tmp_path / "good.sqlite", ["2017-01-01T10:00:00Z"])
+    assert _first_observations(good, "card_key") == {1: ("2017-01-01T10:00:00Z", 1)}
+
+
+def test_progress_lines_are_timestamped_and_flushed(capsys):
+    import re
+
+    from reckoner.v1.evidence.steps import _log
+
+    _log("start 2017-01-01 (4 cases)")
+    line = capsys.readouterr().err
+    assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ start 2017-01-01 \(4 cases\)\n", line)
