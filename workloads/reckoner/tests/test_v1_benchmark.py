@@ -1219,3 +1219,57 @@ def test_audit_adds_declared_store_bytes_to_the_derived_total(tmp_path, monkeypa
         ]
     )
     assert parsed.store_bytes == ["preserved-phase3=1"]
+
+
+def test_audit_counts_stopped_instance_volumes_by_name_prefix(tmp_path, monkeypatch):
+    """A stopped or removed container no longer mounts its volume; the volume still counts."""
+    import json
+    from argparse import Namespace
+
+    from reckoner.v1.benchmark import steps
+
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    instance = "touchstone-phase3-v1-evidence"
+    listing = "\n".join(
+        [
+            f"{instance}-postgres",
+            f"{instance}-neo4j",
+            "touchstone-phase3-task3_task3-postgres",
+            f"x-{instance}-postgres",
+        ]
+    )
+    monkeypatch.setattr(
+        steps, "_docker", lambda *command: listing if command[:2] == ("volume", "ls") else ""
+    )
+    measured = {}
+
+    def sizes(volumes, image):
+        measured.update(volumes)
+        return {name: 100 for name in volumes}
+
+    monkeypatch.setattr(steps, "volume_bytes", sizes)
+
+    def audit(label, *prefixes):
+        return steps._audit(
+            Namespace(
+                output_dir=tmp_path,
+                artifact_root=artifacts,
+                container_prefix="p",
+                du_image="i",
+                label=label,
+                cgroup_container=[],
+                free_floor_bytes=0,
+                derived_cap_bytes=10**12,
+                store_bytes=[],
+                volume_prefix=list(prefixes),
+            )
+        )
+
+    assert audit("a", instance + "-")["total_derived_bytes"] == 200
+    assert sorted(measured) == [f"{instance}-neo4j", f"{instance}-postgres"]
+    record = json.loads((tmp_path / "resource-reconciliation-a.json").read_text())
+    assert sorted(record["volume_bytes"]) == sorted(measured)
+    for prefix in ("touchstone-phase3-task3_", "touchstone-", ""):
+        with pytest.raises(ValueError, match="instance"):
+            audit("b", prefix)

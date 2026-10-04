@@ -414,7 +414,18 @@ def _audit(args):
         "ps", "-a", "--filter", "name=" + args.container_prefix, "--format", "{{.Names}}"
     ).splitlines()
     inspected = json.loads(_docker("inspect", *names)) if names else []
-    volumes = sorted({m["Name"] for c in inspected for m in c["Mounts"] if m["Type"] == "volume"})
+    volumes = {m["Name"] for c in inspected for m in c["Mounts"] if m["Type"] == "volume"}
+    # A stopped or removed container no longer mounts its volume; count the instance's
+    # volumes by exact name prefix too. Only a v1 instance prefix is accepted, so no
+    # preserved store can ever be attached by this read-only measurement.
+    prefixes = getattr(args, "volume_prefix", None) or []
+    for prefix in prefixes:
+        if not re.fullmatch(r"touchstone-phase3-v1-[a-z0-9][a-z0-9-]{2,30}-", prefix):
+            raise ValueError(f"volume prefix must name one v1 instance, got {prefix!r}")
+    if prefixes:
+        listed = _docker("volume", "ls", "--format", "{{.Name}}").splitlines()
+        volumes |= {v for v in listed if any(v.startswith(p) for p in prefixes)}
+    volumes = sorted(volumes)
     measured = volume_bytes({v: v for v in volumes}, args.du_image) if volumes else {}
     # Declared sizes (e.g. preserved stores and images measured once at stage start) count
     # toward the derived total; they are recorded separately from measured volumes.
@@ -556,6 +567,7 @@ def register(subcommands):
     audit.add_argument("--label", required=True)
     audit.add_argument("--cgroup-container", action="append", default=[], metavar="NAME=CONTAINER")
     audit.add_argument("--store-bytes", action="append", default=[], metavar="NAME=BYTES")
+    audit.add_argument("--volume-prefix", action="append", default=[], metavar="INSTANCE-")
     limits(audit)
     report = steps.add_parser("report")
     for name in ("--protocol", "--observation", "--oracle-labels", "--annotations", "--output"):
