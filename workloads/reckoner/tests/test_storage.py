@@ -230,7 +230,7 @@ def test_readiness_uses_the_migration_list_computed_once_at_import(monkeypatch):
 
     import reckoner.storage.postgres as postgres
 
-    assert postgres.PACKAGED_MIGRATIONS[-1].startswith("017_")
+    assert postgres.PACKAGED_MIGRATIONS[-1].startswith("018_")
 
     def no_glob(*args, **kwargs):
         raise AssertionError("readiness must not scan the migration directory per probe")

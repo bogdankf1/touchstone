@@ -315,6 +315,8 @@ def owner_settle(owner_dsn, call_id, usage, cost):
                             "call_id": call_id,
                             "source_kind": "fabricated-test-fixture",
                             "document_sha256": "e" * 64,
+                            "usage": usage,
+                            "cost": format(cost.normalize(), "f"),
                         }
                     ),
                 ),

@@ -2114,3 +2114,37 @@ def test_provider_models_come_from_the_single_pricing_source():
 
     assert budget.PROVIDERS == {p: e["model"] for p, e in pricing.PUBLISHED.items()}
     assert '"jev-1.13.0"' not in inspect.getsource(budget)
+
+
+@pytest.mark.integration
+def test_settlement_guard_resists_pg_roles_shadowing_and_binds_evidence_amounts(pg):
+    from psycopg.types.json import Jsonb
+    from v1_fixtures import owner_settle
+
+    repo, task, evidence, p, attempts, _ = scored(pg, attempts=3)
+    authorize(pg.owner_dsn, p)
+    usage = {"input_tokens": 10, "output_tokens": 0}
+    with repo:
+        ledger = ProviderBudget(repo._connection)
+        for name in ("shadowed", "mismatched"):
+            ledger.reserve(call(task, p, name), Decimal(".000084"), p)
+            ledger.settle(name, None, None)
+        # A runner-created temporary pg_roles claiming superuser must not be consulted.
+        repo._connection.execute("CREATE TEMP TABLE pg_roles (rolname name, rolsuper boolean)")
+        repo._connection.execute("INSERT INTO pg_roles VALUES (current_user, true)")
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            ledger.settle("shadowed", usage, Decimal("0.00000042"))
+    with psycopg.connect(pg.owner_dsn, autocommit=True) as owner:
+        with pytest.raises(psycopg.errors.CheckViolation, match="evidence"):
+            with owner.transaction():
+                owner.execute(
+                    "INSERT INTO reckoner.v1_settlement_evidence (tenant_id, call_id, document) "
+                    "VALUES (%s,'mismatched',%s)",
+                    (task["tenant_id"], Jsonb({
+                        "call_id": "mismatched", "document_sha256": "e" * 64,
+                        "usage": {"input_tokens": 99, "output_tokens": 0},
+                        "cost": "0.000004158",
+                    })),
+                )  # fmt: skip
+                ProviderBudget(owner).settle("mismatched", usage, Decimal("0.00000042"))
+    owner_settle(pg.owner_dsn, "mismatched", usage, Decimal("0.00000042"))
