@@ -349,8 +349,22 @@ def reconcile_entity_manifest(ours: dict, prior: dict) -> dict:
 # --- missing-reason policy --------------------------------------------------------
 
 
-def check_documents(day: str, items) -> dict:
-    """Persist only when every reason is data-intrinsic; otherwise fail the whole day."""
+def first_observations(manifest: dict) -> dict:
+    """(tenant_id, card_id) -> full-history first observation, from the entity manifest."""
+    return {
+        (e["tenant_id"], e["identity"]): e["first_observed_at"]
+        for e in manifest["entities"]
+        if e["kind"] == "card"
+    }
+
+
+def check_documents(day: str, items, *, first_observed=None) -> dict:
+    """Persist only when every reason is data-intrinsic; otherwise fail the whole day.
+
+    `query card absent from GDS projection` is intrinsic only when the entity manifest shows
+    the card first observed at or after the projection cutoff; missing or partial metric
+    nodes for an older card are a preparation fault.
+    """
     failures, intrinsic, statuses = [], Counter(), Counter()
     boundary = iso(day_start(day))
     for case, mode, document in items:
@@ -358,6 +372,13 @@ def check_documents(day: str, items) -> dict:
         reasons = list(coverage["missing"])
         allowed = INTRINSIC if mode == "gds-augmented" else frozenset()
         faults = [reason for reason in reasons if reason not in allowed]
+        if mode == "gds-augmented" and "query card absent from GDS projection" in reasons:
+            card = (case["tenant_id"], (case.get("transaction") or {}).get("card_id"))
+            first = (first_observed or {}).get(card)
+            if first is None or instant(first) < day_start(day):
+                faults.insert(
+                    0, "query card absent but first observed before the projection cutoff"
+                )
         if coverage["status"] == "unavailable" and not faults:
             faults.append("coverage unavailable")
         projection = document.get("graph_projection")
@@ -485,9 +506,34 @@ def _write_once(path: Path, payload: bytes) -> None:
             raise FileExistsError(f"refusing to overwrite a different manifest: {path}") from None
 
 
-def build_manifests(declaration, schedule, documents, *, mode) -> list[dict]:
+def _selected(declaration, cases, populations) -> set:
+    """Requested populations; the pilot always follows its development parent."""
+    declared = {c["population"] for c in cases} | (
+        {"pilot"} if any(c["pilot"] for c in cases) else set()
+    )
+    chosen = set(declared if populations is None else populations)
+    unknown = chosen - declared
+    if unknown:
+        raise ValueError(f"refusing to publish undeclared populations {sorted(unknown)}")
+    for name in list(chosen):
+        parent = declaration["populations"].get(name, {}).get("parent")
+        if parent:
+            chosen.add(parent)
+    if "development" in chosen and "pilot" in declared:
+        chosen.add("pilot")
+    return chosen
+
+
+def build_manifests(declaration, schedule, documents, *, mode, populations=None) -> list[dict]:
+    """Manifests for complete populations; a partial requested population is refused.
+
+    Each manifest depends only on its own cases, so publishing a later population never
+    changes an earlier one. Extra or duplicate documents are refused whatever is requested.
+    """
     snapshot = declaration["source_snapshot_id"]
-    cases = [c for entry in schedule for c in entry["cases"] if mode in c["modes"]]
+    every = [c for entry in schedule for c in entry["cases"] if mode in c["modes"]]
+    chosen = _selected(declaration, every, populations)
+    cases = [c for c in every if c["population"] in chosen]
     keyed = defaultdict(list)
     for document in documents:
         if document_mode(document) == mode and (
@@ -496,7 +542,7 @@ def build_manifests(declaration, schedule, documents, *, mode) -> list[dict]:
             keyed[(document["tenant_id"], document["transaction_id"])].append(document)
     expected = {(c["tenant_id"], c["transaction_id"]) for c in cases}
     missing = sorted(expected - set(keyed))
-    extra = sorted(set(keyed) - expected)
+    extra = sorted(set(keyed) - {(c["tenant_id"], c["transaction_id"]) for c in every})
     duplicate = sorted(k for k, v in keyed.items() if len({d["evidence_id"] for d in v}) > 1)
     for problem, keys in (("missing", missing), ("extra", extra), ("duplicate", duplicate)):
         if keys:
@@ -505,7 +551,7 @@ def build_manifests(declaration, schedule, documents, *, mode) -> list[dict]:
     groups = defaultdict(list)
     for case in cases:
         groups[case["population"]].append(case)
-        if case["pilot"]:
+        if case["pilot"] and "pilot" in chosen:
             groups["pilot"].append(case)
     for population in sorted(groups):
         members = sorted(groups[population], key=lambda c: (c["tenant_id"], c["transaction_id"]))
@@ -527,12 +573,16 @@ def build_manifests(declaration, schedule, documents, *, mode) -> list[dict]:
     return manifests
 
 
-def publish(declaration, schedule, documents, output_dir: Path, *, mode) -> list[dict]:
+def publish(
+    declaration, schedule, documents, output_dir: Path, *, mode, populations=None
+) -> list[dict]:
     """Content-addressed manifests; every expected case exactly once, never overwritten."""
     import hashlib
 
     written = []
-    manifests = build_manifests(declaration, schedule, documents, mode=mode)
+    manifests = build_manifests(
+        declaration, schedule, documents, mode=mode, populations=populations
+    )
     for manifest in manifests:
         payload = canonical_json(manifest)
         path = Path(output_dir) / "manifests" / f"{manifest['population']}-{mode}.json"
@@ -548,3 +598,30 @@ def publish(declaration, schedule, documents, output_dir: Path, *, mode) -> list
             }
         )
     return written
+
+
+def stage_summary(documents, *, mode) -> dict:
+    """Coverage, missing reasons, PageRank convergence and snapshot ages for one mode."""
+    from decimal import Decimal
+
+    chosen = [d for d in documents if document_mode(d) == mode]
+    projections = [d["graph_projection"] for d in chosen if d.get("graph_projection")]
+    ages = sorted((p["snapshot_age_seconds"] for p in projections), key=Decimal)
+    return {
+        "mode": mode,
+        "documents": len(chosen),
+        "statuses": dict(sorted(Counter(d["coverage"]["status"] for d in chosen).items())),
+        "missing": dict(
+            sorted(Counter(r for d in chosen for r in d["coverage"]["missing"]).items())
+        ),
+        "projections": len({p["projection_id"] for p in projections}),
+        "page_rank_converged": sum(p["page_rank_converged"] is True for p in projections),
+        "page_rank_non_converged": sum(p["page_rank_converged"] is False for p in projections),
+        "snapshot_age_seconds": {
+            "min": ages[0],
+            "median": ages[(len(ages) - 1) // 2],
+            "max": ages[-1],
+        }
+        if ages
+        else None,
+    }

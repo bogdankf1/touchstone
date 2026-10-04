@@ -388,8 +388,18 @@ class RollingGraph:
                     cutoff=cutoff,
                 ).consume()
                 self._delete_metrics(session)
+        # In-band disk check before the projection receipts and GDSMetric nodes are written.
+        self.guard(None)
         receipt = Neo4jEvidence(self.driver).project(cutoff, self.tenants)
         return {**receipt, "action": action}
+
+    def receipt_for(self, day: str) -> dict | None:
+        """The kept receipt of a completed day (for reconstructing a lost local receipt)."""
+        with self.driver.session() as session:
+            receipts = self._receipts(session, iso(day_start(day)))
+        if len({r["projection_id"] for r in receipts}) != 1:
+            return None
+        return {k: v for k, v in receipts[0].items() if k != "tenant_id"}
 
     def release(self, projection_id: str) -> int:
         """Delete one day's GDSMetric nodes; the receipt nodes are kept."""

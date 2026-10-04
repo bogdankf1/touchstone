@@ -141,18 +141,65 @@ def test_seeded_links_survive_eviction_and_later_entities_stay_out_of_earlier_pr
         )
         == 0
     )
-    # The third card is first observed at 2018-03-15T10:00Z: absent from that day's
-    # projection inputs (node and ownership edge) and present one day later.
-    late = [
+
+
+def projected_degrees(driver, cutoff, keys):
+    """Degrees in the ACTUAL GDS projection built by `project.cypher` (then dropped)."""
+    from reckoner.v1.evidence.neo4j import CYPHER
+
+    name = "r1-test-" + uuid.uuid4().hex
+    with driver.session() as session:
+        session.run(
+            (CYPHER / "project.cypher").read_text(), name=name, cutoff=cutoff, tenants=list(TENANTS)
+        ).consume()
+        try:
+            return {
+                row["key"]: row["degree"]
+                for row in session.run(
+                    "CALL gds.degree.stream($name) YIELD nodeId, score "
+                    "WITH gds.util.asNode(nodeId) AS n, score WHERE n.key IN $keys "
+                    "RETURN n.key AS key, score AS degree",
+                    name=name,
+                    keys=keys,
+                )
+            }
+        finally:
+            session.run(
+                "CALL gds.graph.drop($name) YIELD graphName RETURN graphName", name=name
+            ).consume()
+
+
+def test_later_entities_and_links_stay_out_of_earlier_gds_projections(
+    evidence_graph, source, manifest
+):
+    """R1: seeded from full history, yet a projection admits only what preceded its cutoff."""
+    rolling = graph(evidence_graph)
+    rolling.seed(manifest)
+    roll(rolling, source, ["2018-03-16"])
+    (late,) = [
         e
         for e in manifest["entities"]
         if e["kind"] == "card" and e["first_observed_at"] == "2018-03-15T10:00:00Z"
     ]
-    assert len(late) == 1
-    on_day = rolling.edge_summary("2018-03-15T00:00:00Z")
-    next_day = rolling.edge_summary("2018-03-16T00:00:00Z")
-    assert next_day["nodes"]["card"] == on_day["nodes"]["card"] + 1
-    assert next_day["owns"] == on_day["owns"] + 1
+    on_day = projected_degrees(evidence_graph, "2018-03-15T00:00:00Z", [late["key"]])
+    next_day = projected_degrees(evidence_graph, "2018-03-16T00:00:00Z", [late["key"]])
+    assert late["key"] not in on_day  # neither the card nor its ownership edge
+    assert next_day[late["key"]] >= 1  # card present with at least its ownership edge
+    # Merchant 2001 is first observed in one tenant on 2018-02-01 and in the other on
+    # 2018-03-05T10:00Z, which is when their shared-identity link is first observed.
+    shared = content_id({"dataset": "cctd", "entity": "merchant", "source_merchant": "2001"})
+    early, later = sorted(
+        (e for e in manifest["entities"] if e.get("shared_identity") == shared),
+        key=lambda e: e["first_observed_at"],
+    )
+    assert early["tenant_id"] != later["tenant_id"]
+    assert later["first_observed_at"] == "2018-03-05T10:00:00Z"
+    before = projected_degrees(evidence_graph, "2018-03-05T00:00:00Z", [early["key"], later["key"]])
+    after = projected_degrees(evidence_graph, "2018-03-06T00:00:00Z", [early["key"], later["key"]])
+    # The early merchant's only transaction (2018-02-01) is outside both 30-day windows, so
+    # its degree is the shared link alone: absent before the link, one edge after it.
+    assert before == {early["key"]: 0.0}
+    assert after == {early["key"]: 1.0, later["key"]: 2.0}
 
 
 def test_metrics_are_released_after_the_day_and_receipts_are_kept(evidence_graph, source, manifest):
@@ -229,7 +276,12 @@ def test_gds_evidence_from_persisted_relational_equals_live_postgres(
     from reckoner.v1.evidence.assemble import assemble_evidence
     from reckoner.v1.evidence.neo4j import Neo4jEvidence
     from reckoner.v1.evidence.postgres import PostgresEvidence
-    from reckoner.v1.evidence.preparation import build_manifests, check_documents, window
+    from reckoner.v1.evidence.preparation import (
+        build_manifests,
+        check_documents,
+        first_observations,
+        window,
+    )
     from reckoner.v1.evidence.rolling import (
         PersistedRelational,
         RollingStore,
@@ -267,6 +319,7 @@ def test_gds_evidence_from_persisted_relational_equals_live_postgres(
                 "population": "validation",
                 "modes": ["relational", "gds-augmented"],
                 "pilot": False,
+                "transaction": tx,
             }
             for tx in queries
         ]
@@ -293,7 +346,9 @@ def test_gds_evidence_from_persisted_relational_equals_live_postgres(
         ]
         assert from_persisted == from_live
         summary = check_documents(
-            day, [(c, "gds-augmented", d) for c, d in zip(cases, from_persisted, strict=True)]
+            day,
+            [(c, "gds-augmented", d) for c, d in zip(cases, from_persisted, strict=True)],
+            first_observed=first_observations(manifest),
         )
         assert summary["intrinsic"] == {"query card absent from GDS projection": 1}
         by_id = {d["transaction_id"]: d for d in from_persisted}
@@ -366,7 +421,11 @@ def test_graph_pass_end_to_end_and_an_unreachable_graph_fails_the_day(
     def publish(name):
         return steps.run(
             Namespace(
-                evidence_step="publish", declaration=declaration, evidence_pass=name, env_file="-"
+                evidence_step="publish",
+                declaration=declaration,
+                evidence_pass=name,
+                population=None,
+                env_file="-",
             )
         )
 
@@ -380,12 +439,32 @@ def test_graph_pass_end_to_end_and_an_unreachable_graph_fails_the_day(
         ]
         result = graph_run(GRAPH_DAYS)
         assert result["processed_days"] == 3 and result["seed"]["seeded"]
+        assert result["runtime_identity"]["current_user"] == "reckoner_runner"
+        assert result["runtime_identity"]["oracle_usage"] is False
+        stage = result["stage"]
+        assert stage["documents"] == sum(
+            r["cases"]
+            for r in [json.loads(line) for line in (declaration.parent / "days-graph.jsonl").open()]
+        )
+        assert stage["page_rank_non_converged"] + stage["page_rank_converged"] == stage["documents"]
+        assert set(stage["snapshot_age_seconds"]) == {"min", "median", "max"}
+        stages = [json.loads(line) for line in (declaration.parent / "stages.jsonl").open()]
+        assert stages[-1]["mode"] == "gds-augmented" and stages[-1]["through"] == GRAPH_DAYS
         receipts = [json.loads(line) for line in (declaration.parent / "days-graph.jsonl").open()]
         assert [r["day"] for r in receipts] == ["2019-01-01", "2019-01-02", "2019-01-03"]
         assert all(r["released_metrics"] for r in receipts)
         assert count(evidence_graph, "MATCH (m:GDSMetric) RETURN count(m)") == 0
         projections = (declaration.parent / "projections.jsonl").read_text().splitlines()
         assert len(projections) == 3
+        # Lost receipts are reconstructed from persisted facts and the kept graph receipts.
+        expected = {json.loads(line)["projection_id"] for line in projections}
+        (declaration.parent / "projections.jsonl").unlink()
+        (declaration.parent / "days-graph.jsonl").unlink()
+        again = graph_run(GRAPH_DAYS)
+        assert again["complete_days"] == 3 and again["processed_days"] == 0
+        rebuilt = [json.loads(line) for line in (declaration.parent / "projections.jsonl").open()]
+        assert {r["projection_id"] for r in rebuilt} == expected
+        assert all(r["receipt_reconstructed"] for r in rebuilt)
         with psycopg.connect(pg.owner_dsn) as connection:
             before = connection.execute("SELECT count(*) FROM reckoner.v1_evidence").fetchone()[0]
 
@@ -472,3 +551,28 @@ def test_seed_and_import_lookups_seek_the_unique_entity_key_index(evidence_graph
             operators,
         )
         assert any("NodeUniqueIndexSeek" in o for o in operators), (query, operators)
+
+
+def test_the_in_band_guard_runs_before_a_projection_is_written(evidence_graph, source, manifest):
+    from reckoner.v1.benchmark.resources import ResourceGuardError
+    from reckoner.v1.evidence.rolling_graph import RollingGraph
+
+    calls = []
+
+    def guard(connection=None):
+        calls.append("guard")
+        if len(calls) > 1:
+            raise ResourceGuardError("free disk below floor")
+        return {}
+
+    rolling = RollingGraph(
+        evidence_graph, preparation_id="prep-a", snapshot_id=SNAPSHOT, guard=lambda c=None: {}
+    )
+    rolling.seed(manifest)
+    roll(rolling, source, ["2018-03-01"])
+    rolling.guard = guard
+    guard()
+    with pytest.raises(ResourceGuardError):
+        rolling.projection_for("2018-03-01", referenced=lambda _: False)
+    assert count(evidence_graph, "MATCH (p:ProjectionReceipt) RETURN count(p)") == 0
+    assert count(evidence_graph, "MATCH (m:GDSMetric) RETURN count(m)") == 0

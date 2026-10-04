@@ -495,6 +495,13 @@ def test_crash_before_persist_resumes_to_identical_evidence_without_duplicates(
                 _run(declaration)
         result = _run(declaration)
         assert result["runtime_identity"]["oracle_usage"] is False
+        from reckoner.v1.evidence.steps import run as run_step
+
+        drop = Namespace(evidence_step="drop-working-set", declaration=declaration, env_file="-")
+        with RunLock(pg.owner_dsn, declared["preparation_id"]):
+            with pytest.raises(RuntimeError, match="lock"):
+                run_step(drop)  # never terminates a concurrent run's working set
+        assert _evidence(pg.owner_dsn)
         assert result["complete_days"] == 2 and result["reconstructed_receipts"] == 2
         resumed = _evidence(pg.owner_dsn)
         keys = [(t, x) for t, x, _ in resumed]

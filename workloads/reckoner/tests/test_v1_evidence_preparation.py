@@ -37,6 +37,10 @@ EXTRA_CARDS = [
     ("history-low", "1", date(2017, 7, 20), "1001"),
     ("history-low", "2", date(2018, 3, 15), "1002"),
     ("history-low", "2", date(2018, 3, 20), "1002"),
+    # Merchant 2001 appears in one tenant on 2018-02-01 and in the other on 2018-03-05:
+    # their shared-identity link is first observed on 2018-03-05 at 10:00.
+    ("history-low", "0", date(2018, 2, 1), "2001"),
+    ("history-high", "0", date(2018, 3, 5), "2001"),
 ]
 
 
@@ -380,12 +384,15 @@ def test_intrinsic_reasons_are_persisted_and_preparation_faults_fail_the_day():
     from reckoner.v1.evidence.preparation import PreparationFault, check_documents
 
     absent = evidence(["query card absent from GDS projection"], projection=receipt())
+    first = {("tenant-a", "late-card"): "2018-03-15T10:00:00Z"}
+    late = {"tenant_id": "tenant-a", "transaction_id": "q", "transaction": {"card_id": "late-card"}}
     summary = check_documents(
         "2018-03-15",
         [
-            ({"tenant_id": "tenant-a", "transaction_id": "q"}, "gds-augmented", absent),
+            (late, "gds-augmented", absent),
             ({"tenant_id": "tenant-a", "transaction_id": "r"}, "relational", evidence()),
         ],
+        first_observed=first,
     )
     assert summary["intrinsic"] == {"query card absent from GDS projection": 1}
     for mode, document in [
@@ -805,3 +812,136 @@ def test_isolated_calls_run_in_a_fresh_child_process_and_propagate_failures():
     assert isolated(os.getpid) != os.getpid()
     with pytest.raises(ValueError):
         isolated(int, "not a number")
+
+
+def test_intrinsic_absence_requires_the_cards_first_observation_on_or_after_the_cutoff():
+    """Missing GDSMetric nodes for an older card are a preparation fault, not intrinsic."""
+    from reckoner.v1.evidence.preparation import PreparationFault, check_documents
+
+    absent = evidence(["query card absent from GDS projection"], projection=receipt())
+    case = {"tenant_id": "tenant-a", "transaction_id": "q", "transaction": {"card_id": "c1"}}
+    for first in (
+        {("tenant-a", "c1"): "2018-03-14T23:59:00Z"},  # observed before the cutoff
+        {},  # unknown card
+        None,  # no manifest supplied
+    ):
+        with pytest.raises(PreparationFault) as raised:
+            check_documents("2018-03-15", [(case, "gds-augmented", absent)], first_observed=first)
+        assert (
+            "first observed before the projection cutoff" in raised.value.failures[0]["reasons"][0]
+        )
+    on_cutoff = {("tenant-a", "c1"): "2018-03-15T00:00:00Z"}
+    check_documents("2018-03-15", [(case, "gds-augmented", absent)], first_observed=on_cutoff)
+
+
+def test_publish_one_complete_population_while_later_ones_are_still_partial(tmp_path):
+    from reckoner.v1.evidence.preparation import publish
+
+    schedule = schedule_fixture()
+    schedule[2]["cases"][0]["pilot"] = True
+    development = [persisted("d")]
+    written = publish(
+        declaration(),
+        schedule,
+        development,
+        tmp_path,
+        mode="relational",
+        populations=["development"],
+    )
+    assert sorted(w["population"] for w in written) == ["development", "pilot"]
+    published = {
+        name: (tmp_path / f"manifests/{name}-relational.json").read_bytes()
+        for name in ("development", "pilot")
+    }
+    with pytest.raises(ValueError, match="missing"):
+        publish(
+            declaration(),
+            schedule,
+            development,
+            tmp_path,
+            mode="relational",
+            populations=["validation"],
+        )
+    assert not (tmp_path / "manifests/validation-relational.json").exists()
+    with pytest.raises(ValueError, match="extra"):
+        publish(
+            declaration(),
+            schedule,
+            [*development, persisted("zz")],
+            tmp_path,
+            mode="relational",
+            populations=["development"],
+        )
+    everything = [persisted(i) for i in "abc"] + development
+    publish(
+        declaration(), schedule, everything, tmp_path, mode="relational", populations=["validation"]
+    )
+    publish(declaration(), schedule, everything, tmp_path, mode="relational")
+    for name, payload in published.items():
+        assert (tmp_path / f"manifests/{name}-relational.json").read_bytes() == payload
+    # The pilot follows its development parent.
+    other = tmp_path / "pilot-only"
+    names = publish(
+        declaration(), schedule, development, other, mode="relational", populations=["pilot"]
+    )
+    assert sorted(w["population"] for w in names) == ["development", "pilot"]
+    with pytest.raises(ValueError, match="undeclared"):
+        publish(
+            declaration(),
+            schedule,
+            development,
+            other,
+            mode="relational",
+            populations=["cohort-2019"],
+        )
+
+
+def test_stage_summary_counts_coverage_non_convergence_and_snapshot_ages():
+    from reckoner.v1.evidence.preparation import stage_summary
+
+    documents = [persisted(i, gds=True) for i in "ab"] + [
+        persisted("c", gds=True, missing=["query card absent from GDS projection"]),
+        persisted("d"),
+    ]
+    summary = stage_summary(documents, mode="gds-augmented")
+    assert summary["documents"] == 3
+    assert summary["statuses"] == {"available": 2, "partial": 1}
+    assert summary["missing"] == {"query card absent from GDS projection": 1}
+    assert summary["page_rank_non_converged"] == 3
+    assert summary["snapshot_age_seconds"] == {
+        "min": "36000.0",
+        "median": "36000.0",
+        "max": "36000.0",
+    }
+    relational = stage_summary(documents, mode="relational")
+    assert relational["documents"] == 1 and relational["page_rank_non_converged"] == 0
+
+
+@pytest.mark.parametrize(
+    "value,accepted",
+    [("1", False), ("16106127359", False), ("16106127360", True), ("21474836480", True)],
+)
+def test_cli_free_floor_can_only_be_raised(value, accepted):
+    from reckoner.cli import _parser
+
+    arguments = [
+        "v1",
+        "evidence",
+        "run",
+        "--declaration",
+        "d",
+        "--pass",
+        "relational",
+        "--through",
+        "2017-01-31",
+        "--env-file",
+        "-",
+        "--free-floor-bytes",
+        value,
+    ]
+    if accepted:
+        assert _parser().parse_args(arguments).free_floor_bytes == int(value)
+    else:
+        with pytest.raises(SystemExit):
+            _parser().parse_args(arguments)
+    assert _parser().parse_args(arguments[:-2]).free_floor_bytes == 15 * 1024**3

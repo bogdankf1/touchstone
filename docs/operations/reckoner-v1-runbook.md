@@ -276,9 +276,10 @@ P=/evidence/<prep12>/declaration.json
 G="--free-path /evidence --max-store-bytes <budget>"
 v1e run --declaration $P --pass relational --through 2017-01-31 $G   # Stage 0 (gate)
 v1e run --declaration $P --pass relational --through 2017-12-24 $G   # Stage 1
-v1e publish --declaration $P --pass relational   # refuses until every case is present
+v1e publish --declaration $P --pass relational --population development   # and the pilot
 v1e run --declaration $P --pass relational --through 2019-12-30 $G   # Stage 2
-v1e publish --declaration $P --pass relational
+v1e publish --declaration $P --pass relational --population validation \
+  --population cohort-2019
 v1e drop-working-set --declaration $P            # name and comment must match (ruling R3)
 export RECKONER_V1_POSTGRES_MEMORY=1g RECKONER_V1_EVIDENCE_JOB_MEMORY=2g   # graph pass
 e stop postgres && e up -d --wait postgres neo4j
@@ -289,9 +290,19 @@ e down                                           # containers only; volumes pers
 uv run --frozen --all-packages reckoner v1 benchmark audit \
   --output-dir artifacts/phase3/evidence-v1/<prep12>/audit --artifact-root artifacts/phase3 \
   --container-prefix "$RECKONER_V1_INSTANCE-prepare" --du-image <pinned pgvector image> \
+  --volume-prefix "$RECKONER_V1_INSTANCE-" \
   --label <stage> --store-bytes preserved-phase3=<bytes> --store-bytes phase3-images=<bytes> \
   --derived-cap-bytes <approved cap> --cgroup-container postgres=<container>
 ```
+
+`publish` writes one content-addressed manifest per complete population and refuses a
+population with any missing case, and any extra or duplicate document. The pilot follows its
+development parent. Each manifest depends only on its own cases, so publishing a later
+population never changes an earlier one; republishing identical content is a no-op and
+different content is refused. `--volume-prefix` counts the instance's volumes by name even
+when their containers are stopped or removed; it accepts only a v1 instance prefix.
+`--free-floor-bytes` may raise the 15 GiB floor but never lower it. `drop-working-set` takes
+the preparation's run lock, so it cannot interrupt a running pass.
 
 The Task 3 June-1 reconciliation runs in a separate, disposable graph-check instance with
 its own volumes and marker, never in the pass store:

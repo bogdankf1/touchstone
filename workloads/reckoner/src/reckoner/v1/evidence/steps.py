@@ -6,6 +6,7 @@ allow-listed environment (`--env-file -` reads those names from the process envi
 No provider is called and no provider key is ever read.
 """
 
+import argparse
 import json
 import os
 import sys
@@ -372,6 +373,7 @@ def _run_relational(context: Context, guard) -> dict:
         "complete_days": len(plan["complete"]),
         "processed_days": len(plan["pending"]),
         "reconstructed_receipts": len(plan["reconstruct"]),
+        "stage": _stage(context, runner, "relational", through),
     }
 
 
@@ -415,6 +417,28 @@ def _referenced(runner):
             ).fetchone()[0]
 
     return referenced
+
+
+def _runner_identity(runner) -> dict:
+    import psycopg
+
+    from reckoner.v1.benchmark.steps import check_runtime_identity, runtime_identity
+    from reckoner.v1.evidence.rolling import RUNTIME_ROLE, runtime_dsn
+
+    with psycopg.connect(runtime_dsn(runner)) as connection:
+        return check_runtime_identity(runtime_identity(connection), RUNTIME_ROLE)
+
+
+def _stage(context, runner, mode, through) -> dict:
+    """Per-stage receipt: coverage, missing reasons, non-convergence and snapshot ages."""
+    from reckoner.v1.evidence.rolling import persisted_summaries
+
+    summary = {
+        "through": through,
+        **prep.stage_summary(persisted_summaries(runner, context.snapshot), mode=mode),
+    }
+    _append(context.output / "stages.jsonl", summary)
+    return summary
 
 
 def _run_graph(context: Context, guard) -> dict:
@@ -465,6 +489,17 @@ def _run_graph(context: Context, guard) -> dict:
             through=through,
             snapshot=context.snapshot,
         )
+        identity = _runner_identity(runner)
+        first_observed = prep.first_observations(context.manifest)
+        projections_path = context.output / "projections.jsonl"
+        logged = {r["cutoff"] for r in _jsonl(projections_path)}
+        for day in plan["complete"]:
+            # A completed day whose projection receipt was lost: the graph keeps receipts.
+            if prep.iso(prep.day_start(day)) not in logged:
+                kept = graph.receipt_for(day)
+                if kept is None:
+                    raise ValueError(f"no single kept projection receipt for completed {day}")
+                _append(projections_path, {**kept, "receipt_reconstructed": True})
         for day in plan["reconstruct"]:
             _append(
                 receipts_path, prep.reconstruct_receipt(entries[day], known, mode="gds-augmented")
@@ -490,9 +525,13 @@ def _run_graph(context: Context, guard) -> dict:
                 )
                 assembly_seconds = perf_counter() - started
                 summary = prep.check_documents(
-                    day, [(c, "gds-augmented", d) for c, d in zip(cases, documents, strict=True)]
+                    day,
+                    [(c, "gds-augmented", d) for c, d in zip(cases, documents, strict=True)],
+                    first_observed=first_observed,
                 )
                 ids = persist_documents(runner, documents)
+                # Record the receipt before its metric nodes go; receipts stay in the graph.
+                _append(projections_path, {**receipt, "receipt_reconstructed": False})
                 released = graph.release(receipt["projection_id"])
                 record = {
                     "day": day,
@@ -512,16 +551,18 @@ def _run_graph(context: Context, guard) -> dict:
                     "seconds": perf_counter() - began,
                     "receipt_reconstructed": False,
                 }
-                _append(context.output / "projections.jsonl", receipt)
                 _append(receipts_path, record)
                 _log(f"graph {day}: {len(cases)} cases, {record['seconds']:.1f}s")
             days.close()
+    stage = _stage(context, runner, "gds-augmented", through)
     return {
         "preparation_id": declaration["preparation_id"],
         "through": through,
+        "runtime_identity": identity,
         "seed": seeded,
         "complete_days": len(plan["complete"]),
         "processed_days": len(plan["pending"]),
+        "stage": stage,
     }
 
 
@@ -612,7 +653,14 @@ def _publish(context: Context) -> dict:
     mode = {"relational": "relational", "graph": "gds-augmented"}[context.args.evidence_pass]
     schedule = context.schedule(baseline)
     summaries = persisted_summaries(runner, context.snapshot)
-    written = prep.publish(context.declaration, schedule, summaries, context.output, mode=mode)
+    written = prep.publish(
+        context.declaration,
+        schedule,
+        summaries,
+        context.output,
+        mode=mode,
+        populations=context.args.population or None,
+    )
     return {
         "manifests": written,
         "persisted_document_bytes": sum(s["bytes"] for s in summaries),
@@ -623,7 +671,9 @@ def _drop(context: Context) -> dict:
     from reckoner.v1.evidence.rolling import drop_working_set
 
     (owner,) = _require(context.environment, "RECKONER_OWNER_DSN")
-    return drop_working_set(owner, context.declaration["preparation_id"])
+    # Never while a run of this preparation holds the working set.
+    with RunLock(owner, context.declaration["preparation_id"]):
+        return drop_working_set(owner, context.declaration["preparation_id"])
 
 
 def run(args):
@@ -648,8 +698,15 @@ def register(subcommands):
     group = subcommands.add_parser("evidence")
     steps = group.add_subparsers(dest="evidence_step", required=True)
 
+    def floor(value):
+        """The CLI may only raise the 15 GiB hard free-disk floor, never lower it."""
+        number = int(value)
+        if number < FREE_FLOOR:
+            raise argparse.ArgumentTypeError(f"free-disk floor cannot go below {FREE_FLOOR}")
+        return number
+
     def guarded(parser):
-        parser.add_argument("--free-floor-bytes", type=int, default=FREE_FLOOR)
+        parser.add_argument("--free-floor-bytes", type=floor, default=FREE_FLOOR)
         parser.add_argument("--max-store-bytes", type=int)
         parser.add_argument("--free-path", type=Path)
 
@@ -671,6 +728,11 @@ def register(subcommands):
     publisher.add_argument("--declaration", type=Path, required=True)
     publisher.add_argument(
         "--pass", dest="evidence_pass", choices=("relational", "graph"), required=True
+    )
+    publisher.add_argument(
+        "--population",
+        action="append",
+        help="publish only these complete populations (the pilot follows development)",
     )
     publisher.add_argument("--env-file", required=True)
     drop = steps.add_parser("drop-working-set")
