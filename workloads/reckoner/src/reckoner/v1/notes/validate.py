@@ -6,6 +6,9 @@ from copy import deepcopy
 from reckoner.v1 import projection
 from reckoner.v1.contracts import validate_v1
 
+# Deterministic reference provenance per note indicator (bounded-evidence-v1).
+PROVENANCE = ("evidence_ref_count", "evidence_refs_sha256", "evidence_refs_truncated")
+INDICATOR_CLAIMS = ("rank", "indicator_id", "description", "method", "evidence_refs")
 CONTENT_FIELDS = (
     "verdict_recommendation",
     "confidence",
@@ -76,6 +79,21 @@ def note_data(evidence, score):
     }
 
 
+def with_reference_provenance(indicators, evidence: dict):
+    """Model-written indicator claims plus provenance taken from the projection.
+
+    Count, full-list SHA-256 and truncation always come from the persisted evidence,
+    never from model output. Unknown indicators are left for validation to reject.
+    """
+    supplied = {i["indicator_id"]: i for i in projection.indicators(evidence)}
+    attached = []
+    for item in indicators:
+        claim = {k: item[k] for k in INDICATOR_CLAIMS if k in item}
+        source = supplied.get(claim.get("indicator_id"))
+        attached.append({**claim, **({k: source[k] for k in PROVENANCE} if source else {})})
+    return attached
+
+
 def validate_note(note: dict, evidence: dict, score: dict) -> dict:
     note = validate_v1("case-note", note)
     validate_v1("evidence", evidence)
@@ -98,6 +116,8 @@ def validate_note(note: dict, evidence: dict, score: dict) -> dict:
         source = persisted.get(item["indicator_id"])
         if source is None or any(item[k] != source[k] for k in ("description", "method")):
             raise ValueError("unsupported indicator or method")
+        if any(item.get(k) != supplied[item["indicator_id"]][k] for k in PROVENANCE):
+            raise ValueError("indicator reference provenance differs from the evidence")
         # Only references supplied to generation: exactly the projected exemplars, which
         # are themselves taken from the full persisted references.
         refs = item["evidence_refs"]

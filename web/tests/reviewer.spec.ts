@@ -54,6 +54,22 @@ test('structured note and bounded graph render safe text with source provenance'
   ).text();
   expect(payload).not.toMatch(/oracle|fraud_label|api_key/i);
 });
+test('truncated indicator sources state the full count and list hash', async ({ page, request }) => {
+  await request.get('http://127.0.0.1:8100/__scenario?name=truncated-sources');
+  await page.goto('/review');
+  const full = 'a'.repeat(64);
+  await expect(
+    page.getByText(`32 of 2,944 sources shown (truncated; full list SHA-256 ${full})`),
+  ).toBeVisible();
+  await expect(
+    page.getByText(`5 of 5 sources shown (complete; full list SHA-256 ${'b'.repeat(64)})`),
+  ).toBeVisible();
+  const provenance = page.locator('#evidence-provenance');
+  await expect(provenance.getByText('merchant-exposure sources', { exact: true })).toBeVisible();
+  await expect(
+    provenance.getByText(`2,944 references · 32 shown in note (truncated) · full list SHA-256 ${full}`),
+  ).toBeVisible();
+});
 for (const [s, label] of [
   ['note-failed', 'Note failed'],
   ['note-pending', 'Note pending'],

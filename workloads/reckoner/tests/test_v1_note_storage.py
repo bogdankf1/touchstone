@@ -209,6 +209,77 @@ def test_note_declaration_exists_after_decision_and_late_continuation(pg):
         assert json.dumps(decision, sort_keys=True) == original
 
 
+def test_truncated_indicator_provenance_survives_validation_persistence_and_api(pg):
+    """End to end: projection -> generated note -> persisted note -> API case detail."""
+    from fastapi.testclient import TestClient
+    from reckoner.api import create_app
+    from reckoner.v1 import projection
+    from reckoner.v1.notes import CONTENT_FIELDS, build_note_request
+    from reckoner.v1.notes.validate import note_data
+    from test_v1_graph_workflow import execute, prepared
+    from test_v1_projection import indicator
+
+    _, lifecycle = modules()
+    big = indicator("merchant-exposure", 2944)
+    repo, task, evidence, settings, _ = prepared(
+        pg, input_ceiling=16000, score_ceiling=16000, indicators=[big]
+    )
+    with PostgresRepository(pg.runner_dsn) as old:
+        legacy = next(
+            t for t in old.pending_tasks("baseline-preserved") if t["tenant_id"] == "tenant-a"
+        )
+    ledger_fixture(pg, legacy)
+    full = sorted(big["evidence_refs"])
+    with repo:
+        decision, _ = execute(repo, task, settings)
+        score = repo._connection.execute(
+            "SELECT score FROM reckoner.v1_provider_responses WHERE call_id=%s",
+            (decision["call_id"],),
+        ).fetchone()["score"]
+        config = repo.workflow_document(
+            "v1_configs", {"tenant_id": task["tenant_id"], "config_id": task["config_id"]}
+        )
+        supplied = note_data(evidence, score)
+        note, _, _ = sample()
+        fields = {key: note[key] for key in CONTENT_FIELDS}
+        fields.update({k: supplied[k] for k in ("confidence", "entity_neighbourhood")})
+        (sent,) = supplied["risk_indicators"]
+        fields["risk_indicators"] = [
+            {k: sent[k] for k in ("rank", "indicator_id", "description", "method", "evidence_refs")}
+        ]
+        fields["comparable_cases"] = supplied["comparable_cases"]
+        fields["what_would_change_verdict"] = []
+        request = build_note_request(decision, evidence, score, config)
+        p = protocol(task, content_id(request), cap=".1", provider="anthropic", attempts=1)
+        p["input_token_ceiling"] = config["limits"]["input_token_ceiling"]
+        p["purpose"] = "online-note"
+        identified(p, "protocol_id")
+        authorize(pg.owner_dsn, p)
+        repo.note_client = Transport([paid_body(json.dumps(fields))])
+        repo.note_protocol = p
+        execute(repo, task, settings)
+        assert lifecycle.note_work(repo, decision)["status"] == "succeeded"
+        stored = repo._connection.execute(
+            "SELECT document FROM reckoner.v1_notes WHERE tenant_id=%s AND case_id=%s",
+            (task["tenant_id"], decision["decision_id"]),
+        ).fetchone()["document"]
+    expected = {
+        "evidence_ref_count": 2944,
+        "evidence_refs_sha256": content_id(full),
+        "evidence_refs_truncated": True,
+        "evidence_refs": full[: projection.REF_SAMPLE],
+    }
+    (persisted,) = stored["risk_indicators"]
+    assert {k: persisted[k] for k in expected} == expected
+    with TestClient(create_app(pg.api_dsn)) as client:
+        detail = client.get(
+            "/v1/case", params={"tenant_id": task["tenant_id"], "case_id": decision["decision_id"]}
+        )
+    assert detail.status_code == 200
+    (served,) = detail.json()["note"]["risk_indicators"]
+    assert {k: served[k] for k in expected} == expected
+
+
 def test_crash_after_response_reuses_settlement_before_note_result_write(pg, monkeypatch):
     api, _ = modules()
     repo, task, config, request, p = prepared_call(pg)

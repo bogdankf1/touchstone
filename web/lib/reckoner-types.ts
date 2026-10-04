@@ -60,6 +60,11 @@ export interface CaseNote {
     description: string;
     method: string;
     evidence_refs: string[];
+    // Present on notes from bounded-evidence-v1: the full reference count, the SHA-256 of
+    // the full sorted list, and whether evidence_refs shows only bounded exemplars.
+    evidence_ref_count?: number;
+    evidence_refs_sha256?: string;
+    evidence_refs_truncated?: boolean;
   }[];
   entity_neighbourhood: { summary: string; evidence_refs: string[] };
   comparable_cases: { transaction_id: string; summary: string; evidence_refs: string[] }[];

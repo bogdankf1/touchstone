@@ -168,7 +168,7 @@ def test_note_request_is_bounded_and_validation_accepts_only_supplied_references
     assert sent["evidence_ref_count"] == 2944 and sent["evidence_refs_truncated"] is True
     assert len(sent["evidence_refs"]) == projection.REF_SAMPLE
     full = evidence["risk_indicators"][0]
-    copied = {k: sent[k] for k in ("rank", "indicator_id", "description", "method")}
+    copied = {k: v for k, v in sent.items() if k != "evidence_refs"}  # incl. provenance
     note["risk_indicators"] = [{**copied, "evidence_refs": sent["evidence_refs"]}]
     # Actions may cite only references supplied to generation: an exemplar or the
     # evidence ID. A real persisted reference outside the exemplars was never shown.
@@ -199,6 +199,8 @@ def test_note_indicator_claims_outside_the_persisted_evidence_are_rejected(chang
     full = sorted(evidence["risk_indicators"][0]["evidence_refs"])
     item = {k: evidence["risk_indicators"][0][k] for k in ("indicator_id", "description")}
     item.update(rank=1, method=evidence["risk_indicators"][0]["method"], evidence_refs=full[:32])
+    item.update(evidence_ref_count=2944, evidence_refs_sha256=content_id(full))
+    item["evidence_refs_truncated"] = True
     if change == "invented":
         item["evidence_refs"] = [*full[:31], ref(123_456_789)]
     if change == "other-subset":
@@ -209,3 +211,86 @@ def test_note_indicator_claims_outside_the_persisted_evidence_are_rejected(chang
     identified(note, "note_id")
     with pytest.raises(ValueError):
         validate_note(note, evidence, score)
+
+
+PROVENANCE = ("evidence_ref_count", "evidence_refs_sha256", "evidence_refs_truncated")
+
+
+def generated(evidence, score, indicator_fields):
+    from reckoner.v1.notes import CONTENT_FIELDS, generate_note
+    from test_v1_note_generation import Calls, body
+
+    note, _, _ = note_case(1)
+    fields = {key: note[key] for key in CONTENT_FIELDS}
+    fields["confidence"] = {
+        "value": score["confidence"],
+        "meaning": "jev_distribution_concentration",
+    }
+    fields["entity_neighbourhood"] = {
+        "summary": "Neighbourhood unavailable.",
+        "evidence_refs": [evidence["evidence_id"]],
+    }
+    fields["risk_indicators"] = indicator_fields
+    fields["what_would_change_verdict"][0]["evidence_refs"] = [evidence["evidence_id"]]
+    return generate_note(
+        decision_fixture(evidence=evidence),
+        evidence,
+        score,
+        Calls([body(json.dumps(fields))]),
+        config_fixture(),
+        protocol={"fixture": "fabricated-protocol", "maximum_attempts": 1},
+    )
+
+
+def test_generated_note_carries_reference_provenance_from_the_projection_not_the_model():
+    from reckoner.v1 import projection
+
+    _, evidence, score = note_case(2944)
+    (sent,) = projection.indicators(evidence)
+    claimed = {
+        **{k: sent[k] for k in ("rank", "indicator_id", "description", "method", "evidence_refs")},
+        # The model's own provenance values are never trusted.
+        "evidence_ref_count": 1,
+        "evidence_refs_sha256": "0" * 64,
+        "evidence_refs_truncated": False,
+    }
+    result = generated(evidence, score, [claimed])
+    assert result["status"] == "succeeded"
+    (item,) = result["note"]["risk_indicators"]
+    assert {k: item[k] for k in PROVENANCE} == {
+        "evidence_ref_count": 2944,
+        "evidence_refs_sha256": content_id(sorted(evidence["risk_indicators"][0]["evidence_refs"])),
+        "evidence_refs_truncated": True,
+    }
+    assert item["evidence_refs"] == sent["evidence_refs"]
+    # Without any model-supplied provenance the same deterministic values are attached.
+    bare = {k: claimed[k] for k in ("rank", "indicator_id", "description", "method")}
+    again = generated(evidence, score, [{**bare, "evidence_refs": sent["evidence_refs"]}])
+    assert again["note"]["risk_indicators"] == result["note"]["risk_indicators"]
+
+
+def test_new_notes_need_exact_provenance_while_older_v1_records_stay_readable():
+    from reckoner.v1 import projection
+    from reckoner.v1.contracts import validate_v1
+    from reckoner.v1.notes import validate_note
+
+    note, evidence, score = note_case(2944)
+    (sent,) = projection.indicators(evidence)
+    item = {k: sent[k] for k in ("rank", "indicator_id", "description", "method", "evidence_refs")}
+    note["risk_indicators"] = [item]
+    identified(note, "note_id")
+    assert validate_v1("case-note", note) == note  # an older v1 record remains readable
+    with pytest.raises(ValueError, match="provenance"):
+        validate_note(note, evidence, score)
+    note["risk_indicators"] = [{**item, **{k: sent[k] for k in PROVENANCE}}]
+    identified(note, "note_id")
+    assert validate_note(note, evidence, score) == note
+    note["risk_indicators"][0]["evidence_ref_count"] = 32
+    identified(note, "note_id")
+    with pytest.raises(ValueError, match="provenance"):
+        validate_note(note, evidence, score)
+    partial = {**item, "evidence_refs_truncated": True}
+    note["risk_indicators"] = [partial]
+    identified(note, "note_id")
+    with pytest.raises(ValueError):
+        validate_v1("case-note", note)  # provenance fields come together or not at all

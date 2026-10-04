@@ -460,3 +460,42 @@ parameters, `project.cypher` or the receipt shape.
 * **Audit.** `reckoner v1 benchmark audit --store-bytes NAME=BYTES` adds declared sizes
   (for example preserved stores and images measured once at a stage start) to the derived
   total, recorded separately as `declared_store_bytes`.
+
+## Bounded provider requests and note reference provenance (Task 13)
+
+Provider requests use the `bounded-evidence-v1` projection (`reckoner.v1.projection`).
+Persisted evidence is unchanged. Each risk indicator sends:
+
+- `evidence_ref_count`: the full number of references.
+- `evidence_refs_sha256`: the canonical `content_id` of the full reference list in
+  ascending lexicographic order.
+- `evidence_refs`: the first 32 references in that order.
+- `evidence_refs_truncated`: whether the list above was cut.
+
+Comparable cases stay the top-5 display with one reference each. The projection refuses
+anything larger.
+
+Where the version is recorded:
+
+- Jev Choice requests do not carry the version. The documented contract defines only the
+  existing state keys. Each scoring call document records `request_projection` instead.
+- Note requests carry it inside their user data.
+- Protocol bodies pin it in `versions.request_projection`.
+
+Case-note v1 indicators gain three optional fields: `evidence_ref_count`,
+`evidence_refs_sha256` and `evidence_refs_truncated`. They must appear together.
+- This is an additive amendment within v1, as with the earlier `confidence.meaning`
+  addition.
+- Older v1 notes without the fields stay schema-valid and readable. The console shows
+  their sources as before.
+- Generation attaches the fields from the projection and never takes them from model
+  output.
+- The factual validator requires them on newly generated notes and checks them against
+  the evidence.
+- Note references must be exactly the supplied exemplars. Verdict-change actions may cite
+  only the evidence ID and supplied exemplars.
+
+Migration `019_v1_note_reference_provenance.sql` returns the fields through the public
+note projection. The reviewer console shows, for example, "32 of 2,944 sources shown
+(truncated; full list SHA-256 …)" and lists each indicator's full count and list hash
+under evidence provenance.

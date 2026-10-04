@@ -165,7 +165,32 @@
             },
             "minItems": 1,
             "uniqueItems": true
+          },
+          "evidence_ref_count": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "evidence_refs_sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "evidence_refs_truncated": {
+            "type": "boolean"
           }
+        },
+        "dependentRequired": {
+          "evidence_ref_count": [
+            "evidence_refs_sha256",
+            "evidence_refs_truncated"
+          ],
+          "evidence_refs_sha256": [
+            "evidence_ref_count",
+            "evidence_refs_truncated"
+          ],
+          "evidence_refs_truncated": [
+            "evidence_ref_count",
+            "evidence_refs_sha256"
+          ]
         }
       },
       "minItems": 0,

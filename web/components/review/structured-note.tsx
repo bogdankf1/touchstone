@@ -1,4 +1,14 @@
 import type { CaseNote } from '../../lib/reckoner-types';
+type Indicator = CaseNote['risk_indicators'][number];
+export function sourceCoverage(item: Indicator): string | null {
+  if (item.evidence_ref_count === undefined || item.evidence_refs_sha256 === undefined) return null;
+  return (
+    `${item.evidence_refs.length.toLocaleString('en-US')} of ` +
+    `${item.evidence_ref_count.toLocaleString('en-US')} sources shown ` +
+    `(${item.evidence_refs_truncated ? 'truncated' : 'complete'}; ` +
+    `full list SHA-256 ${item.evidence_refs_sha256})`
+  );
+}
 function Sources({ refs }: { refs: string[] }) {
   return (
     <div className="source-links">
@@ -58,6 +68,7 @@ export function StructuredNote({ note, status }: { note: CaseNote | null; status
                     Rank {item.rank} · {item.method}
                   </small>
                   <Sources refs={item.evidence_refs} />
+                  {sourceCoverage(item) && <small>{sourceCoverage(item)}</small>}
                 </li>
               ))}
             </ol>

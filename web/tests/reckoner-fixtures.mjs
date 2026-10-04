@@ -140,6 +140,31 @@ function detail(tenant, id, s) {
     review: null,
   };
   if (s === 'large-amount') c.amount_minor = '9007199254740993';
+  if (s === 'truncated-sources') {
+    // Bounded exemplars of a 2,944-reference indicator, with deterministic provenance.
+    c.note.risk_indicators = [
+      {
+        rank: 1,
+        indicator_id: 'merchant-exposure',
+        description: 'Shared merchant has 40 fraud among 2944 eligible 90-day resolved cases.',
+        method: 'risk-indicators-v1: fabricated',
+        evidence_refs: Array.from({ length: 32 }, (_, i) => `resolution-${String(i).padStart(4, '0')}`),
+        evidence_ref_count: 2944,
+        evidence_refs_sha256: 'a'.repeat(64),
+        evidence_refs_truncated: true,
+      },
+      {
+        rank: 2,
+        indicator_id: 'card-burst',
+        description: '5 prior 24-hour card transactions.',
+        method: 'risk-indicators-v1: fabricated',
+        evidence_refs: ['tx-1', 'tx-2', 'tx-3', 'tx-4', 'tx-5'],
+        evidence_ref_count: 5,
+        evidence_refs_sha256: 'b'.repeat(64),
+        evidence_refs_truncated: false,
+      },
+    ];
+  }
   if (s === 'crowded-graph') {
     c.graph.nodes = Array.from({ length: 100 }, (_, i) => ({
       id: `node-${i}`,

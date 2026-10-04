@@ -183,7 +183,15 @@ def test_anthropic_requires_verified_legacy_provenance_and_counts_it_once(pg):
         assert ledger.remaining("typesafe") == Decimal("10")
 
 
-def scoring(pg, attempts=3, authorized=True, input_ceiling=None, official_prices=False):
+def scoring(
+    pg,
+    attempts=3,
+    authorized=True,
+    input_ceiling=None,
+    official_prices=False,
+    indicators=None,
+    score_ceiling=None,
+):
     _, attempts_module, jev = modules()
     config, manifest, _ = setup_run(pg)
     config["limits"]["maximum_attempts"] = attempts
@@ -212,9 +220,14 @@ def scoring(pg, attempts=3, authorized=True, input_ceiling=None, official_prices
     evidence["query_time"] = task["transaction"]["occurred_at"]
     evidence["cutoffs"]["history_before"] = evidence["query_time"]
     evidence["cutoffs"]["resolved_before"] = evidence["query_time"]
+    if indicators is not None:
+        evidence["risk_indicators"] = indicators
     identified(evidence, "evidence_id")
     request = jev.build_request(task["transaction"], evidence)
     p = protocol(task, content_id(request), attempts=attempts)
+    if score_ceiling is not None:
+        p["input_token_ceiling"] = score_ceiling
+        identified(p, "protocol_id")
     if authorized:
         authorize(pg.owner_dsn, p)
     return repo, task, evidence, p, attempts_module, jev

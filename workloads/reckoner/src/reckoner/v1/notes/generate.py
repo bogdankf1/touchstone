@@ -5,7 +5,12 @@ from datetime import UTC, datetime
 
 from reckoner.contracts import content_id
 from reckoner.v1.notes.prompt import MODEL, build_note_request
-from reckoner.v1.notes.validate import CONTENT_FIELDS, confidence, validate_note
+from reckoner.v1.notes.validate import (
+    CONTENT_FIELDS,
+    confidence,
+    validate_note,
+    with_reference_provenance,
+)
 
 
 def parse_json(content):
@@ -55,6 +60,13 @@ def generate_note(
             fields = parse_json(body.get("content"))
             if not isinstance(fields, dict) or set(fields) != set(CONTENT_FIELDS):
                 raise ValueError("exactly six content fields required")
+            if not isinstance(fields["risk_indicators"], list) or not all(
+                isinstance(item, dict) for item in fields["risk_indicators"]
+            ):
+                raise ValueError("risk indicators must be objects")
+            fields["risk_indicators"] = with_reference_provenance(
+                fields["risk_indicators"], evidence
+            )
             timestamp = attempt.get("completed_at", datetime.now(UTC).isoformat())
             note = {
                 **fields,
