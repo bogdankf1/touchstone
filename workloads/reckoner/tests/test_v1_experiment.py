@@ -398,3 +398,259 @@ def test_final_workflow_protocol_decides_and_keeps_pending_notes_incomplete(
     )
     assert "note-pending" in {b["code"] for b in report["blockers"]}
     assert report["passed"] is False and set(report["false_claims"]) == {"status", "passed"}
+
+
+# --- future-run defaults: the active configuration is frozen at declaration -------
+
+
+def saved_configuration(pg, margin):
+    from reckoner.v1.storage.configurations import create_configuration
+    from reckoner.v1.storage.repository import V1Repository
+    from test_v1_config_api import candidate
+
+    body = candidate()
+    body["thresholds"]["margin_rate"] = margin
+    with V1Repository(pg.api_dsn) as api:
+        return create_configuration(api, body)["configuration"]["config_id"]
+
+
+def activate(pg, config_id, version, key):
+    from reckoner.v1.storage.configurations import activate_configuration
+    from reckoner.v1.storage.repository import V1Repository
+
+    with V1Repository(pg.api_dsn) as api:
+        return activate_configuration(
+            api,
+            tenant_id="tenant-a",
+            config_id=config_id,
+            expected_version=version,
+            idempotency_key=key,
+        )
+
+
+def declaration(run_id, transaction_id, config_id=None, tenant="tenant-a"):
+    return {
+        "tenant_id": tenant,
+        "run_id": run_id,
+        "purpose": "final",
+        "tasks": [{"task_id": "task-a", "transaction_id": transaction_id}],
+        "dataset_version": "a" * 64,
+        "cohort_version": "a" * 64,
+        "code_revision": "fabricated-revision",
+        "created_at": "2026-10-04T00:00:00Z",
+        "config_id": config_id,
+    }
+
+
+@pytest.mark.integration
+def test_activation_changes_only_future_run_declarations(pg):
+    from reckoner.v1.experiment.runs import declare_run
+    from reckoner.v1.storage.repository import V1Repository
+    from test_v1_storage import setup_run
+
+    _, manifest, _ = setup_run(pg)
+    transaction = manifest["tasks"][0]["transaction_id"]
+    first, second = saved_configuration(pg, "0.30"), saved_configuration(pg, "0.25")
+    with V1Repository(pg.owner_dsn) as owner:
+        with pytest.raises(LookupError, match="active configuration"):
+            declare_run(owner, **declaration("before-activation", transaction))
+    activate(pg, first, 0, "activate-a")
+    with V1Repository(pg.owner_dsn) as owner:
+        run_a = declare_run(owner, **declaration("run-under-a", transaction))
+        assert run_a["config_source"] == "active" and run_a["activation_version"] == 1
+        assert run_a["manifest"]["config_id"] == first
+    activate(pg, second, 1, "activate-b")
+    with V1Repository(pg.owner_dsn) as owner:
+        run_b = declare_run(owner, **declaration("run-under-b", transaction))
+        assert run_b["manifest"]["config_id"] == second
+        # An existing run keeps its frozen configuration; the pointer is not reread.
+        again = declare_run(owner, **declaration("run-under-a", transaction))
+        assert again["manifest"] == run_a["manifest"] and again["config_source"] == "declared"
+        explicit = declare_run(owner, **declaration("explicit-a", transaction, config_id=first))
+        assert explicit["manifest"]["config_id"] == first
+        assert explicit["config_source"] == "explicit"
+        with pytest.raises(ValueError, match="frozen"):
+            declare_run(owner, **declaration("run-under-a", transaction, config_id=second))
+        stored = owner._connection.execute(
+            "SELECT run_id, config_id FROM reckoner.v1_runs WHERE run_id LIKE 'run-under-%' "
+            "ORDER BY run_id"
+        ).fetchall()
+    assert [(r["run_id"], r["config_id"]) for r in stored] == [
+        ("run-under-a", first),
+        ("run-under-b", second),
+    ]
+
+
+# --- calibration export: privileged evaluator joins of authentic scored runs -----
+
+
+def calibration_case_transactions(pg, count=4):
+    """Fabricated 2018 transactions (simulated fixture rows), resolved before 2019."""
+    from reckoner.v1.storage.repository import V1Repository
+    from test_v1_storage import setup_run
+
+    setup_run(pg)
+    with V1Repository(pg.owner_dsn) as owner:
+        template = owner._connection.execute(
+            "SELECT document FROM reckoner.transactions WHERE tenant_id='tenant-a' LIMIT 1"
+        ).fetchone()["document"]
+        docs = []
+        for n in range(count):
+            tx = dict(template)
+            tx["transaction_id"] = f"fabricated-calibration-{n}"
+            tx["occurred_at"] = f"2018-06-0{n + 1}T12:00:00Z"
+            tx["account_id"] = f"fabricated-user-{n % 2}"
+            owner._connection.execute(
+                "INSERT INTO reckoner.transactions VALUES (%s,%s,%s)",
+                ("tenant-a", tx["transaction_id"], psycopg.types.json.Jsonb(tx)),
+            )
+            docs.append(tx)
+    return docs
+
+
+def scored_validation(pg, tmp_path, monkeypatch):
+    from test_v1_protocol import experiment_scenario, fixture_approval, reserve
+
+    no_sleep(monkeypatch)
+    docs = calibration_case_transactions(pg)
+    draft, _, runs = experiment_scenario(
+        pg, tmp_path, purpose="validation", per_tenant=(4, 0), transactions=docs, seed=False
+    )
+    reserve(pg, draft, fixture_approval(draft))
+    probabilities = iter([0.7, 0.2, 0.6, 0.1])
+
+    def handler(n, payload):
+        fraud = next(probabilities)
+        body = jev_body({"input_tokens": 100, "output_tokens": 0})
+        body["answers"]["risk"]["probabilities"] = {"fraud": fraud, "legitimate": 1 - fraud}
+        body["answers"]["risk"]["choice"] = "fraud" if fraud > 0.5 else "legitimate"
+        return httpx.Response(200, json=body)
+
+    result = execute(pg, draft, Recorder(handler), tmp_path)
+    assert result["status"] == "complete", result["stop_reason"]
+    return draft, docs
+
+
+def frozen_sample(docs, labels=("fraud", "legitimate", "fraud", "legitimate")):
+    from decimal import Decimal as D
+
+    runtime = [dict(d) for d in docs]
+    oracle = [
+        {
+            "schema_version": "oracle-v1",
+            "tenant_id": d["tenant_id"],
+            "transaction_id": d["transaction_id"],
+            "label": label,
+            "oracle_version": "cctd-label-v1",
+        }
+        for d, label in zip(docs, labels, strict=True)
+    ]
+    counts = {label: labels.count(label) for label in ("fraud", "legitimate")}
+    population = {"fraud": 6, "legitimate": 40}
+    sample = {
+        "purpose": "validation",
+        "year": 2018,
+        "sample_id": "5" * 64,
+        "selected_transaction_ids": sorted(d["transaction_id"] for d in docs),
+        "strata": {
+            label: {
+                "N_h": population[label],
+                "n_h": counts[label],
+                "weight": str(D(population[label]) / D(counts[label])),
+            }
+            for label in counts
+        },
+    }
+    return {"sample": sample, "runtime": runtime, "oracle": oracle, "bundle_id": "6" * 64}
+
+
+def export(pg, draft, frozen, **overrides):
+    from reckoner.v1.experiment.calibration import export_calibration_rows
+    from reckoner.v1.storage.repository import V1Repository
+
+    with V1Repository(pg.owner_dsn) as owner:
+        return export_calibration_rows(
+            owner,
+            frozen=frozen,
+            protocol=draft,
+            data_kind=overrides.pop("data_kind", "fabricated"),
+            **overrides,
+        )
+
+
+@pytest.mark.integration
+def test_export_joins_scored_protocol_cases_to_the_frozen_sample(pg, tmp_path, monkeypatch):
+    from reckoner.v1.calibration.fit import validate_sample
+
+    draft, docs = scored_validation(pg, tmp_path, monkeypatch)
+    exported = export(pg, draft, frozen_sample(docs))
+    rows = exported["rows"]
+    context, strata = validate_sample(rows, "validation")
+    assert context["evidence_mode"] == "relational" and context["data_kind"] == "fabricated"
+    assert context["scorer"] == {
+        "provider": "typesafe",
+        "model": "jev-1.13.0",
+        "question_version": "binary-v1",
+    }
+    assert [r["probability"] for r in rows] == ["0.7", "0.2", "0.6", "0.1"]
+    assert {r["label"] for r in rows} == {0, 1}
+    assert exported["provenance"]["protocol_sha256"] == draft["protocol_sha256"]
+    assert exported["provenance"]["sample_id"] == "5" * 64
+    assert len(exported["provenance"]["score_call_ids_sha256"]) == 64
+    assert "oracle" not in str(exported["provenance"]).lower().replace("oracle_version", "")
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    "defect",
+    ["missing", "extra", "duplicate", "tenant", "cutoff", "model", "mode", "label"],
+)
+def test_export_refuses_unauthentic_or_incomplete_membership(pg, tmp_path, monkeypatch, defect):
+    draft, docs = scored_validation(pg, tmp_path, monkeypatch)
+    frozen = frozen_sample(docs)
+    overrides = {}
+    if defect == "missing":
+        extra = dict(docs[0], transaction_id="unscored-sample-member")
+        frozen["runtime"].append(extra)
+        frozen["oracle"].append({**frozen["oracle"][0], "transaction_id": "unscored-sample-member"})
+        frozen["sample"]["selected_transaction_ids"].append("unscored-sample-member")
+    elif defect == "extra":
+        frozen["runtime"].pop()
+        frozen["oracle"].pop()
+        frozen["sample"]["selected_transaction_ids"].remove(docs[-1]["transaction_id"])
+    elif defect == "duplicate":
+        frozen["oracle"].append(dict(frozen["oracle"][0]))
+    elif defect == "tenant":
+        frozen["oracle"][0]["tenant_id"] = "tenant-b"
+    elif defect == "cutoff":
+        frozen["sample"]["year"] = 2017
+    elif defect == "model":
+        overrides["expected_scorer"] = {
+            "provider": "typesafe",
+            "model": "jev-1.14.0",
+            "question_version": "binary-v1",
+        }
+    elif defect == "mode":
+        overrides["evidence_mode"] = "gds-augmented"
+    elif defect == "label":
+        frozen["oracle"][0]["label"] = "unknown"
+    reasons = {
+        "missing": "membership",
+        "extra": "membership",
+        "duplicate": "duplicate oracle",
+        "tenant": "membership",
+        "cutoff": "cutoff",
+        "model": "scorer",
+        "mode": "evidence mode",
+        "label": "label",
+    }
+    with pytest.raises(ValueError, match=reasons[defect]):
+        export(pg, draft, frozen, **overrides)
+
+
+def test_selected_artifact_registration_requires_a_selected_report(tmp_path):
+    from reckoner.v1.experiment.calibration import register_selected
+
+    (tmp_path / "selected-artifact.json").write_text("null")
+    with pytest.raises(ValueError, match="raw scores retained"):
+        register_selected(object(), report_dir=tmp_path, tenants=["tenant-a"], context={})

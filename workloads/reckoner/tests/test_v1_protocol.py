@@ -740,7 +740,9 @@ def test_presentation_lists_exact_scope_balance_and_is_not_consent(tmp_path):
 # --- disposable PostgreSQL: measured draft -> external approval -> reservation ----
 
 
-def experiment_scenario(pg, tmp_path, *, purpose="pilot", per_tenant=(2, 1)):
+def experiment_scenario(
+    pg, tmp_path, *, purpose="pilot", per_tenant=(2, 1), transactions=None, seed=True
+):
     """Fabricated runs/evidence/manifest in a disposable database; no provider call."""
     import json
 
@@ -752,7 +754,8 @@ def experiment_scenario(pg, tmp_path, *, purpose="pilot", per_tenant=(2, 1)):
     from test_v1_storage import CONFIG_DIR, setup_run
     from v1_fixtures import config_fixture, evidence_fixture
 
-    setup_run(pg)
+    if seed:
+        setup_run(pg)
     runs, persisted = [], []
     with V1Repo(pg.owner_dsn) as owner:
         for tenant, count_ in zip(("tenant-a", "tenant-b"), per_tenant, strict=True):
@@ -762,13 +765,18 @@ def experiment_scenario(pg, tmp_path, *, purpose="pilot", per_tenant=(2, 1)):
             config = config_fixture(tenant=tenant, threshold=threshold["config_id"])
             config["limits"].update(input_token_ceiling=32000, maximum_attempts=3)
             config["scorer"]["price_table"] = jev_price()
+            config["scaler_id"] = "b" * 64  # fabricated frozen-scaler identity
             identified(config, "config_id")
             owner.register_config(config)
-            rows = owner._connection.execute(
-                "SELECT document FROM reckoner.transactions WHERE tenant_id=%s "
-                "ORDER BY transaction_id LIMIT %s",
-                (tenant, count_),
-            ).fetchall()
+            rows = (
+                [{"document": t} for t in transactions if t["tenant_id"] == tenant]
+                if transactions is not None
+                else owner._connection.execute(
+                    "SELECT document FROM reckoner.transactions WHERE tenant_id=%s "
+                    "ORDER BY transaction_id LIMIT %s",
+                    (tenant, count_),
+                ).fetchall()
+            )
             run = {
                 "schema_version": "reckoner-experiment-v1",
                 "tenant_id": tenant,
