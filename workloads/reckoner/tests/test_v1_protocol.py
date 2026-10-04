@@ -225,6 +225,7 @@ def test_duplicate_approval_identity_and_second_approval_block_reservation(pg):
     [
         "sha_mismatch",
         "document_changed",
+        "dispatch_not_in_document",
         "scope_case_count",
         "scope_cap",
         "scope_model",
@@ -238,7 +239,13 @@ def test_approval_must_bind_the_exact_protocol_sha_and_bounds(pg, mutation):
     if mutation == "sha_mismatch":
         approval["protocol_sha256"] = "c" * 64
     elif mutation == "document_changed":
-        document["dispatch_protocol_ids"] = ["changed"]
+        document["dispatch"] = []
+    elif mutation == "dispatch_not_in_document":
+        changed = identified({**deepcopy(p), "usd_cap": "0.009"}, "protocol_id")
+        with psycopg.connect(pg.owner_dsn, autocommit=True) as owner:
+            with pytest.raises(ValueError, match="exactly the protocol's dispatch"):
+                ProviderBudget(owner).authorize(document, [changed], approval=approval)
+        return
     elif mutation == "scope_case_count":
         approval["scope"]["case_count"] = 2
     elif mutation == "scope_cap":

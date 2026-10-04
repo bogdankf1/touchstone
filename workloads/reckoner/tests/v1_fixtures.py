@@ -263,7 +263,7 @@ def fixture_protocol_document(protocols):
             "schema_version": "fabricated-test-protocol",
             "dataset_simulated": True,
             "approver": FIXTURE_APPROVER,
-            "dispatch_protocol_ids": sorted(p["protocol_id"] for p in protocols),
+            "dispatch": list(protocols),
         },
         "protocol_sha256",
     )

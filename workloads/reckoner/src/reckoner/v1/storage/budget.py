@@ -337,6 +337,8 @@ class ProviderBudget:
             raise ValueError("approval does not bind this protocol SHA-256")
         if not dispatch:
             raise ValueError("approval must cover at least one dispatch protocol")
+        if protocol_document.get("dispatch") != dispatch:
+            raise ValueError("recorded envelopes must be exactly the protocol's dispatch")
         scope = approval["scope"]
         for protocol in dispatch:
             validate_protocol(protocol)
