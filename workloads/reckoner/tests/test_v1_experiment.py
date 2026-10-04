@@ -1149,6 +1149,35 @@ def test_cli_settles_an_uncertain_call_from_usage_at_the_recorded_price(pg, tmp_
         assert ProviderBudget(owner).snapshot("typesafe")["unresolved"] == []
 
 
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("telemetry_mode", "scoring-only"),
+        ("dataset_version", "b" * 64),
+        ("cohort_version", "b" * 64),
+        ("created_at", "2026-10-05T00:00:00Z"),
+        ("code_revision", "other-revision"),
+    ],
+)
+def test_existing_run_refuses_any_changed_declaration(pg, field, value):
+    from reckoner.v1.experiment.runs import declare_run
+    from reckoner.v1.storage.repository import V1Repository
+    from test_v1_storage import setup_run
+
+    _, manifest, _ = setup_run(pg)
+    first = saved_configuration(pg, "0.30")
+    activate(pg, first, 0, "activate-a")
+    base = {**declaration("frozen-run", manifest["tasks"][0]["transaction_id"]),
+            "purpose": "validation"}  # fmt: skip
+    with V1Repository(pg.owner_dsn) as owner:
+        declare_run(owner, **base, telemetry_mode="workflow")
+        changed = {**base, "telemetry_mode": "workflow", field: value}
+        with pytest.raises(ValueError, match="frozen"):
+            declare_run(owner, **changed)
+        assert declare_run(owner, **base, telemetry_mode="workflow")["config_source"] == "declared"
+
+
 # --- fix round 2: workflow verification keeps scorer failures and evidence gaps --
 
 

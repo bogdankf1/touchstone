@@ -35,15 +35,26 @@ def declare_run(
 ) -> dict:
     """Owner action: declare (or return) one immutable run with a frozen configuration."""
     stored = repo._connection.execute(
-        "SELECT document FROM reckoner.v1_runs WHERE tenant_id=%s AND run_id=%s",
+        "SELECT document, telemetry_mode FROM reckoner.v1_runs WHERE tenant_id=%s AND run_id=%s",
         (tenant_id, run_id),
     ).fetchone()
     if stored is not None:
         manifest = stored["document"]
         if config_id is not None and config_id != manifest["config_id"]:
             raise ValueError("an existing run keeps its frozen configuration")
-        if [dict(t) for t in tasks] != manifest["tasks"] or purpose != manifest["purpose"]:
-            raise ValueError("an existing run keeps its frozen tasks and purpose")
+        requested = {
+            "tasks": [dict(t) for t in tasks],
+            "purpose": purpose,
+            "dataset_version": dataset_version,
+            "cohort_version": cohort_version,
+            "code_revision": code_revision,
+            "created_at": created_at,
+        }
+        if (
+            any(manifest[key] != value for key, value in requested.items())
+            or stored["telemetry_mode"] != telemetry_mode
+        ):
+            raise ValueError("an existing run keeps its frozen declaration; refusing a change")
         return {"manifest": manifest, "config_source": "declared", "activation_version": None}
     source, version = "explicit", None
     if config_id is None:
