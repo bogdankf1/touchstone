@@ -106,6 +106,7 @@ def register(subcommands):
     settle.add_argument("--call-id", required=True)
     settle.add_argument("--input-tokens", type=int, required=True)
     settle.add_argument("--output-tokens", type=int, required=True)
+    settle.add_argument("--evidence", type=Path, required=True)
     restore = steps.add_parser("ledger-restore")
     restore.add_argument("--dump", type=Path, required=True)
     restore.add_argument("--expected-sha256", required=True)
@@ -371,7 +372,7 @@ def run(args):
         )
         return exported["provenance"]
     if step == "settle":
-        from reckoner.v1.experiment.ledger import reconcile_call
+        from reckoner.v1.experiment.ledger import load_settlement_evidence, reconcile_call
 
         (owner,) = _need(values, "RECKONER_OWNER_DSN")
         with psycopg.connect(owner, autocommit=True) as connection:
@@ -379,6 +380,7 @@ def run(args):
                 connection,
                 args.call_id,
                 {"input_tokens": args.input_tokens, "output_tokens": args.output_tokens},
+                evidence=load_settlement_evidence(args.evidence),
             )
     if step == "ledger-restore":
         from psycopg.conninfo import conninfo_to_dict

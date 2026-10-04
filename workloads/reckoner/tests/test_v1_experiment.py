@@ -1117,17 +1117,33 @@ def test_cli_declares_runs_from_the_active_configuration(pg, tmp_path):
     assert v1(_parser().parse_args(args))["config_source"] == "declared"
 
 
-@pytest.mark.integration
-def test_cli_settles_an_uncertain_call_from_usage_at_the_recorded_price(pg, tmp_path, monkeypatch):
-    from reckoner.cli import _parser
-    from reckoner.v1.cli import execute as v1
-    from reckoner.v1.storage.budget import ProviderBudget
+def evidence_file(tmp_path, call_id, usage, kind="provider-usage-record", name="evidence.json"):
+    """A fabricated stand-in for a stored provider usage record; never real billing."""
+    import json
 
+    path = tmp_path / name
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "reckoner-settlement-evidence-v1",
+                "call_id": call_id,
+                "source_kind": kind,
+                "reference": "fabricated-provider-record-" + call_id[:8],
+                "usage": usage,
+            }
+        )
+    )
+    return path
+
+
+def timed_out_call(pg, tmp_path, monkeypatch, body=None):
     no_sleep(monkeypatch)
     protocol = reserved(pg, tmp_path)
 
     def handler(n, payload):
         if n == 1:
+            if body is not None:
+                return httpx.Response(200, json=body)
             raise httpx.ReadTimeout("fabricated ambiguous timeout")
         return httpx.Response(200, json=jev_body())
 
@@ -1136,17 +1152,108 @@ def test_cli_settles_an_uncertain_call_from_usage_at_the_recorded_price(pg, tmp_
         call_id = owner.execute(
             "SELECT call_id FROM reckoner.v1_settlements WHERE status='uncertain'"
         ).fetchone()[0]
-        assert ProviderBudget(owner).snapshot("typesafe")["unresolved"]
+    return protocol, call_id
+
+
+def settle_cli(pg, tmp_path, call_id, usage, evidence=None):
+    from reckoner.cli import _parser
+    from reckoner.v1.cli import execute as v1
+
     env = tmp_path / "owner.env"
     env.write_text(f"RECKONER_OWNER_DSN={pg.owner_dsn}\n")
-    args = ["v1", "protocol", "settle", "--call-id", call_id, "--input-tokens", "2000",
-            "--output-tokens", "0", "--env-file", str(env)]  # fmt: skip
-    settled = v1(_parser().parse_args(args))
-    assert settled["cost"] == "0.000084"
-    with pytest.raises(ValueError, match="already settled"):
-        v1(_parser().parse_args(args))
+    args = ["v1", "protocol", "settle", "--call-id", call_id,
+            "--input-tokens", str(usage["input_tokens"]),
+            "--output-tokens", str(usage["output_tokens"]), "--env-file", str(env)]  # fmt: skip
+    if evidence is not None:
+        args += ["--evidence", str(evidence)]
+    return v1(_parser().parse_args(args))
+
+
+@pytest.mark.integration
+def test_settle_needs_matching_provider_evidence_and_persists_it(pg, tmp_path, monkeypatch):
+    import hashlib
+
+    from reckoner.v1.experiment.ledger import reconcile_call
+    from reckoner.v1.storage.budget import ProviderBudget
+
+    protocol, call_id = timed_out_call(pg, tmp_path, monkeypatch)
+    usage = {"input_tokens": 2000, "output_tokens": 0}
     with psycopg.connect(pg.owner_dsn, autocommit=True) as owner:
+        with pytest.raises(ValueError, match="evidence"):
+            reconcile_call(owner, call_id, usage, evidence=None)
+    with pytest.raises(SystemExit):
+        settle_cli(pg, tmp_path, call_id, usage)  # --evidence is required
+    for _name, path, entered in (
+        ("other call", evidence_file(tmp_path, "other-call", usage, name="a.json"), usage),
+        ("usage", evidence_file(tmp_path, call_id, usage, name="b.json"),
+         {"input_tokens": 0, "output_tokens": 0}),
+        ("kind", evidence_file(tmp_path, call_id, usage, kind="operator-estimate", name="c.json"),
+         usage),
+    ):  # fmt: skip
+        with pytest.raises(ValueError):
+            settle_cli(pg, tmp_path, call_id, entered, path)
+    good = evidence_file(tmp_path, call_id, usage, name="good.json")
+    settled = settle_cli(pg, tmp_path, call_id, usage, good)
+    assert settled["cost"] == "0.000084" and settled["prior_state"] == "dispatched-unknown"
+    with pytest.raises(ValueError, match="already settled"):
+        settle_cli(pg, tmp_path, call_id, usage, good)
+    with psycopg.connect(pg.owner_dsn, autocommit=True) as owner:
+        stored = owner.execute(
+            "SELECT document FROM reckoner.v1_settlement_evidence WHERE call_id=%s", (call_id,)
+        ).fetchone()[0]
+        assert stored["document_sha256"] == hashlib.sha256(good.read_bytes()).hexdigest()
+        assert stored["source_kind"] == "provider-usage-record"
+        assert stored["prior_state"] == "dispatched-unknown"
         assert ProviderBudget(owner).snapshot("typesafe")["unresolved"] == []
+
+
+@pytest.mark.integration
+def test_settle_must_equal_persisted_response_usage(pg, tmp_path, monkeypatch):
+    body = jev_body({"input_tokens": 2000, "output_tokens": 0, "unrecognised": 1})
+    protocol, call_id = timed_out_call(pg, tmp_path, monkeypatch, body=body)
+    other = {"input_tokens": 1500, "output_tokens": 0}
+    with pytest.raises(ValueError, match="persisted response usage"):
+        settle_cli(pg, tmp_path, call_id, other, evidence_file(tmp_path, call_id, other))
+    usage = {"input_tokens": 2000, "output_tokens": 0}
+    settled = settle_cli(
+        pg, tmp_path, call_id, usage, evidence_file(tmp_path, call_id, usage, name="ok.json")
+    )
+    assert settled["prior_state"] == "responded-unknown-billing"
+
+
+@pytest.mark.integration
+def test_never_answered_call_stays_uncertain_without_evidence_and_is_never_auto_zeroed(
+    pg, tmp_path
+):
+    from decimal import Decimal
+
+    from reckoner.v1.experiment.ledger import reconcile_call
+    from reckoner.v1.storage.budget import ProviderBudget
+    from reckoner.v1.storage.repository import V1Repository
+    from test_v1_budget import call
+
+    protocol = reserved(pg, tmp_path)
+    dispatch = protocol["dispatch"][0]
+    task = {"tenant_id": dispatch["tenant_id"], "run_id": dispatch["run_id"],
+            **{k: dispatch["tasks"][0][k] for k in ("task_id", "transaction_id")}}  # fmt: skip
+    reservation = {**call(task, dispatch, "never-answered"), "request_document": {}}
+    reservation["request_sha256"] = dispatch["tasks"][0]["request_sha256"]
+    with V1Repository(pg.runner_dsn) as repo:
+        ProviderBudget(repo._connection).reserve(reservation, Decimal("0.001344"), dispatch)
+    zero = {"input_tokens": 0, "output_tokens": 0}
+    with psycopg.connect(pg.owner_dsn, autocommit=True) as owner:
+        with pytest.raises(ValueError, match="evidence"):
+            reconcile_call(owner, "never-answered", zero, evidence=None)
+        assert ProviderBudget(owner).snapshot("typesafe")["unresolved"]
+    with pytest.raises(ValueError):
+        settle_cli(pg, tmp_path, "never-answered", zero,
+                   evidence_file(tmp_path, "never-answered", {"input_tokens": 10,
+                                                              "output_tokens": 0}))  # fmt: skip
+    settled = settle_cli(
+        pg, tmp_path, "never-answered", zero,
+        evidence_file(tmp_path, "never-answered", zero, kind="provider-request-log", name="z.json"),
+    )  # fmt: skip
+    assert settled["prior_state"] == "never-answered" and settled["cost"] == "0"
 
 
 @pytest.mark.integration

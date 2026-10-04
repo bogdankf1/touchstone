@@ -197,32 +197,88 @@ def copy_legacy_ledger(*, staging_dsn: str, target_owner_dsn: str, dump_sha256: 
     }
 
 
-def reconcile_call(connection, call_id: str, usage: dict) -> dict:
-    """Owner reconciliation of one uncertain or unsettled call from known provider usage.
+EVIDENCE_SCHEMA = "reckoner-settlement-evidence-v1"
+EVIDENCE_KINDS = {"provider-usage-record", "provider-invoice-line", "provider-request-log"}
 
-    The cost is computed from the call's recorded protocol prices, never supplied by
-    the operator. An already settled call cannot be re-priced.
+
+def load_settlement_evidence(path: Path) -> dict:
+    """A stored provider usage document, identified by the SHA-256 of its bytes."""
+    import json
+
+    payload = Path(path).read_bytes()
+    document = json.loads(payload)
+    return {"document": document, "sha256": hashlib.sha256(payload).hexdigest()}
+
+
+def _persisted_usage(body):
+    """Usage counts a persisted provider response itself reported, if any."""
+    if not isinstance(body, dict):
+        return None
+    source = body.get("usage") if isinstance(body.get("usage"), dict) else body
+    counts = {key: source.get(key) for key in ("input_tokens", "output_tokens")}
+    if all(type(v) is int and v >= 0 for v in counts.values()):
+        return counts
+    return None
+
+
+def reconcile_call(connection, call_id: str, usage: dict, *, evidence: dict | None) -> dict:
+    """Owner reconciliation of one uncertain or never-answered call from provider evidence.
+
+    `evidence` is `load_settlement_evidence(path)`: a stored provider record
+    (`reckoner-settlement-evidence-v1`: call_id, source_kind, reference, usage) and its
+    SHA-256. Entered counts must equal the evidence and any usage the persisted
+    response itself reported; zero is accepted only when the evidence states zero.
+    Without evidence nothing is settled: a never-answered call stays uncertain and is
+    never auto-zeroed. Cost is computed from the call's recorded protocol price.
     """
     from reckoner.v1.experiment.protocol import PRICES
     from reckoner.v1.storage.budget import ProviderBudget
 
+    if evidence is None:
+        raise ValueError("provider evidence is required; the call stays uncertain")
     if set(usage) != {"input_tokens", "output_tokens"} or any(
         type(v) is not int or v < 0 for v in usage.values()
     ):
         raise ValueError("reconciliation needs exact nonnegative token counts")
+    record, digest = evidence["document"], evidence["sha256"]
+    if (
+        not isinstance(record, dict)
+        or set(record) != {"schema_version", "call_id", "source_kind", "reference", "usage"}
+        or record["schema_version"] != EVIDENCE_SCHEMA
+        or record["source_kind"] not in EVIDENCE_KINDS
+        or not isinstance(record["reference"], str)
+        or not record["reference"].strip()
+    ):
+        raise ValueError("evidence must be a stored provider usage record")
+    if record["call_id"] != call_id:
+        raise ValueError("evidence belongs to another call")
+    if record["usage"] != usage:
+        raise ValueError(
+            "entered usage differs from the provider evidence (zero needs stated zero)"
+        )
     cursor = connection.cursor(row_factory=dict_row)
     row = cursor.execute(
-        "SELECT c.provider, c.call_id, x.document->'prices' AS prices, "
-        "EXISTS (SELECT 1 FROM reckoner.v1_settlements s WHERE s.call_id=c.call_id "
+        "SELECT c.provider, c.tenant_id, x.document->'prices' AS prices, r.call_id AS answered, "
+        "r.body, EXISTS (SELECT 1 FROM reckoner.v1_settlements s WHERE s.call_id=c.call_id "
         "AND s.status='settled') AS settled FROM reckoner.v1_provider_calls c "
         "JOIN reckoner.v1_protocol_authorizations a USING (protocol_id) "
-        "JOIN reckoner.v1_experiment_protocols x USING (protocol_sha256) WHERE c.call_id=%s",
+        "JOIN reckoner.v1_experiment_protocols x USING (protocol_sha256) "
+        "LEFT JOIN reckoner.v1_provider_responses r ON r.call_id=c.call_id WHERE c.call_id=%s",
         (call_id,),
     ).fetchone()
     if row is None:
         raise ValueError("unknown call under a recorded protocol")
     if row["settled"]:
         raise ValueError("call is already settled; settlements are immutable")
+    if row["answered"] is None:
+        state = "never-answered"  # reserved, no response persisted
+    elif row["body"] is None:
+        state = "dispatched-unknown"  # dispatched, outcome and billing unknown
+    else:
+        state = "responded-unknown-billing"
+    reported = _persisted_usage(row["body"])
+    if reported is not None and reported != usage:
+        raise ValueError("entered usage differs from the persisted response usage")
     input_price, output_price = PRICES[row["provider"]]
     prices = row["prices"] or {}
     if (
@@ -234,5 +290,27 @@ def reconcile_call(connection, call_id: str, usage: dict) -> dict:
         Decimal(usage["input_tokens"]) * input_price
         + Decimal(usage["output_tokens"]) * output_price
     ) / Decimal(1000000)
-    ProviderBudget(connection).settle(call_id, usage, cost)
-    return {"call_id": call_id, "status": "settled", "cost": format(cost, "f"), "usage": usage}
+    document = {
+        "call_id": call_id,
+        "prior_state": state,
+        "source_kind": record["source_kind"],
+        "reference": record["reference"],
+        "document_sha256": digest,
+        "usage": usage,
+        "cost": format(cost.normalize(), "f"),
+    }
+    with connection.transaction():
+        ProviderBudget(connection).settle(call_id, usage, cost)
+        cursor.execute(
+            "INSERT INTO reckoner.v1_settlement_evidence (tenant_id, call_id, document) "
+            "VALUES (%s,%s,%s)",
+            (row["tenant_id"], call_id, Jsonb(document)),
+        )
+    return {
+        "call_id": call_id,
+        "status": "settled",
+        "prior_state": state,
+        "cost": format(cost.normalize(), "f"),
+        "usage": usage,
+        "evidence_sha256": digest,
+    }
