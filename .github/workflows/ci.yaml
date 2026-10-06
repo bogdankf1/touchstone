@@ -49,6 +49,8 @@ jobs:
           python-version: "3.12"
           enable-cache: true
       - run: uv sync --all-packages --frozen
+      # The outbox reconciliation test runs a real `dbt build` against the platform project.
+      - run: uv run --frozen --all-packages dbt deps --project-dir platform/dbt
       # Each fixture provisions isolated login roles and runs checksum-verified migrations.
       - run: uv run --frozen --all-packages pytest -m 'integration and not neo4j_integration' -q
   neo4j-integration:

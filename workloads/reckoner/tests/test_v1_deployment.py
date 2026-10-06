@@ -807,6 +807,17 @@ def test_ci_runs_the_v1_smoke_and_benchmark_store_integration_suites():
         assert job["env"][name]
 
 
+def test_ci_installs_dbt_packages_before_the_postgres_integration_suite():
+    # test_v1_outbox reconciles producer documents with a real `dbt build`.
+    steps = yaml.safe_load((ROOT / ".github/workflows/ci.yaml").read_text())["jobs"][
+        "postgres-integration"
+    ]["steps"]
+    runs = [step.get("run", "") for step in steps]
+    deps = next(i for i, run in enumerate(runs) if "dbt deps --project-dir platform/dbt" in run)
+    tests = next(i for i, run in enumerate(runs) if "pytest" in run)
+    assert deps < tests
+
+
 def test_structurizr_model_is_structurally_consistent():
     """Not a Structurizr parse: balanced blocks and every referenced identifier is defined."""
     text = (ROOT / "docs/architecture/workspace.dsl").read_text()
