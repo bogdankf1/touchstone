@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://touchstone.example/contracts/reckoner-resolution-v1.schema.json",
+  "title": "Reckoner resolution v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "tenant_id",
+    "resolution_id",
+    "transaction_id",
+    "verdict",
+    "oracle_version",
+    "resolved_at",
+    "resolution_policy_version",
+    "provenance"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "reckoner-resolution-v1"
+    },
+    "tenant_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "resolution_id": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "transaction_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "verdict": {
+      "enum": [
+        "approve",
+        "decline"
+      ]
+    },
+    "oracle_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "resolved_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "resolution_policy_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "dataset_simulated",
+        "source"
+      ],
+      "properties": {
+        "dataset_simulated": {
+          "const": true
+        },
+        "source": {
+          "const": "simulated-label-oracle"
+        }
+      }
+    }
+  }
+}

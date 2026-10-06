@@ -114,6 +114,22 @@ services:
       warehouse-init:
         condition: service_completed_successfully
 
+  # Dagster's SQLite storage setup is not safe against concurrent first starts: initialize it
+  # once before the webserver and daemon share DAGSTER_HOME.
+  dagster-init:
+    image: touchstone-platform:phase2
+    user: "10001:10001"
+    command: ["sh", "-c", "mkdir -p /warehouse/dagster && exec dagster instance migrate"]
+    environment:
+      DAGSTER_HOME: /warehouse/dagster
+    network_mode: none
+    volumes:
+      - warehouse-data:/warehouse
+    mem_limit: 384m
+    depends_on:
+      warehouse-init:
+        condition: service_completed_successfully
+
   dagster:
     image: touchstone-platform:phase2
     user: "10001:10001"
@@ -132,6 +148,8 @@ services:
         condition: service_healthy
       warehouse-init:
         condition: service_completed_successfully
+      dagster-init:
+        condition: service_completed_successfully
 
   dagster-daemon:
     image: touchstone-platform:phase2
@@ -148,6 +166,8 @@ services:
       clickhouse:
         condition: service_healthy
       warehouse-init:
+        condition: service_completed_successfully
+      dagster-init:
         condition: service_completed_successfully
 
   web:

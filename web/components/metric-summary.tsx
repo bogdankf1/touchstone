@@ -36,7 +36,9 @@ export function MetricSummary({ run }: { run: Run }) {
         </div>
         <div>
           <span className="metric-label">
-            {run.measurement_mode === 'measured'
+            {run.online_cost_complete !== undefined
+              ? 'Online model cost'
+              : run.measurement_mode === 'measured'
               ? 'Provider usage cost'
               : run.measurement_mode === 'fabricated'
                 ? 'Fabricated provider cost'
@@ -72,7 +74,6 @@ export function MetricSummary({ run }: { run: Run }) {
         missing tasks · {run.failed_tasks ?? 'Unknown'} failed tasks · {run.missing_outcomes ?? 'Unknown'}{' '}
         outcomes missing · {run.unexpected_tasks ?? 'Unknown'} unexpected tasks
       </div>
-      <div className="status-line muted">No compatible comparison run</div>
     </section>
   );
 }

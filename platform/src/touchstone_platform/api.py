@@ -57,6 +57,26 @@ def create_app(settings: Settings) -> FastAPI:
         with _snapshot(settings) as snapshot:
             return {"metadata": snapshot.metadata(), "data": snapshot.runs(workflow_id, tenant_id)}
 
+    @app.get("/v1/comparisons")
+    def comparison(
+        workflow_id: str = Query(min_length=1),
+        baseline: str = Query(min_length=1),
+        current: str = Query(min_length=1),
+        tenant_id: str | None = Query(default=None, min_length=1),
+        aggregate: bool = False,
+    ):
+        from touchstone_platform.comparison import comparison_eligibility
+
+        _tenant_selection(tenant_id, aggregate)
+        with _snapshot(settings) as snapshot:
+            arms = [
+                snapshot.comparison_arm(workflow_id, run, tenant_id=tenant_id, aggregate=aggregate)
+                for run in (baseline, current)
+            ]
+            if any(arm is None for arm in arms):
+                raise HTTPException(status_code=404, detail="comparison run not found")
+            return {"metadata": snapshot.metadata(), "data": comparison_eligibility(*arms)}
+
     @app.get("/v1/runs/{run_id:path}/summary")
     def summary(
         run_id: str,

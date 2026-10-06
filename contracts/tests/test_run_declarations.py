@@ -109,3 +109,32 @@ def test_metric_expectations_are_optional_distinct_and_within_declared_tasks():
     unknown_task["metric_expectations"][0]["expected_task_ids"] = ["missing"]
     with pytest.raises(ValidationError):
         validate_declaration(unknown_task)
+
+
+def test_optional_generic_comparison_preserves_legacy_and_rejects_incomplete_arm():
+    declaration = _declaration()
+    assert validate_declaration(declaration)
+    declaration["comparison"] = {
+        "reference_version": "reference-1",
+        "business_config_id": "business-1",
+        "arm": {
+            **{
+                key: "version-1"
+                for key in (
+                    "config_version",
+                    "model_version",
+                    "prompt_version",
+                    "question_version",
+                    "calibration_id",
+                    "evidence_version",
+                    "retrieval_window",
+                    "execution_mode",
+                )
+            },
+            "call_ids": [],
+        },
+    }
+    assert validate_declaration(declaration)["comparison"]["reference_version"] == "reference-1"
+    del declaration["comparison"]["arm"]["evidence_version"]
+    with pytest.raises(ValidationError):
+        validate_declaration(declaration)

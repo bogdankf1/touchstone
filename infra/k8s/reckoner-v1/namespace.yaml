@@ -1,0 +1,8 @@
+# Dedicated namespace for the fabricated Reckoner v1 kind smoke (simulated data only).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: touchstone-phase3-v1-smoke
+  labels:
+    touchstone.dev/workload: reckoner-v1
+    touchstone.dev/data: fabricated-simulated

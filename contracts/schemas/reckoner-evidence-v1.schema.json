@@ -1,0 +1,498 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://touchstone.example/contracts/reckoner-evidence-v1.schema.json",
+  "title": "Reckoner evidence v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "tenant_id",
+    "evidence_id",
+    "transaction_id",
+    "query_time",
+    "source_snapshot_ids",
+    "cutoffs",
+    "coverage",
+    "features",
+    "risk_indicators",
+    "comparable_cases"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "reckoner-evidence-v1"
+    },
+    "tenant_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "evidence_id": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "transaction_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "query_time": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "source_snapshot_ids": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "postgres",
+        "graph"
+      ],
+      "properties": {
+        "postgres": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "graph": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "cutoffs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "history_before",
+        "resolved_before",
+        "graph_before"
+      ],
+      "properties": {
+        "history_before": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "resolved_before": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "graph_before": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "missing"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "available",
+            "partial",
+            "unavailable"
+          ]
+        },
+        "missing": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 0,
+          "uniqueItems": true
+        }
+      }
+    },
+    "features": {
+      "type": "object",
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "type": "string",
+            "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      }
+    },
+    "risk_indicators": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "rank",
+          "indicator_id",
+          "description",
+          "method",
+          "evidence_refs"
+        ],
+        "properties": {
+          "rank": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 3
+          },
+          "indicator_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1
+          },
+          "method": {
+            "type": "string",
+            "minLength": 1
+          },
+          "evidence_refs": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "minItems": 1,
+            "uniqueItems": true
+          }
+        }
+      },
+      "minItems": 0,
+      "maxItems": 3
+    },
+    "comparable_cases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "tenant_id",
+          "transaction_id",
+          "verdict",
+          "resolved_at",
+          "resolution_policy_version",
+          "similarity",
+          "evidence_refs"
+        ],
+        "properties": {
+          "tenant_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "transaction_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "verdict": {
+            "enum": [
+              "approve",
+              "decline"
+            ]
+          },
+          "resolved_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "resolution_policy_version": {
+            "type": "string",
+            "minLength": 1
+          },
+          "similarity": {
+            "type": "string",
+            "pattern": "^(?:0(?:\\.[0-9]+)?|1(?:\\.0+)?)$"
+          },
+          "evidence_refs": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "minItems": 1,
+            "uniqueItems": true
+          }
+        }
+      },
+      "minItems": 0
+    },
+    "neighbourhood": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "window_days",
+        "total_nodes",
+        "total_edges",
+        "total_transactions",
+        "truncated",
+        "cross_tenant",
+        "nodes",
+        "edges",
+        "transaction_refs"
+      ],
+      "properties": {
+        "window_days": {
+          "const": 30
+        },
+        "total_nodes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "total_edges": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "total_transactions": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "cross_tenant": {
+          "type": "boolean"
+        },
+        "nodes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "tenant_id",
+              "kind",
+              "identity"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "tenant_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "kind": {
+                "enum": [
+                  "account",
+                  "card",
+                  "merchant",
+                  "transaction"
+                ]
+              },
+              "identity": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "maxItems": 100
+        },
+        "edges": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "source",
+              "target",
+              "kind"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "source": {
+                "type": "string",
+                "minLength": 1
+              },
+              "target": {
+                "type": "string",
+                "minLength": 1
+              },
+              "kind": {
+                "enum": [
+                  "owns",
+                  "used",
+                  "paid",
+                  "shared_identity"
+                ]
+              }
+            }
+          },
+          "maxItems": 200
+        },
+        "transaction_refs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "graph_projection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "projection_id",
+        "cutoff",
+        "window_days",
+        "gds_version",
+        "algorithm",
+        "parameters",
+        "node_count",
+        "edge_count",
+        "covered_accounts",
+        "covered_cards",
+        "covered_merchants",
+        "build_seconds",
+        "page_rank_converged",
+        "page_rank_iterations",
+        "community_count",
+        "snapshot_age_seconds",
+        "cross_tenant"
+      ],
+      "properties": {
+        "projection_id": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "cutoff": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "window_days": {
+          "const": 30
+        },
+        "gds_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "algorithm": {
+          "const": "louvain-page-rank-v1"
+        },
+        "parameters": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "concurrency",
+            "louvain",
+            "page_rank"
+          ],
+          "properties": {
+            "concurrency": {
+              "const": 1
+            },
+            "louvain": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "maxLevels",
+                "maxIterations",
+                "tolerance",
+                "includeIntermediateCommunities",
+                "seed_supported"
+              ],
+              "properties": {
+                "maxLevels": {
+                  "const": 10
+                },
+                "maxIterations": {
+                  "const": 10
+                },
+                "tolerance": {
+                  "const": 0.0001
+                },
+                "includeIntermediateCommunities": {
+                  "const": false
+                },
+                "seed_supported": {
+                  "const": false
+                }
+              }
+            },
+            "page_rank": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "dampingFactor",
+                "maxIterations",
+                "tolerance"
+              ],
+              "properties": {
+                "dampingFactor": {
+                  "const": 0.85
+                },
+                "maxIterations": {
+                  "const": 20
+                },
+                "tolerance": {
+                  "const": 1e-07
+                }
+              }
+            }
+          }
+        },
+        "node_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "edge_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "covered_accounts": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "covered_cards": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "covered_merchants": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "build_seconds": {
+          "type": "number"
+        },
+        "page_rank_converged": {
+          "type": "boolean"
+        },
+        "page_rank_iterations": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "community_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "snapshot_age_seconds": {
+          "type": "string",
+          "pattern": "^[0-9]+(?:\\.[0-9]+)?$"
+        },
+        "cross_tenant": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

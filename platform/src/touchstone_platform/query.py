@@ -7,6 +7,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from decimal import Decimal, localcontext
 
+from touchstone_platform.comparison import attestation_envelope_matches, resolve_comparison
 from touchstone_platform.refresh import open_published_snapshot
 from touchstone_platform.settings import Settings
 from touchstone_platform.staging import exact_cpst
@@ -33,8 +34,9 @@ COMPATIBILITY = (
     "code_revision",
     "dataset_version",
     "price_table_version",
+    "pricing_context",
 )
-MONEY = ("model_cost", "review_cost", "error_cost")
+MONEY = ("model_cost", "review_cost", "error_cost", "offline_model_cost", "provider_spend")
 COUNTS = (
     "expected_tasks",
     "received_tasks",
@@ -108,8 +110,29 @@ class SnapshotReader:
                 clauses.append(f"{field} = ?")
                 params.append(value)
         where = " where " + " and ".join(clauses) if clauses else ""
+        columns = {
+            row[1] for row in self.connection.execute("pragma table_info('mart_runs')").fetchall()
+        }
+        optional = {
+            "online_cost_complete": "model_cost is not null",
+            "offline_cost_complete": "true",
+            "offline_model_cost": "cast(0 as decimal(38,12))",
+            "provider_spend": "model_cost",
+        }
+        extras = ", ".join(
+            key if key in columns else f"{fallback} as {key}" for key, fallback in optional.items()
+        )
+        call_columns = {
+            row[1] for row in self.connection.execute("pragma table_info('int_calls')").fetchall()
+        }
+        pricing = (
+            "string_agg(distinct provider || '/' || model || ':' || price_table_version, ',' "
+            "order by provider || '/' || model || ':' || price_table_version)"
+            if {"provider", "model"} <= call_columns
+            else "min(price_table_version)"
+        )
         return self._rows(
-            f"select {RUN_COLUMNS} from mart_runs r "
+            f"select {RUN_COLUMNS}, {extras}, pricing_context from mart_runs r "
             "left join (select tenant_id, workflow_id, run_id, "
             "count(distinct content_sha256) as declaration_versions, "
             "case when count(distinct content_sha256) = 1 then "
@@ -120,7 +143,8 @@ class SnapshotReader:
             "using (tenant_id, workflow_id, run_id) "
             "left join (select tenant_id, workflow_id, run_id, "
             "case when count(distinct price_table_version) = 1 then "
-            "min(price_table_version) end as price_table_version "
+            "min(price_table_version) end as price_table_version, "
+            f"{pricing} as pricing_context "
             "from int_calls group by tenant_id, workflow_id, run_id) p "
             f"using (tenant_id, workflow_id, run_id){where} "
             "order by workflow_id, run_id, tenant_id",
@@ -213,12 +237,79 @@ class SnapshotReader:
         )
         return result
 
+    def comparison_arm(self, workflow_id, run_id, *, tenant_id=None, aggregate=False):
+        result = self.summary(workflow_id, run_id, tenant_id=tenant_id, aggregate=aggregate)
+        if result is None:
+            return None
+        metadata = self.metadata()
+        result.update(
+            generation=metadata["generation"],
+            refresh_state=metadata["latest_refresh"]["state"],
+            case_membership=[],
+            arm_provenance=[],
+        )
+        declarations = self._rows(
+            "select distinct tenant_id, document_json from raw_declarations "
+            "where workflow_id=? and run_id=? and tenant_id in "
+            "(select unnest(?))",
+            [workflow_id, run_id, result["tenant_ids"]],
+        )
+        versions = {}
+        for row in declarations:
+            versions[row["tenant_id"]] = versions.get(row["tenant_id"], 0) + 1
+        result["declaration_versions"] = (
+            max(versions.values()) if set(versions) == set(result["tenant_ids"]) else 0
+        )
+        refs, configs = set(), set()
+        for row in declarations:
+            document = json.loads(row["document_json"])
+            result["case_membership"].extend(
+                [row["tenant_id"], task] for task in document.get("expected_task_ids", [])
+            )
+            companions = self._rows(
+                "select document_json,identity_conflict from stg_events where tenant_id=? and "
+                "workflow_id=? "
+                "and run_id=? and event_kind='comparison_attestation'",
+                [row["tenant_id"], workflow_id, run_id],
+            )
+            events = [json.loads(item["document_json"]) for item in companions]
+            # Attestation integrity failures leave only the comparison unavailable.
+            comparison = (
+                {}
+                if versions[row["tenant_id"]] != 1
+                or any(item["identity_conflict"] for item in companions)
+                or not all(attestation_envelope_matches(e, document) for e in events)
+                else resolve_comparison(document, [e["payload"] for e in events])
+            )
+            refs.add(comparison.get("reference_version"))
+            configs.add(comparison.get("business_config_id"))
+            if comparison.get("arm"):
+                calls = self._rows(
+                    "select distinct call_id from int_calls where "
+                    "tenant_id=? and workflow_id=? and run_id=? order by call_id",
+                    [row["tenant_id"], workflow_id, run_id],
+                )
+                result["arm_provenance"].append(
+                    {
+                        "tenant_id": row["tenant_id"],
+                        **comparison["arm"],
+                        "call_ids": [call["call_id"] for call in calls],
+                    }
+                )
+        result["reference_version"] = next(iter(refs)) if len(refs) == 1 else None
+        result["business_config_id"] = next(iter(configs)) if len(configs) == 1 else None
+        if len(result["arm_provenance"]) != len(result["tenant_ids"]):
+            result["arm_provenance"] = []
+        return result
+
     def quality(self, workflow_id, run_id, tenant_ids):
         placeholders = ", ".join("?" for _ in tenant_ids)
         where = f"tenant_id in ({placeholders}) and workflow_id = ? and run_id = ?"
         params = [*tenant_ids, workflow_id, run_id]
         identities = self.connection.execute(
-            f"select count(*) from stg_events where {where} and identity_conflict", params
+            f"select count(*) from stg_events where {where} and identity_conflict "
+            "and event_kind <> 'comparison_attestation'",
+            params,
         ).fetchone()[0]
         incomplete, unavailable = self.connection.execute(
             "select count(*) filter (where incomplete), "
@@ -246,6 +337,8 @@ class SnapshotReader:
                 "declared_at": min(_text(row["declared_at"]) for row in rows),
                 "completeness_known": all(row["completeness_known"] for row in rows),
                 "metrics_complete": all(row["metrics_complete"] for row in rows),
+                "online_cost_complete": all(row["online_cost_complete"] for row in rows),
+                "offline_cost_complete": all(row["offline_cost_complete"] for row in rows),
                 "declaration_versions": 1,
             }
         )
@@ -349,15 +442,24 @@ class SnapshotReader:
             "limit ? offset ?",
             [*params, page_size, (page - 1) * page_size],
         )
+        node_columns = {r[0] for r in self.connection.execute("describe mart_nodes").fetchall()}
+        scope_fields = (
+            ", offline_model_cost, provider_spend, online_cost_complete, offline_cost_complete"
+            if "provider_spend" in node_columns
+            else ""
+        )
         for row in rows:
             node_rows = self._rows(
                 "select node_name, currency, model_cost, call_count, incomplete, trace_id, "
-                "evidence_event_id from mart_nodes where tenant_id = ? and workflow_id = ? "
+                f"evidence_event_id{scope_fields} from mart_nodes where tenant_id = ? "
+                "and workflow_id = ? "
                 "and run_id = ? and task_id = ? order by node_name",
                 [row["tenant_id"], workflow_id, run_id, row["task_id"]],
             )
             for node in node_rows:
-                node["model_cost"] = _money(node["model_cost"])
+                for field in ("model_cost", "offline_model_cost", "provider_spend"):
+                    if field in node:
+                        node[field] = _money(node[field])
             row["nodes"] = node_rows
         return {"items": rows, "page": page, "page_size": page_size, "total": total}
 

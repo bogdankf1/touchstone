@@ -226,14 +226,14 @@ def published(tmp_path):
         db.execute("""
             create table int_calls (
                 tenant_id varchar, workflow_id varchar, run_id varchar,
-                task_id varchar, incomplete boolean, unavailable integer,
+                task_id varchar, call_id varchar, incomplete boolean, unavailable integer,
                 price_table_version varchar
             )
         """)
         db.execute("""
             insert into int_calls values
-            ('tenant-a','workflow','run','a1',true,1,'price-v1'),
-            ('tenant-b','workflow','run','b1',false,0,'price-v1')
+            ('tenant-a','workflow','run','a1','actual-source-call',true,1,'price-v1'),
+            ('tenant-b','workflow','run','b1','actual-source-call-b',false,0,'price-v1')
         """)
         db.execute("""
             create table raw_declarations (

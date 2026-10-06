@@ -1,0 +1,39 @@
+---
+title: Reckoner v1 local runtime profiles (simulated data; one heavy profile at a time)
+---
+flowchart LR
+    subgraph prepare["prepare profile: infra/compose.reckoner-v1.yaml"]
+        owner["owner job<br/>reckoner migrate / v1 import / v1 smoke seed, graph"]
+        evidence["worker job<br/>evidence assembly"]
+        neo4j[("Neo4j Community + GDS<br/>graph, Louvain, PageRank")]
+    end
+    subgraph online["online profile"]
+        worker["worker job<br/>LangGraph workflow"]
+        api["Reckoner API<br/>/health/ready, /v1/cases, /v1/reviews"]
+        web["Next.js<br/>dashboard, console, settings"]
+        papi["Touchstone read API"]
+    end
+    subgraph refresh["refresh profile"]
+        exporter["exporter job<br/>v1 OTLP outbox"]
+        collector["OTel Collector<br/>persistent queue"]
+        clickhouse[("ClickHouse raw events")]
+        warehouse["touchstone refresh<br/>dbt, MetricFlow, DuckDB"]
+    end
+    postgres[("Postgres 17 + pgvector<br/>instance-scoped external volume")]
+    jev["Jev"]
+    anthropic["Anthropic"]
+    owner --> postgres
+    owner --> neo4j
+    evidence --> neo4j
+    evidence --> postgres
+    worker --> postgres
+    worker -. approved protocol only .-> jev
+    worker -. approved protocol only .-> anthropic
+    api --> postgres
+    web --> api
+    web --> papi
+    exporter --> postgres
+    exporter --> collector
+    collector --> clickhouse
+    clickhouse --> warehouse
+    warehouse --> papi

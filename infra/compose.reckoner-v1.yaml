@@ -1,0 +1,234 @@
+# Reckoner v1 local runtime on simulated data. Run ONE profile at a time, each under its
+# own project, and never alongside Phase 2 or kind on the 8 GB Docker allocation:
+#   docker compose -p "$RECKONER_V1_INSTANCE-prepare" --profile prepare -f infra/compose.reckoner-v1.yaml ...
+#   docker compose -p "$RECKONER_V1_INSTANCE-online"  --profile online  -f infra/compose.reckoner-v1.yaml ...
+#   docker compose -p "$RECKONER_V1_INSTANCE-refresh" --profile refresh -f infra/compose.reckoner-v1.yaml ...
+# Every named volume is EXTERNAL and instance-scoped: Compose never creates, adopts or
+# deletes it. `infra/smoke-reckoner-v1.py` or the runbook creates them with an owner label.
+# Memory limits are ceilings taken from measured Phase 3 runs; see
+# docs/operations/reckoner-v1-runbook.md. Resident services plus one one-shot job at a time:
+# prepare 7 GiB, online 4.5 GiB, refresh 5.875 GiB (RECKONER_V1_POSTGRES_MEMORY=512m; the
+# 2.5 GiB refresh job is the largest). Running the 512 MiB exporter concurrently with the
+# refresh job would make refresh 6.375 GiB; the smoke never does that.
+
+# Every container carries the smoke run's sentinel; cleanup checks it before `down`.
+x-sentinel: &sentinel
+  touchstone.smoke.sentinel: ${RECKONER_V1_SENTINEL:-manual}
+
+x-reckoner: &reckoner
+  image: ${RECKONER_V1_IMAGE:-touchstone-reckoner:phase3}
+  user: "10001:10001"
+  restart: "no"
+  labels: *sentinel
+
+services:
+  postgres:
+    profiles: [prepare, online, refresh]
+    labels: *sentinel
+    image: pgvector/pgvector:0.8.6-pg17-bookworm@sha256:cf134a767f474095eeba57e0117be8e568e011a63f33fbf252f14c9b760f8e6f
+    env_file: ${RECKONER_SECRET_DIR:?set the protected disposable credential directory}/postgres.env
+    command: ["postgres", "-c", "shared_buffers=128MB", "-c", "max_connections=40"]
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    mem_limit: ${RECKONER_V1_POSTGRES_MEMORY:-2g}
+    healthcheck:
+      test: ["CMD-SHELL", 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 2s
+      timeout: 3s
+      retries: 60
+
+  neo4j:
+    profiles: [prepare]
+    labels: *sentinel
+    image: neo4j:2026.09.0@sha256:91fb0bf237c41b7b3dcbe84703aa0b82e0d7d067b16e1c8ab21f03fc679edf4e
+    env_file: ${RECKONER_SECRET_DIR}/neo4j-server.env
+    environment:
+      NEO4J_server_memory_heap_initial__size: 512m
+      NEO4J_server_memory_heap_max__size: ${RECKONER_V1_NEO4J_HEAP:-2g}
+      NEO4J_server_memory_pagecache_size: ${RECKONER_V1_NEO4J_PAGECACHE:-512m}
+      NEO4J_dbms_security_procedures_unrestricted: gds.*
+      # Smaller transaction-log files keep a tiny smoke store small; default 256m.
+      NEO4J_db_tx__log_rotation_size: ${RECKONER_V1_NEO4J_TX_LOG_ROTATION:-256m}
+      # Default equals Neo4j's own ("2 days 2G"); the evidence graph pass sets "512M size"
+      # to bound log growth from millions of rolling create/delete transactions.
+      NEO4J_db_tx__log_rotation_retention__policy: ${RECKONER_V1_NEO4J_TX_LOG_RETENTION:-2 days 2G}
+    volumes:
+      - neo4j-data:/data
+      - neo4j-logs:/logs
+      # Checksum-verified GPLv3 GDS 2026.09.0 JAR; see infra/prepare-reckoner-v1-test.sh.
+      - ${RECKONER_GDS_PLUGIN_DIR:?set the verified GDS plugin directory}:/plugins:ro
+    mem_limit: ${RECKONER_V1_NEO4J_MEMORY:-4g}
+    healthcheck:
+      test: ["CMD-SHELL", 'cypher-shell -u neo4j -p "$${NEO4J_AUTH#neo4j/}" "RETURN gds.version()"']
+      interval: 5s
+      timeout: 10s
+      retries: 60
+
+  migrate:
+    <<: *reckoner
+    profiles: [prepare, online, refresh]
+    env_file: ${RECKONER_SECRET_DIR}/provision.env
+    command: ["reckoner", "migrate", "--env-file", "-", "--provision-roles"]
+    mem_limit: 512m
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  owner:
+    <<: *reckoner
+    profiles: [prepare]
+    env_file:
+      - ${RECKONER_SECRET_DIR}/provision.env
+      - ${RECKONER_SECRET_DIR}/neo4j.env
+    command: ["reckoner", "--help"]
+    mem_limit: 1g
+    volumes:
+      - ${RECKONER_V1_DATA_DIR:?set the read-only preparation data directory}:/data:ro
+      - ${RECKONER_V1_EVIDENCE_DIR:?set the writable evidence directory}:/evidence
+
+  worker:
+    <<: *reckoner
+    profiles: [prepare, online]
+    env_file:
+      - ${RECKONER_SECRET_DIR}/runner.env
+      - ${RECKONER_SECRET_DIR}/neo4j.env
+    command: ["reckoner", "--help"]
+    mem_limit: 1g
+    volumes:
+      - ${RECKONER_V1_EVIDENCE_DIR}:/evidence
+
+  api:
+    <<: *reckoner
+    profiles: [online]
+    env_file: ${RECKONER_SECRET_DIR}/api.env
+    command: ["uvicorn", "reckoner.app:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "127.0.0.1::8000"
+    mem_limit: 512m
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+
+  web:
+    profiles: [online]
+    labels: *sentinel
+    image: ${RECKONER_V1_WEB_IMAGE:-touchstone-web:phase3}
+    environment:
+      RECKONER_API_URL: http://api:8000
+      TOUCHSTONE_API_URL: http://platform-api:8000
+    ports:
+      - "127.0.0.1::3000"
+    mem_limit: 512m
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/review').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+
+  clickhouse:
+    extends: {file: compose.platform.yaml, service: clickhouse}
+    labels: *sentinel
+    profiles: [refresh]
+
+  queue-init:
+    extends: {file: compose.platform.yaml, service: queue-init}
+    labels: *sentinel
+    profiles: [refresh]
+    mem_limit: 64m
+    # The image declares VOLUME /var/lib/clickhouse; tmpfs avoids an unowned anonymous volume.
+    tmpfs: [/var/lib/clickhouse]
+
+  warehouse-init:
+    extends: {file: compose.platform.yaml, service: warehouse-init}
+    labels: *sentinel
+    profiles: [online, refresh]
+    mem_limit: 64m
+    # The image declares VOLUME /var/lib/clickhouse; tmpfs avoids an unowned anonymous volume.
+    tmpfs: [/var/lib/clickhouse]
+
+  collector:
+    extends: {file: compose.platform.yaml, service: collector}
+    labels: *sentinel
+    profiles: [refresh]
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      queue-init:
+        condition: service_completed_successfully
+
+  exporter:
+    <<: *reckoner
+    profiles: [refresh]
+    env_file: ${RECKONER_SECRET_DIR}/runner.env
+    command: ["reckoner", "--help"]
+    mem_limit: 512m
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  refresh:
+    extends: {file: compose.platform.yaml, service: refresh}
+    labels: *sentinel
+    image: ${TOUCHSTONE_PLATFORM_IMAGE:-touchstone-platform:phase3}
+    profiles: [refresh]
+    command: ["touchstone", "refresh"]
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      warehouse-init:
+        condition: service_completed_successfully
+
+  platform-api:
+    extends: {file: compose.platform.yaml, service: api}
+    labels: *sentinel
+    image: ${TOUCHSTONE_PLATFORM_IMAGE:-touchstone-platform:phase3}
+    profiles: [online, refresh]
+    ports: !override
+      - "127.0.0.1::8000"
+    depends_on: !override
+      warehouse-init:
+        condition: service_completed_successfully
+
+  verifier:
+    <<: *reckoner
+    profiles: [prepare, online, refresh]
+    env_file:
+      - ${RECKONER_SECRET_DIR}/provision.env
+      - ${RECKONER_SECRET_DIR}/neo4j.env
+    command: ["python", "/verify/verify_reckoner_v1_smoke.py", "--help"]
+    mem_limit: 256m
+    volumes:
+      - ./verify_reckoner_v1_smoke.py:/verify/verify_reckoner_v1_smoke.py:ro
+      - ${RECKONER_V1_EVIDENCE_DIR}:/evidence
+
+volumes:
+  # All names are required. Validation against the preserved Phase 1-3 volume names lives in
+  # infra/smoke-reckoner-v1.py (and the runbook procedure), not in Compose.
+  postgres-data:
+    external: true
+    name: ${RECKONER_V1_POSTGRES_VOLUME:?set RECKONER_V1_POSTGRES_VOLUME (normally INSTANCE-postgres)}
+  neo4j-data:
+    external: true
+    name: ${RECKONER_V1_NEO4J_VOLUME:?set RECKONER_V1_NEO4J_VOLUME (normally INSTANCE-neo4j)}
+  neo4j-logs:
+    external: true
+    name: ${RECKONER_V1_INSTANCE:?set RECKONER_V1_INSTANCE}-neo4j-logs
+  clickhouse-data:
+    external: true
+    name: ${RECKONER_V1_INSTANCE:?set RECKONER_V1_INSTANCE}-clickhouse
+  collector-queue:
+    external: true
+    name: ${RECKONER_V1_INSTANCE:?set RECKONER_V1_INSTANCE}-collector-queue
+  warehouse-data:
+    external: true
+    name: ${RECKONER_V1_INSTANCE:?set RECKONER_V1_INSTANCE}-warehouse

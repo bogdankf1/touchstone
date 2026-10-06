@@ -7,15 +7,19 @@ from pathlib import Path
 from jsonschema import Draft202012Validator, FormatChecker
 
 
-def content_id(document: dict) -> str:
-    payload = json.dumps(
+def canonical_bytes(document: dict) -> bytes:
+    """Canonical JSON (sorted keys, compact, UTF-8, no NaN): the bytes content_id hashes."""
+    return json.dumps(
         document,
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,
         allow_nan=False,
     ).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
+
+
+def content_id(document: dict) -> str:
+    return hashlib.sha256(canonical_bytes(document)).hexdigest()
 
 
 def validate_document(document: dict, schema_path: Path) -> None:

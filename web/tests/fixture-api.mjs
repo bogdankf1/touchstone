@@ -1,4 +1,5 @@
 import { createServer } from 'node:http';
+import { reckonerRoute, resetReckoner } from './reckoner-fixtures.mjs';
 
 let scenario = 'baseline';
 const metadata = {
@@ -136,11 +137,12 @@ const wrap = (data, route = '') => ({
   },
   data,
 });
-const server = createServer((request, response) => {
+const server = createServer(async (request, response) => {
   const url = new URL(request.url, 'http://127.0.0.1:8100');
   response.setHeader('Content-Type', 'application/json');
   if (url.pathname === '/__scenario') {
     scenario = url.searchParams.get('name') || 'baseline';
+    resetReckoner();
     response.end('{}');
     return;
   }
@@ -148,9 +150,29 @@ const server = createServer((request, response) => {
     response.end('{"status":"ok"}');
     return;
   }
+  if (await reckonerRoute(request, response, url, scenario)) return;
   if (scenario === 'unavailable') {
     response.statusCode = 503;
     response.end('{"detail":"published snapshot unavailable"}');
+    return;
+  }
+  if (url.pathname === '/v1/comparisons') {
+    if (scenario === 'comparison-error') {
+      response.statusCode = 500;
+      response.end('{"detail":"comparison failed"}');
+      return;
+    }
+    const arm = (name, cpst, evidence, mode = 'fabricated') => ({...aggregate, run_id:name, cpst,
+      measurement_mode:mode, arm_provenance:[{model_version:'fixture-model',
+      prompt_version:'fixture-prompt', calibration_id:'fixture-'+evidence,
+      evidence_version:evidence, config_version:'fixture-config', question_version:'fixture-question',
+      retrieval_window:'30/90 days', execution_mode:'fabricated', call_ids:[]} ]});
+    const data = {eligible:scenario!=='comparison-ineligible',
+      reasons:scenario==='comparison-ineligible'?['incompatible case membership']:[],
+      delta_cpst:scenario==='comparison-ineligible'?null:'-0.5',
+      baseline:arm('fixture-baseline','2.5','relational',scenario==='comparison-mixed'?'measured':'fabricated'),
+      current:arm('fixture-current','2','gds-augmented')};
+    response.end(JSON.stringify({metadata:{...metadata,generation:scenario==='comparison-generation'?'other':metadata.generation},data}));
     return;
   }
   if (url.pathname === '/v1/workflows') {
@@ -217,6 +239,12 @@ const server = createServer((request, response) => {
           quality: { identity_conflicts: 0, incomplete_calls: 0, unavailable_prices: 0, rejected_events: 0 },
           contribution_rates: contributions,
         };
+    if (scenario === 'offline-pending') {
+      data.online_cost_complete = true;
+      data.offline_cost_complete = false;
+      data.offline_model_cost = null;
+      data.provider_spend = null;
+    }
     if (scenario === 'missing') {
       data.missing_outcomes = 5;
       data.metrics_complete = false;
@@ -261,7 +289,18 @@ const server = createServer((request, response) => {
           task_id: 'synthetic-001',
           nodes: [],
         }
-      : task;
+      : scenario === 'offline-pending'
+        ? {
+            ...task,
+            nodes: task.nodes.map((node) => ({
+              ...node,
+              offline_model_cost: null,
+              provider_spend: null,
+              online_cost_complete: true,
+              offline_cost_complete: false,
+            })),
+          }
+        : task;
     response.end(JSON.stringify(wrap({ items: [item], page: 1, page_size: 25, total: 1 }, 'tasks')));
     return;
   }

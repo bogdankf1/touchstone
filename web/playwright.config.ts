@@ -15,7 +15,7 @@ export default defineConfig({
       command: 'npm run dev -- --hostname 127.0.0.1 --port 3100',
       url: 'http://127.0.0.1:3100',
       reuseExistingServer: false,
-      env: { TOUCHSTONE_API_URL: 'http://127.0.0.1:8100' },
+      env: { TOUCHSTONE_API_URL: 'http://127.0.0.1:8100', RECKONER_API_URL: 'http://127.0.0.1:8100' },
     },
   ],
 });

@@ -59,4 +59,7 @@ def create_app(api_dsn: str | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="run not found")
         return {"items": items, "limit": limit, "offset": offset}
 
+    from reckoner.v1.api import register
+
+    register(application, api_dsn)
     return application

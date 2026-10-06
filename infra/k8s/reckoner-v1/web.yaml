@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: touchstone-phase3-v1-smoke
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: web}
+  template:
+    metadata:
+      labels: {app: web, touchstone.dev/profile: online}
+    spec:
+      securityContext: {runAsNonRoot: true, runAsUser: 1000}
+      containers:
+        - name: web
+          image: touchstone-web:phase3
+          imagePullPolicy: Never
+          env:
+            # Server-side only; no credential reaches the browser.
+            - {name: RECKONER_API_URL, value: "http://api:8000"}
+            - {name: TOUCHSTONE_API_URL, value: "http://api.touchstone-phase3-v1-refresh:8000"}
+          ports:
+            - {name: http, containerPort: 3000}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: "1", memory: 512Mi}
+          readinessProbe:
+            httpGet: {path: /review, port: http}
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: {path: /review, port: http}
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          securityContext: {allowPrivilegeEscalation: false}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+  namespace: touchstone-phase3-v1-smoke
+spec:
+  selector: {app: web}
+  ports:
+    - {name: http, port: 3000, targetPort: http}

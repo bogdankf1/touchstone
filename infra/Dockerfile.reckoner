@@ -5,14 +5,21 @@ COPY --from=uv /uv /uvx /bin/
 WORKDIR /app
 COPY pyproject.toml uv.lock ./
 COPY workloads/reckoner/ workloads/reckoner/
+COPY workloads/synthetic/pyproject.toml workloads/synthetic/pyproject.toml
+COPY platform/pyproject.toml platform/pyproject.toml
 COPY contracts/schemas/ contracts/schemas/
 ARG RECKONER_BUILD_REVISION
-RUN RECKONER_BUILD_REVISION="$RECKONER_BUILD_REVISION" uv sync --frozen --no-dev --all-packages --no-editable
+# Only the Reckoner package and its locked dependencies; workspace manifests resolve the lock.
+RUN RECKONER_BUILD_REVISION="$RECKONER_BUILD_REVISION" uv sync --frozen --no-dev --package reckoner --no-editable
 
 FROM python:3.12-slim@sha256:2f17fc044b579bab302c2e8054d3a686e2cb9a83de48e70534b94cd8ebbe06a9
 WORKDIR /app
 COPY --from=build /app/.venv /app/.venv
-ENV PATH="/app/.venv/bin:$PATH"
+RUN mkdir -p /home/reckoner && chown 10001:10001 /home/reckoner
+ENV PATH="/app/.venv/bin:$PATH" \
+    HOME=/home/reckoner \
+    MPLCONFIGDIR=/home/reckoner/.matplotlib \
+    PYTHONUNBUFFERED=1
 USER 10001:10001
 EXPOSE 8000
 CMD ["uvicorn", "reckoner.app:app", "--host", "0.0.0.0", "--port", "8000"]

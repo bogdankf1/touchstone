@@ -1,0 +1,22 @@
+---
+config:
+  flowchart:
+    curve: linear
+---
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	intake(intake)
+	evidence(evidence)
+	score(score)
+	calibrate_route(calibrate_route)
+	persist_decision(persist_decision)
+	__end__([<p>__end__</p>]):::last
+	__start__ --> intake;
+	calibrate_route --> persist_decision;
+	evidence --> score;
+	intake --> evidence;
+	score --> calibrate_route;
+	persist_decision --> __end__;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc

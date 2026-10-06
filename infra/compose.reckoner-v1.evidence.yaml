@@ -1,0 +1,23 @@
+# Reckoner v1 real-archive evidence preparation on simulated data (`reckoner v1 evidence`).
+# Load it after the base file, with the prepare profile only:
+#   docker compose -p "$RECKONER_V1_INSTANCE-prepare" --profile prepare \
+#     -f infra/compose.reckoner-v1.yaml -f infra/compose.reckoner-v1.evidence.yaml ...
+# Compose interpolates every service in every loaded file, whatever the profile, so these
+# four inputs are required only when this file is loaded. All four are read-only binds of
+# the immutable inputs; copying them into RECKONER_V1_DATA_DIR would add about 8.4 GB.
+services:
+  owner:
+    # Chosen per pass within the 7 GiB prepare profile: Pass R runs without Neo4j (Postgres
+    # 2g + job 3g); Pass G runs with it (RECKONER_V1_POSTGRES_MEMORY=1g + Neo4j 4g + job 2g).
+    # Each day's assembly runs in a short-lived child whose transient is returned on exit.
+    mem_limit: ${RECKONER_V1_EVIDENCE_JOB_MEMORY:?set the evidence job memory for this pass}
+    volumes:
+      - ${RECKONER_V1_BUNDLE_DIR:?set the frozen Phase 3 preparation bundle directory}:/inputs/bundle:ro
+      - ${RECKONER_V1_SOURCE_DIR:?set the immutable simulated source archive directory}:/inputs/source:ro
+      - ${RECKONER_V1_BASELINE_DIR:?set the Phase 1 baseline bundle directory}:/inputs/baseline:ro
+      - ${RECKONER_V1_SCALER_DIR:?set the frozen development scaler directory}:/inputs/scaler:ro
+  neo4j:
+    environment:
+      # A hung graph transaction fails instead of blocking a run. Measured worst cases: one
+      # day's import about 10 s, the seed about 10 s, a projection with metrics about 20 s.
+      NEO4J_db_transaction_timeout: ${RECKONER_V1_NEO4J_TX_TIMEOUT:-30m}

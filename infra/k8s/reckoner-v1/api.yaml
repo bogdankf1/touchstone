@@ -1,0 +1,44 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: touchstone-phase3-v1-smoke
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: api}
+  template:
+    metadata:
+      labels: {app: api, touchstone.dev/profile: online}
+    spec:
+      securityContext: {runAsNonRoot: true, runAsUser: 10001}
+      containers:
+        - name: api
+          image: touchstone-reckoner:phase3
+          imagePullPolicy: Never
+          command: ["uvicorn", "reckoner.app:app", "--host", "0.0.0.0", "--port", "8000"]
+          envFrom:
+            - secretRef: {name: reckoner-v1-api}
+          ports:
+            - {name: http, containerPort: 8000}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: 500m, memory: 512Mi}
+          # Ready only when every packaged migration is applied; never depends on the graph.
+          readinessProbe:
+            httpGet: {path: /health/ready, port: http}
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: {path: /health/live, port: http}
+            periodSeconds: 10
+          securityContext: {allowPrivilegeEscalation: false}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api
+  namespace: touchstone-phase3-v1-smoke
+spec:
+  selector: {app: api}
+  ports:
+    - {name: http, port: 8000, targetPort: http}

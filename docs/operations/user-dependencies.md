@@ -1,15 +1,16 @@
 # Inputs and access needed from the owner
 
-Updated: 2026-09-28. This checklist records dependencies, not authorization to
+Updated: 2026-09-30. This checklist records dependencies, not authorization to
 provision paid services. Keep secret values outside Git and chat.
 
 | Dependency | Current status | Needed from the owner | Gate affected |
 |---|---|---|---|
 | Snowflake | Local DuckDB Phase 2 verified; Snowflake remains configuration-only and untested | Account identifier, authentication configured privately, approved role/database/schema/warehouse, confirmation of credits and spending limit | Live Snowflake staging, semantic, dashboard and cost parity; does not block local Phase 2 |
-| Jev | Waiting for access; no development stub or substitute scorer approved | API access, credentials configured privately, available API documentation, model/version, rate limits and pricing/budget confirmation | Phase 3 scoring integration and calibration |
+| Jev | Owner configured `JEV_API_KEY` privately, supplied [API documentation](https://docs.typesafe.ai/introduction), and reports USD 10 billing credits; live access remains unverified | Verify authentication/account limits under the implementation plan; approve concrete bounded scoring/calibration runs | Phase 3 scoring integration and calibration |
 | Anthropic | Phase 1 measured access worked; current credentials are not revalidated | Renew access only if it stops working; approve a concrete paid evaluation or generation run before additional spending | Later case-note generation and DeepEval/Ragas judge runs; no new calls needed for Phase 2 baseline replay |
 | GitHub publishing | Owner has handled pushes and merges | Push reviewed branches and merge after checks pass, unless publishing responsibility is explicitly changed | Publishing completed phases; local implementation is independent |
 | Phase 2 design and plan | Approved on 2026-09-26; local DuckDB implementation and deployment verified on 2026-09-28 | No further planning input needed; owner handles branch publication | Approval gate satisfied |
+| Phase 3 design and plan | [Written specification](../spec/004-reckoner-v1.md) and [implementation plan](../superpowers/plans/2026-09-30-reckoner-v1.md) approved on 2026-09-30 | No further design/plan approval needed; concrete paid-run approvals remain separate | Subagent-driven implementation authorized |
 
 ## Details to settle when access becomes available
 
@@ -23,6 +24,17 @@ For Jev, verify authentication and request/response semantics before building th
 integration. Confirm supported probability semantics, model identity and rate
 limits. Calibration uses separate development data; the frozen baseline cohort
 must not become a tuning set.
+
+Documentation checked on 2026-09-30 lists `jev-1.13.0` at USD 0.042 per million
+input tokens with free output, and changeable limits of 40 requests/second and
+100,000 tokens/second. These are documented service limits, not verified account
+entitlements. The owner approved binary Choice scoring with separate confidence,
+evidence-backed risk indicators instead of model feature attribution, and an
+explicit simulated seven-day historical-resolution delay. See the Phase 3 spec
+and [provider model documentation](https://docs.typesafe.ai/models). No paid Jev
+calls have been made to prepare that specification; the reported credit balance
+is not a measured billing reconciliation or permission to spend it without a
+bounded run protocol.
 
 For paid Anthropic evaluations, present the fixture count, model, cost bound and
 remaining shared budget first. Phase 1 ended with 1,040 settled calls costing

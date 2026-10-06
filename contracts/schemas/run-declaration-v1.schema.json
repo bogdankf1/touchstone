@@ -13,6 +13,9 @@
   ],
   "properties": {
     "schema_version": { "const": "run-declaration-v1" },
+    "lifecycle_version": { "const": "root-work-v1" },
+    "provider_prices": {"type": "array", "uniqueItems": true, "items": {"type": "object", "additionalProperties": false, "required": ["provider", "model", "price_table_version"], "properties": {"provider": {"$ref": "#/$defs/nonempty"}, "model": {"$ref": "#/$defs/nonempty"}, "price_table_version": {"$ref": "#/$defs/nonempty"}}}},
+    "comparison": {"type":"object","additionalProperties":false,"required":["reference_version","business_config_id","arm"],"properties":{"reference_version":{"$ref":"#/$defs/nonempty"},"business_config_id":{"$ref":"#/$defs/nonempty"},"arm":{"type":"object","additionalProperties":false,"required":["config_version","model_version","prompt_version","question_version","calibration_id","evidence_version","retrieval_window","execution_mode","call_ids"],"properties":{"config_version":{"$ref":"#/$defs/nonempty"},"model_version":{"$ref":"#/$defs/nonempty"},"prompt_version":{"$ref":"#/$defs/nonempty"},"question_version":{"$ref":"#/$defs/nonempty"},"calibration_id":{"$ref":"#/$defs/nonempty"},"evidence_version":{"$ref":"#/$defs/nonempty"},"retrieval_window":{"$ref":"#/$defs/nonempty"},"execution_mode":{"$ref":"#/$defs/nonempty"},"call_ids":{"type":"array","uniqueItems":true,"items":{"$ref":"#/$defs/nonempty"}}}}}},
     "event_id": { "$ref": "#/$defs/nonempty" },
     "tenant_id": { "$ref": "#/$defs/nonempty" },
     "workflow_id": { "$ref": "#/$defs/nonempty" },

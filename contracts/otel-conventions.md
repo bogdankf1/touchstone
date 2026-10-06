@@ -93,3 +93,119 @@ and `cache_creation_tokens`; absent fields are null and invalid received values 
 and outbox are committed atomically, including invalid-but-received responses. No received
 response means no artifact or checksum. JSON/Markdown reports link tenant/task/call identities
 to the checksum without including response text. Existing artifacts/outbox bytes are not rewritten.
+
+## Additive root-work lifecycle and scoped accounting
+
+Existing Phase 2 declarations/events retain their original interpretation. New producers can
+opt in before execution with `run-declaration-v1.lifecycle_version="root-work-v1"`.
+`expected_task_ids` remains the exact immutable root population. `evaluation_suites` names the
+permitted suite versions/checks before any result is available. Optional `provider_prices`
+contains `{provider, model, price_table_version}` bindings; distinct models keep their distinct
+price snapshots. Conflicting snapshots for the same provider/model make cost unavailable.
+
+The additional `measurement-v1` event kinds are:
+
+- `work_declaration`: root `task_id`; payload `{child_task_ids, evaluation_suites}`. Both arrays
+  are explicit, including empty arrays. Each suite has the existing suite/version/check shape
+  and exact case IDs. There is one immutable declaration per root. New case populations come
+  from this declaration, never from successful results. Missing/conflicting declarations,
+  undeclared suites/checks, or missing declared child executions prevent closure. A root
+  must itself have an unambiguous terminal execution (completed or failed); declarations
+  and closures alone never establish execution or complete cost.
+- `work_closure`: root `task_id`; payload `{cost_scope: "online"|"offline", call_ids: string[],
+  work_status: "completed"|"failed", billing_status: "complete"|"uncertain"}`. Each scope has
+  its own immutable closure and exact actual call identities. Unknown usage, missing/extra
+  calls, conflicting identities or uncertain billing cannot become a complete zero subtotal.
+  Failed terminal work with fully settled calls can have complete cost while quality fails.
+
+`provider_usage.payload.cost_scope` is optional for compatibility: absent means `online`.
+Online `model_cost` and CPST exclude offline calls. `offline_model_cost`, `provider_spend`,
+`online_cost_complete`, and `offline_cost_complete` are additional generic run/API fields.
+The same fields appear on task node rows; node `model_cost` is online, while the dashboard
+node table labels total `provider_spend` explicitly. Node `model_cost` and
+`offline_model_cost` are the node's observed scope costs: run-level scope incompleteness
+withholds run totals and provider spend but not observed node cost, and the completeness flags
+stay on the node row. A node scope amount is null when any of its calls in that scope has an
+unknown amount or the node mixes currencies. A node row carries one currency label, so a
+node whose calls mix currencies, in either or across scopes, withholds all of its node
+amounts rather than summing them under one label. This is an accepted limitation: node rows
+were once split per currency, but are now one row per node. Provider spend requires both scopes
+complete and compatible currencies. An uncertain offline
+judge leaves online model cost available independently; required missing quality checks still
+leave overall metrics incomplete. Calls retain their original task/run/provider identities,
+including judges. There are no duplicated costs in shadow runs or node-name classifications.
+
+A review's `recommendation` may be null; then `agreement` is null, not false. Optional review
+`started_at` retains actual task intake and pairs with `reviewed_at` for lead time. Note work
+uses an explicit child execution; its duration starts at intake while the root duration ends
+at the persisted decision. Child completion never changes root decision timestamps.
+
+Reckoner's producer maps purpose to scope at the workload boundary: final scoring and
+`online-note` are online; `pilot`, `calibration`, `development`, `validation`, `graph-comparison`
+and `judge` are offline. `fabricated` scoring fixtures use online scope but retain fabricated
+measurement provenance. All transaction sources remain simulated. No raw cases, prompts,
+responses, graph text, hidden labels, credentials, or evidence bodies cross OTLP.
+
+### Durable producer handoff
+
+`V1Repository.create_run` atomically stores the run declaration with root membership.
+`persist_decision` atomically stores the root execution and required work declaration with
+case creation. `measurement_events(run, task, outcomes)` maps persisted workload bundles;
+`run` contains `manifest` and `config`, and `task` contains `decision`, normalized `calls`,
+optional `note_result`, `reviews`, and `evaluations`. Domain outcomes and metric contributions
+are calculated in Reckoner with the frozen threshold/oracle inputs.
+
+`enqueue_events(repo, events)` validates and inserts exact deterministic OTLP protobuf bytes;
+matching identities are idempotent, changed content conflicts. Usage events are deferred
+until an authoritative cost settlement is available: uncertain or unanswered calls stay in
+operational storage and prevent closure, while previously delivered bytes remain immutable.
+Interim exported call counts count settled observations, not all dispatched calls, and cannot
+claim final coverage without closure. `collect_run(repo, tenant_id,
+run_id)` maps late persisted calls/notes/reviews/evaluations. `evaluate_run` requires the
+existing evaluator role and emits only derived outcomes/contributions. `close_scope(repo,
+*, tenant_id, run_id, task_id, scope)` checks terminal work and settled exact calls; admission
+and closure lock the same task row, and new calls to a closed scope are rejected by SQL.
+`export_pending(repo, exporter, *, limit)` marks delivery only on a successful OTLP HTTP
+protobuf response with zero rejected spans. Collector interruption or partial rejection
+retains pending exact bytes for retry; ambiguous acknowledgement can duplicate receipts,
+which the warehouse deduplicates.
+
+The Task 8 `v1_outbox` JSON source documents, IDs, UTF-8 PostgreSQL JSON bytes, and timestamps
+remain immutable. Migration 013 adds a separate `v1_otlp_delivery` table. Mapping preserves
+the original review event ID and recommendation snapshot; it never rewrites the source.
+
+Commands use DSN-only files, with `--env-file -` reading the named DSN from the environment:
+
+```text
+reckoner v1 telemetry-collect --tenant-id ID --run-id ID --env-file RUNNER_FILE
+reckoner v1 telemetry-collect-scoring --tenant-id ID --run-id ID --env-file RUNNER_FILE
+reckoner v1 telemetry-evaluate --tenant-id ID --run-id ID --env-file EVALUATOR_FILE
+reckoner v1 telemetry-close --tenant-id ID --run-id ID --task-id ID --scope online|offline --env-file RUNNER_FILE
+reckoner v1 telemetry-export --endpoint http://collector:4318 --limit 500 --env-file RUNNER_FILE
+```
+
+Runner files contain only `RECKONER_RUNNER_DSN`; evaluator files contain only
+`RECKONER_EVALUATOR_DSN`. Export sends pending delivery rows across the runner's permitted
+local dataset. No command reads a provider key or dispatches inference.
+
+Offline Task 4 score-only runs are created with
+`create_run(manifest, config_id, telemetry_mode="scoring-only")` (the default is `workflow`).
+This mode is immutable and independent of purpose; either collector rejects a mismatched mode.
+They use `collect_scoring_run` with an
+explicit offline scoring purpose (`pilot`, `calibration`, `development`, `validation`, `graph-comparison`). Their run
+has no decision metric or note-suite expectations. Empty per-root work is declared at run
+creation. Actual admission/response timestamps produce a scoring execution; there is no
+fabricated routing decision, outcome, or note. All source task protocols must be closed using
+`ProviderBudget.close(protocol_id)` before terminal scoring work and scope closure; unresolved
+billing remains incomplete. A score-only execution stays started until billing is settled;
+then persisted attempt outcomes determine completed (a valid scoring response) versus failed
+(no valid response). A billed failed score contributes spend but never successful completion
+or successful-latency population. Task 13 must finish all intended calls before closing telemetry
+scopes, keep source IDs for reused results, and close online and offline separately. A
+score-only run can expose complete provider spend while decision outcomes/CPST remain absent.
+
+`reconcile_report(local_report, warehouse_report, expected)` compares every independently
+specified expected path, including tenant/run/task IDs and a caller-pinned warehouse
+generation. Decimal strings compare exactly; null/missing is never zero. The independent
+simulated receipt is `workloads/reckoner/expectations/reckoner-v1-local.json`. It demonstrates
+software plumbing, not measured provider or quality acceptance.

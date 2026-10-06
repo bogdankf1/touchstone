@@ -1,12 +1,13 @@
-import { ApiError, getRunSummary, getRuns, getTasks, getTrace, getWorkflows } from '../lib/api';
-import type { Envelope, Filters, Run } from '../lib/types';
+import { ApiError, getComparison, getRunSummary, getRuns, getTasks, getTrace, getWorkflows } from '../lib/api';
+import type { Comparison, Envelope, Filters, Run } from '../lib/types';
 import { RunFilters } from '../components/run-filters';
+import { RunComparison } from '../components/run-comparison';
 import { MetricSummary } from '../components/metric-summary';
 import { CostTable } from '../components/cost-table';
 import { EvaluationTable } from '../components/evaluation-table';
 import { TaskTable } from '../components/task-table';
 import { RefreshState } from '../components/refresh-state';
-import Link from 'next/link';
+import { AppShell as Shell } from '../components/app-shell';
 
 type Params = Record<string, string | string[] | undefined>;
 function param(values: Params, name: string) {
@@ -105,6 +106,8 @@ export default async function Home({ searchParams }: { searchParams: Promise<Par
       {selectedRun ? (
         <RunContent
           filters={filters}
+          comparisonRun={param(params, 'compare')}
+          runs={workflowRuns}
           generation={discovery.metadata.generation}
           traceId={param(params, 'trace')}
           traceTenant={param(params, 'trace_tenant')}
@@ -121,11 +124,15 @@ export default async function Home({ searchParams }: { searchParams: Promise<Par
 
 async function RunContent({
   filters,
+  comparisonRun,
+  runs,
   generation,
   traceId,
   traceTenant,
 }: {
   filters: Filters;
+  comparisonRun: string;
+  runs: Run[];
   generation: string;
   traceId: string;
   traceTenant: string;
@@ -161,6 +168,16 @@ async function RunContent({
     );
   }
   if (changed) return <SnapshotChanged />;
+  let comparison: Comparison | null = null;
+  let comparisonChanged = false;
+  let comparisonFailed = false;
+  if (comparisonRun && runs.some(r => r.run_id === comparisonRun)) {
+    try {
+      const response = await getComparison(filters, comparisonRun);
+      comparisonChanged = response.metadata.generation !== generation;
+      if (!comparisonChanged) comparison = response.data;
+    } catch { comparisonFailed = true; }
+  }
   const run = summary.data;
   return (
     <>
@@ -197,6 +214,7 @@ async function RunContent({
         <p className="callout">Excluded incompatible tenants: {run.excluded_tenants!.join(', ')}</p>
       )}
       <MetricSummary run={run} />
+      <RunComparison comparison={comparison} changed={comparisonChanged} failed={comparisonFailed} filters={filters} runs={runs} selected={comparisonRun} />
       <div className="content-grid">
         <CostTable run={run} tasks={tasks.data.items} />
         <EvaluationTable run={run} />
@@ -211,34 +229,6 @@ function SnapshotChanged() {
     <div className="empty">
       <h2>Snapshot changed during read</h2>
       <p>The published generation changed while loading this page. Reload to read one consistent snapshot.</p>
-    </div>
-  );
-}
-
-function Shell({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="app-shell">
-      <aside className="sidebar">
-        <div className="brand">
-          <span className="brand-mark">T</span>
-          <span>TOUCHSTONE</span>
-        </div>
-        <nav aria-label="Primary">
-          <Link className="active" href="/">
-            Runs
-          </Link>
-          <span>Evaluations</span>
-          <span>Data health</span>
-        </nav>
-        <div className="sidebar-foot">LOCAL PREVIEW</div>
-      </aside>
-      <main id="main">
-        <header className="topbar">
-          <span>Measurement / Runs</span>
-          <span>Touchstone v1</span>
-        </header>
-        <div className="main-inner">{children}</div>
-      </main>
     </div>
   );
 }

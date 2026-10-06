@@ -39,7 +39,10 @@
         "outcome",
         "evaluation",
         "review",
-        "metric_contribution"
+        "metric_contribution",
+        "work_declaration",
+        "work_closure",
+        "comparison_attestation"
       ]
     },
     "occurred_at": { "type": "string", "format": "date-time" },
@@ -48,6 +51,7 @@
     "payload": { "type": "object" }
   },
   "oneOf": [
+    {"properties":{"event_kind":{"const":"comparison_attestation"},"payload":{"$ref":"#/$defs/comparison_attestation"}}},
     {
       "properties": {
         "event_kind": { "const": "execution" },
@@ -83,9 +87,12 @@
         "event_kind": { "const": "metric_contribution" },
         "payload": { "$ref": "#/$defs/metric_contribution" }
       }
-    }
+    },
+    {"properties": {"event_kind": {"const": "work_declaration"}, "payload": {"$ref": "#/$defs/work_declaration"}}},
+    {"properties": {"event_kind": {"const": "work_closure"}, "payload": {"$ref": "#/$defs/work_closure"}}}
   ],
   "$defs": {
+    "comparison_attestation": {"type":"object","additionalProperties":false,"required":["attestation_id","source_declaration_sha256","provenance","comparison"],"properties":{"attestation_id":{"type":"string","pattern":"^[a-f0-9]{64}$"},"source_declaration_sha256":{"type":"string","pattern":"^[a-f0-9]{64}$"},"provenance":{"type":"object","additionalProperties":false,"required":["source_manifest_sha256","config_version","dataset_version","config_artifact_sha256","dataset_artifact_sha256","comparison_artifact_sha256"],"properties":{"source_manifest_sha256":{"oneOf":[{"type":"string","pattern":"^[a-f0-9]{64}$"},{"type":"null"}]},"config_version":{"$ref":"#/$defs/nonempty"},"dataset_version":{"$ref":"#/$defs/nonempty"},"config_artifact_sha256":{"type":"string","pattern":"^[a-f0-9]{64}$"},"dataset_artifact_sha256":{"type":"string","pattern":"^[a-f0-9]{64}$"},"comparison_artifact_sha256":{"type":"string","pattern":"^[a-f0-9]{64}$"}}},"comparison":{"type":"object","additionalProperties":false,"required":["reference_version","business_config_id","arm"],"properties":{"reference_version":{"$ref":"#/$defs/nonempty"},"business_config_id":{"$ref":"#/$defs/nonempty"},"arm":{"type":"object","additionalProperties":false,"required":["config_version","model_version","prompt_version","question_version","calibration_id","evidence_version","retrieval_window","execution_mode","call_ids"],"properties":{"config_version":{"$ref":"#/$defs/nonempty"},"model_version":{"$ref":"#/$defs/nonempty"},"prompt_version":{"$ref":"#/$defs/nonempty"},"question_version":{"$ref":"#/$defs/nonempty"},"calibration_id":{"$ref":"#/$defs/nonempty"},"evidence_version":{"$ref":"#/$defs/nonempty"},"retrieval_window":{"$ref":"#/$defs/nonempty"},"execution_mode":{"$ref":"#/$defs/nonempty"},"call_ids":{"type":"array","uniqueItems":true,"items":{"$ref":"#/$defs/nonempty"}}}}}}}},
     "nonempty": {
       "type": "string",
       "minLength": 1
@@ -182,6 +189,7 @@
         "provider": { "$ref": "#/$defs/nonempty" },
         "model": { "$ref": "#/$defs/nonempty" },
         "call_id": { "$ref": "#/$defs/nonempty" },
+        "cost_scope": { "enum": ["online", "offline"] },
         "input_tokens": { "type": ["integer", "null"], "minimum": 0 },
         "output_tokens": { "type": ["integer", "null"], "minimum": 0 },
         "cached_tokens": { "type": ["integer", "null"], "minimum": 0 },
@@ -298,7 +306,8 @@
         "reviewed_at"
       ],
       "properties": {
-        "recommendation": { "$ref": "#/$defs/nonempty" },
+        "recommendation": { "$ref": "#/$defs/nullable_nonempty" },
+        "started_at": { "type": "string", "format": "date-time" },
         "review_id": { "$ref": "#/$defs/nonempty" },
         "reviewer_id": { "$ref": "#/$defs/nonempty" },
         "reviewer_type": { "enum": ["human", "simulated"] },
@@ -324,6 +333,97 @@
         "unit": { "$ref": "#/$defs/nonempty" },
         "definition_version": { "$ref": "#/$defs/nonempty" },
         "cost_component_id": { "$ref": "#/$defs/nullable_nonempty" }
+      }
+    },
+    "work_declaration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "child_task_ids",
+        "evaluation_suites"
+      ],
+      "properties": {
+        "child_task_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/nonempty"
+          }
+        },
+        "evaluation_suites": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "suite_id",
+              "suite_version",
+              "expected_case_ids",
+              "required_checks"
+            ],
+            "properties": {
+              "suite_id": {
+                "$ref": "#/$defs/nonempty"
+              },
+              "suite_version": {
+                "$ref": "#/$defs/nonempty"
+              },
+              "expected_case_ids": {
+                "type": "array",
+                "uniqueItems": true,
+                "items": {
+                  "$ref": "#/$defs/nonempty"
+                }
+              },
+              "required_checks": {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": {
+                  "$ref": "#/$defs/nonempty"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "work_closure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cost_scope",
+        "call_ids",
+        "work_status",
+        "billing_status"
+      ],
+      "properties": {
+        "cost_scope": {
+          "enum": [
+            "online",
+            "offline"
+          ]
+        },
+        "call_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/nonempty"
+          }
+        },
+        "work_status": {
+          "enum": [
+            "completed",
+            "failed"
+          ]
+        },
+        "billing_status": {
+          "enum": [
+            "complete",
+            "uncertain"
+          ]
+        }
       }
     }
   }

@@ -24,6 +24,10 @@ uv run --frozen ruff check .
 uv run --frozen ruff format --check .
 ```
 
+The offline tests also need `kubectl` on `PATH` (pinned v1.36.1 in CI; v1.36.1 locally): they
+render the Reckoner v1 kind refresh overlay with `kubectl kustomize` and fail, not skip,
+without it.
+
 Postgres integration tests require a disposable Postgres 17 instance and
 `RECKONER_TEST_OWNER_DSN` with permission to create temporary databases/login roles; run
 `uv run --frozen --all-packages pytest -m integration -q`. ClickHouse ingestion integration is

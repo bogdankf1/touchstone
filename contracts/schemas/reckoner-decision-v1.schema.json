@@ -1,0 +1,135 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://touchstone.example/contracts/reckoner-decision-v1.schema.json",
+  "title": "Reckoner decision v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "tenant_id",
+    "run_id",
+    "task_id",
+    "transaction_id",
+    "decision_id",
+    "outcome",
+    "config_id",
+    "evidence_id",
+    "call_id",
+    "raw_probability",
+    "effective_probability",
+    "effective_low_threshold",
+    "effective_high_threshold",
+    "scorer_status",
+    "degraded_reason",
+    "started_at",
+    "completed_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "reckoner-decision-v1"
+    },
+    "tenant_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "task_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "transaction_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "decision_id": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "outcome": {
+      "enum": [
+        "auto-approve",
+        "auto-decline",
+        "escalate"
+      ]
+    },
+    "config_id": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "evidence_id": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "call_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "raw_probability": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^(?:0(?:\\.[0-9]+)?|1(?:\\.0+)?)$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "effective_probability": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^(?:0(?:\\.[0-9]+)?|1(?:\\.0+)?)$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "effective_low_threshold": {
+      "type": "string",
+      "pattern": "^(?:0(?:\\.[0-9]+)?|1(?:\\.0+)?)$"
+    },
+    "effective_high_threshold": {
+      "type": "string",
+      "pattern": "^(?:0(?:\\.[0-9]+)?|1(?:\\.0+)?)$"
+    },
+    "scorer_status": {
+      "enum": [
+        "succeeded",
+        "failed",
+        "uncertain",
+        "unavailable"
+      ]
+    },
+    "degraded_reason": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "started_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "completed_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

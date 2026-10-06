@@ -223,3 +223,28 @@ def test_cli_database_errors_never_echo_dsn_or_password(tmp_path, capsys):
     error = capsys.readouterr().err
     assert error == "migrate failed: database unavailable\n"
     assert password not in error
+
+
+def test_readiness_uses_the_migration_list_computed_once_at_import(monkeypatch):
+    from pathlib import Path
+
+    import reckoner.storage.postgres as postgres
+
+    assert postgres.PACKAGED_MIGRATIONS[-1].startswith("019_")
+
+    def no_glob(*args, **kwargs):
+        raise AssertionError("readiness must not scan the migration directory per probe")
+
+    monkeypatch.setattr(Path, "glob", no_glob)
+
+    class Connection:
+        def execute(self, statement):
+            class Rows:
+                def fetchall(self):
+                    return [{"version": name} for name in postgres.PACKAGED_MIGRATIONS]
+
+            return Rows()
+
+    repository = object.__new__(postgres.PostgresRepository)
+    repository._connection = Connection()
+    assert repository.readiness() == postgres.PACKAGED_MIGRATIONS[-1]

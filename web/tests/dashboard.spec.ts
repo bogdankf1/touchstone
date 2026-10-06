@@ -116,3 +116,46 @@ test('does not infer real customer data from a false simulation flag', async ({ 
   await expect(page.getByText('Simulated source data', { exact: true })).toHaveCount(0);
   await expect(page.getByText('Measured calls on simulated data')).toHaveCount(0);
 });
+
+test('keeps online cost visible when offline billing is incomplete', async ({ page, request }) => {
+  await request.get('http://127.0.0.1:8100/__scenario?name=offline-pending');
+  await page.goto('/');
+  await expect(page.getByText('Online model cost', { exact: true })).toBeVisible();
+  await expect(page.getByText('USD 0.458940', { exact: true }).first()).toBeVisible();
+  await expect(page.getByRole('row', { name: /Offline model cost/ })).toContainText('Unavailable');
+  await expect(page.getByRole('row', { name: /Total provider spend/ })).toContainText('Unavailable');
+  await expect(page.getByRole('columnheader', { name: 'Attributed online cost' })).toBeVisible();
+  await expect(page.getByRole('columnheader', { name: 'Node provider spend' })).toBeVisible();
+  const node = page.getByRole('row', { name: /provider_call/ });
+  await expect(node.getByRole('cell').nth(2)).toHaveText('USD 0.000459');
+  await expect(node.getByRole('cell').nth(3)).toHaveText('Unavailable');
+});
+
+test('shows compatible simulated comparison and arm provenance', async ({page, request}) => {
+  await request.get('http://127.0.0.1:8100/__scenario?name=comparison');
+  await page.goto('/?compare=reckoner-pilot');
+  await expect(page.getByRole('heading',{name:'Baseline / current comparison'})).toBeVisible();
+  await expect(page.getByText('CPST change: USD -0.500000')).toBeVisible();
+  await expect(page.getByText('Simulated comparison fixture')).toBeVisible();
+  await page.getByText('Arm versions and call identities').last().click();
+  await expect(page.getByText('gds-augmented', {exact:false})).toBeVisible();
+});
+for (const scenario of ['comparison-ineligible','comparison-generation']) {
+  test(`hides delta for ${scenario}`, async ({page,request}) => {
+    await request.get(`http://127.0.0.1:8100/__scenario?name=${scenario}`);
+    await page.goto('/?compare=reckoner-pilot');
+    await expect(page.getByText('CPST change:',{exact:false})).toHaveCount(0);
+    await expect(page.getByText(scenario==='comparison-generation'?'Comparison snapshot changed':'Comparison ineligible')).toBeVisible();
+  });
+}
+test('labels a comparison simulated when either arm is fabricated', async ({page, request}) => {
+  await request.get('http://127.0.0.1:8100/__scenario?name=comparison-mixed');
+  await page.goto('/?compare=reckoner-pilot');
+  await expect(page.getByText('Simulated comparison fixture')).toBeVisible();
+});
+test('shows a comparison API failure as an error, not as no compatible run', async ({page, request}) => {
+  await request.get('http://127.0.0.1:8100/__scenario?name=comparison-error');
+  await page.goto('/?compare=reckoner-pilot');
+  await expect(page.getByRole('alert')).toContainText('Comparison unavailable');
+  await expect(page.getByText('No compatible comparison run')).toHaveCount(0);
+});

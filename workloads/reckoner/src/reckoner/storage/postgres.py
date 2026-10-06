@@ -21,6 +21,12 @@ from reckoner.storage.budget import ACCOUNTING_LOCK, RunBusy
 
 RUNNER_LOCK = 732019101
 REQUIRED_MIGRATION = "004_evaluation_reporting.sql"
+# Every packaged migration, listed once at import; readiness requires all of them.
+PACKAGED_MIGRATIONS = tuple(
+    sorted(
+        path.name for path in (Path(__file__).with_name("migrations")).glob("[0-9][0-9][0-9]_*.sql")
+    )
+)
 
 
 def _plain(value: Any) -> Any:
@@ -1196,14 +1202,17 @@ class PostgresRepository:
         }
 
     def readiness(self) -> str:
-        row = self._connection.execute(
-            "SELECT EXISTS (SELECT 1 FROM public.reckoner_schema_migrations "
-            "WHERE version = %s) AS applied",
-            (REQUIRED_MIGRATION,),
-        ).fetchone()
-        if row is None or not row["applied"]:
+        """Ready only after every packaged migration is applied (migration before traffic)."""
+        required = PACKAGED_MIGRATIONS
+        applied = {
+            row["version"]
+            for row in self._connection.execute(
+                "SELECT version FROM public.reckoner_schema_migrations"
+            ).fetchall()
+        }
+        if REQUIRED_MIGRATION not in required or set(required) - applied:
             raise ValueError("schema migration is incompatible")
-        return REQUIRED_MIGRATION
+        return required[-1]
 
     def api_run_summary(self, tenant_id: str, run_id: str) -> dict[str, Any] | None:
         row = self._connection.execute(
